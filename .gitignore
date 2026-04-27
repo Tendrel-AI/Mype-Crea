@@ -3,5 +3,7 @@ node_modules/
 coverage/
 .DS_Store
 *.log
+CLAUDE.md
+/claude/*
 .env*
 !.env.example

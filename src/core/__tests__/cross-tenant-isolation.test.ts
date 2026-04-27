@@ -1,0 +1,2 @@
+// the test that creates data in tenant A, authenticates as tenant B, and asserts B cannot read or modify A's data. 
+// It will start mostly empty (no endpoints to test yet), but the harness and the assertion helpers (authenticatedAs(tenant), expectForbidden()) exist and are exercised. As you add endpoints, you add cases here. If this test ever gets skipped or commented out, you've broken the multi-tenancy guarantee.
