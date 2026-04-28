@@ -1,0 +1,36 @@
+{
+  "name": "social-agent",
+  "description": "Prepara un paquete de lanzamiento para redes sociales.",
+  "version": "0.1.0",
+  "skills": [],
+  "mypes:requirements": {
+    "required": [
+      {
+        "name": "business_name",
+        "type": "string",
+        "promptHint": "Confirmemos el nombre del negocio para los posts."
+      },
+      {
+        "name": "business_profile",
+        "type": "string",
+        "promptHint": "Recuérdame qué vende tu negocio y a qué público apunta."
+      }
+    ],
+    "optional": [
+      {
+        "name": "launch_date",
+        "type": "string",
+        "promptHint": "¿Cuál es la fecha tentativa de lanzamiento?"
+      }
+    ]
+  },
+  "mypes:ui": {
+    "tabLabel": "Redes",
+    "tabIcon": "share-2",
+    "displayOrder": 5,
+    "outputPreview": "social_pack"
+  },
+  "supportedInterfaces": [
+    { "protocol": "local", "module": "agents/social-agent/handler.ts" }
+  ]
+}

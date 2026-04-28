@@ -1,0 +1,36 @@
+{
+  "name": "logo-agent",
+  "description": "Genera el logotipo de la marca.",
+  "version": "0.1.0",
+  "skills": [],
+  "mypes:requirements": {
+    "required": [
+      {
+        "name": "business_name",
+        "type": "string",
+        "promptHint": "¿Qué nombre debe llevar el logo?"
+      },
+      {
+        "name": "style_keywords",
+        "type": "string",
+        "promptHint": "Describe el estilo del logo (por ejemplo: minimalista, colorido, tradicional)."
+      }
+    ],
+    "optional": [
+      {
+        "name": "color_palette",
+        "type": "string",
+        "promptHint": "¿Tienes colores preferidos para tu marca?"
+      }
+    ]
+  },
+  "mypes:ui": {
+    "tabLabel": "Logo",
+    "tabIcon": "image",
+    "displayOrder": 2,
+    "outputPreview": "logo"
+  },
+  "supportedInterfaces": [
+    { "protocol": "local", "module": "agents/logo-agent/handler.ts" }
+  ]
+}

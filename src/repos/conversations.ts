@@ -1,0 +1,194 @@
+/**
+ * Conversations repository. Reads/writes the conversations row and its
+ * `agent_states` JSONB column (the persisted form of the orchestrator's
+ * ConversationSnapshot.agentStates).
+ *
+ * Per claude/skills/database/SKILL.md: every method runs inside an explicit
+ * transaction with the tenant + user GUCs set. There is no overload that
+ * skips the tenant. Application code never imports this file directly —
+ * it goes through `repos(tenant, user)` (see ./index.ts).
+ */
+import type {
+  AgentId,
+  AgentRequirementState,
+  ConversationId,
+  ConversationSnapshot,
+  FieldName,
+  FieldSlot,
+  TaskId,
+} from '../core/contracts';
+import type { AgentFieldSchema } from '../core/orchestrator/in-memory-store';
+import { withTenantTransaction, type Tenant, type TxClient, type User } from '../db/with-transaction';
+
+type AgentStatesJson = Record<AgentId, AgentRequirementState>;
+
+function emptySlots(names: ReadonlyArray<FieldName>): Record<FieldName, FieldSlot> {
+  const out: Record<FieldName, FieldSlot> = {};
+  for (const n of names) out[n] = { status: 'empty' };
+  return out;
+}
+
+function buildEmptyAgentStates(schemas: ReadonlyArray<AgentFieldSchema>): AgentStatesJson {
+  const states: AgentStatesJson = {};
+  for (const s of schemas) {
+    states[s.agentId] = {
+      requiredFields: emptySlots(s.requiredFields),
+      optionalFields: emptySlots(s.optionalFields),
+      iterationCount: 0,
+    };
+  }
+  return states;
+}
+
+/**
+ * Load the agent_states JSONB and reify it into a snapshot. Schemas are
+ * needed to fill in defaults for agents present in the registry but missing
+ * from the JSONB (e.g. an agent added after this conversation started).
+ */
+async function loadSnapshot(
+  tx: TxClient,
+  conversationId: ConversationId,
+  schemas: ReadonlyArray<AgentFieldSchema>,
+): Promise<ConversationSnapshot | undefined> {
+  const res = await tx.query<{
+    tenant_id: string;
+    agent_states: AgentStatesJson;
+    started_at: Date;
+  }>(
+    `SELECT tenant_id, agent_states, started_at
+       FROM conversations
+      WHERE id = $1
+      LIMIT 1`,
+    [conversationId],
+  );
+  if (res.rows.length === 0) return undefined;
+  const row = res.rows[0];
+
+  // Merge schema defaults so newly-registered agents appear with empty slots.
+  const defaults = buildEmptyAgentStates(schemas);
+  const merged: AgentStatesJson = { ...defaults, ...row.agent_states };
+
+  return {
+    conversationId,
+    tenantId: row.tenant_id,
+    agentStates: merged,
+    updatedAt: row.started_at.toISOString(),
+  };
+}
+
+async function writeAgentStates(
+  tx: TxClient,
+  conversationId: ConversationId,
+  agentStates: AgentStatesJson,
+): Promise<void> {
+  const res = await tx.query(
+    `UPDATE conversations
+        SET agent_states = $2::jsonb
+      WHERE id = $1`,
+    [conversationId, JSON.stringify(agentStates)],
+  );
+  if (res.rowCount === 0) {
+    throw new Error(`No conversation row to update: ${conversationId}`);
+  }
+}
+
+export function conversationsRepo(tenant: Tenant, user: User) {
+  return {
+    /**
+     * Ensure a conversations row exists for (tenant, user, conversationId).
+     * Returns the snapshot built from the persisted `agent_states` (or freshly
+     * defaulted if the row was just created).
+     */
+    async getOrCreate(
+      conversationId: ConversationId,
+      schemas: ReadonlyArray<AgentFieldSchema>,
+    ): Promise<ConversationSnapshot> {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        // Idempotent insert. RLS WITH CHECK enforces tenant_id matches the GUC.
+        await tx.query(
+          `INSERT INTO conversations (id, tenant_id, user_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (id) DO NOTHING`,
+          [conversationId, tenant.id, user.id],
+        );
+        const snap = await loadSnapshot(tx, conversationId, schemas);
+        if (!snap) throw new Error(`Insert succeeded but row not visible: ${conversationId}`);
+        return snap;
+      });
+    },
+
+    async get(
+      conversationId: ConversationId,
+      schemas: ReadonlyArray<AgentFieldSchema>,
+    ): Promise<ConversationSnapshot | undefined> {
+      return withTenantTransaction(tenant, user, async (tx) =>
+        loadSnapshot(tx, conversationId, schemas),
+      );
+    },
+
+    async updateFieldSlot(
+      conversationId: ConversationId,
+      agentId: AgentId,
+      fieldName: FieldName,
+      isRequired: boolean,
+      slot: FieldSlot,
+      schemas: ReadonlyArray<AgentFieldSchema>,
+    ): Promise<void> {
+      await withTenantTransaction(tenant, user, async (tx) => {
+        const snap = await loadSnapshot(tx, conversationId, schemas);
+        if (!snap) throw new Error(`Unknown conversation: ${conversationId}`);
+        const current = snap.agentStates[agentId];
+        if (!current) throw new Error(`Unknown agent in snapshot: ${agentId}`);
+        const sliceKey = isRequired ? 'requiredFields' : 'optionalFields';
+        const next: AgentRequirementState = {
+          ...current,
+          [sliceKey]: { ...current[sliceKey], [fieldName]: slot },
+        };
+        const nextStates: AgentStatesJson = { ...snap.agentStates, [agentId]: next };
+        await writeAgentStates(tx, conversationId, nextStates);
+      });
+    },
+
+    async recordDispatch(
+      conversationId: ConversationId,
+      agentId: AgentId,
+      taskId: TaskId,
+      schemas: ReadonlyArray<AgentFieldSchema>,
+    ): Promise<void> {
+      await withTenantTransaction(tenant, user, async (tx) => {
+        const snap = await loadSnapshot(tx, conversationId, schemas);
+        if (!snap) throw new Error(`Unknown conversation: ${conversationId}`);
+        const current = snap.agentStates[agentId];
+        if (!current) throw new Error(`Unknown agent in snapshot: ${agentId}`);
+        const next: AgentRequirementState = {
+          ...current,
+          lastDispatchedTaskId: taskId,
+          iterationCount: current.iterationCount + 1,
+        };
+        const nextStates: AgentStatesJson = { ...snap.agentStates, [agentId]: next };
+        await writeAgentStates(tx, conversationId, nextStates);
+      });
+    },
+
+    async clearDispatch(
+      conversationId: ConversationId,
+      agentId: AgentId,
+      schemas: ReadonlyArray<AgentFieldSchema>,
+    ): Promise<void> {
+      await withTenantTransaction(tenant, user, async (tx) => {
+        const snap = await loadSnapshot(tx, conversationId, schemas);
+        if (!snap) throw new Error(`Unknown conversation: ${conversationId}`);
+        const current = snap.agentStates[agentId];
+        if (!current) throw new Error(`Unknown agent in snapshot: ${agentId}`);
+        const { lastDispatchedTaskId: _drop, ...rest } = current;
+        const nextStates: AgentStatesJson = {
+          ...snap.agentStates,
+          [agentId]: rest as AgentRequirementState,
+        };
+        await writeAgentStates(tx, conversationId, nextStates);
+      });
+    },
+  };
+}
+
+export type ConversationsRepo = ReturnType<typeof conversationsRepo>;

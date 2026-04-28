@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Send, Loader2, Sparkles, Image as ImageIcon, LayoutTemplate, Megaphone, CheckCircle2, LogOut, Menu, Globe, PlusCircle } from 'lucide-react';
 import { generateImageAction } from '../app/actions/image';
 import { signOutAction } from '../app/actions/auth';
-import { chatAction, type ChatMessage } from '../app/actions/chat';
+import { chatAction, chatActionStep1, type ChatMessage } from '../app/actions/chat';
 
 interface CreaMypeProps {
   userEmail: string;
@@ -82,6 +82,14 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
   const [loadingStatus, setLoadingStatus] = useState<string>('');
   const [showRestartModal, setShowRestartModal] = useState(false);
 
+  // Server-side conversations.id — generated once per session, regenerated on
+  // "Nuevo". Threaded into chatAction so messages and llm_calls rows are
+  // attributed to the right conversation row.
+  const [conversationId, setConversationId] = useState<string>(() =>
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : '',
+  );
 
   // OpenAI-compatible chat history (sent to OpenRouter via chatAction)
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
@@ -110,6 +118,62 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
     setIsLoading(true);
     setLoadingStatus('Analizando...');
 
+    // Paso 1 (nombre del negocio) runs through the 4-layer orchestrator:
+    //   ChatInputAdapter (Flash) → core (merge + planner) → name-agent →
+    //   ChatOutputAdapter (Pro). Pasos 2-5 stay on the legacy tool-driven
+    //   chatAction below.
+    if (step === 1) {
+      try {
+        const result = await chatActionStep1({
+          conversationId,
+          lastUserInput: userText,
+        });
+
+        // Mirror the turn into the OpenAI-compatible history so when we
+        // hand off to chatAction in step 2 the conversation reads continuously.
+        const updatedHistory: ChatMessage[] = [
+          ...currentHistory,
+          { role: 'assistant', content: result.content || null },
+        ];
+        setChatHistory(updatedHistory);
+
+        setMessages(prev => [
+          ...prev,
+          {
+            id: Date.now().toString(),
+            role: 'model',
+            text: result.content || 'Lo siento, no pude generar una respuesta. ¿Puedes intentar de nuevo?',
+          },
+        ]);
+
+        if (
+          result.decision.kind === 'announce_completion' &&
+          result.decision.agentId === 'name-agent'
+        ) {
+          setAssets(prev => ({
+            ...prev,
+            name: result.extractedAssets.name ?? prev.name,
+            profile: result.extractedAssets.profile ?? prev.profile,
+          }));
+          setStep(2);
+        }
+      } catch (error: any) {
+        console.error('chatActionStep1 error:', error);
+        setMessages(prev => [
+          ...prev,
+          {
+            id: Date.now().toString(),
+            role: 'model',
+            text: 'Hubo un error al procesar tu solicitud. Por favor, intenta de nuevo.',
+          },
+        ]);
+      } finally {
+        setIsLoading(false);
+        setLoadingStatus('');
+      }
+      return;
+    }
+
     let currentLogoUrl = assets.logoUrl;
     let currentLabelUrl = assets.labelUrl;
     let currentStep = step;
@@ -127,9 +191,13 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
         }
 
         const { content, toolCalls } = await chatAction({
+          conversationId,
           messages: currentHistory,
           step: currentStep,
           assets: currentAssets,
+          // Persist the user input only on the first round-trip of this send;
+          // subsequent loop iterations are tool follow-ups, not new user turns.
+          lastUserInput: loopCount === 1 ? userText : undefined,
         });
 
         currentHistory.push({
@@ -281,6 +349,7 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
     setAssets(EMPTY_ASSETS);
     setMessages([WELCOME_MESSAGE]);
     setChatHistory([]);
+    setConversationId(crypto.randomUUID());
     setShowRestartModal(false);
   };
 

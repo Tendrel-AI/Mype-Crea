@@ -1,0 +1,36 @@
+{
+  "name": "label-agent",
+  "description": "Diseña la etiqueta o empaque del producto.",
+  "version": "0.1.0",
+  "skills": [],
+  "mypes:requirements": {
+    "required": [
+      {
+        "name": "business_name",
+        "type": "string",
+        "promptHint": "¿Qué nombre va en la etiqueta?"
+      },
+      {
+        "name": "product_description",
+        "type": "string",
+        "promptHint": "Describe el producto que va a llevar esta etiqueta (qué es, ingredientes principales o atributos clave)."
+      }
+    ],
+    "optional": [
+      {
+        "name": "regulatory_notes",
+        "type": "string",
+        "promptHint": "¿Tu producto requiere registros sanitarios o información obligatoria en la etiqueta?"
+      }
+    ]
+  },
+  "mypes:ui": {
+    "tabLabel": "Etiqueta",
+    "tabIcon": "package",
+    "displayOrder": 4,
+    "outputPreview": "label"
+  },
+  "supportedInterfaces": [
+    { "protocol": "local", "module": "agents/label-agent/handler.ts" }
+  ]
+}

@@ -2,12 +2,16 @@
  * MYPES Platform — Planner
  * =========================
  *
- * Location: src/orchestrator/planner.ts
+ * Location: src/core/orchestrator/planner.ts
  *
  * THIS IS THE TESTABLE CORE OF THE THESIS CONTRIBUTION.
  *
  * Given a ConversationSnapshot, returns the next PlannerDecision.
  * Deterministic. Pure code. No LLMs. No I/O. No side effects.
+ *
+ * Logging is observability, not control flow: the same input still produces
+ * the same PlannerDecision regardless of log level. Per the architecture
+ * skill rule 2, this preserves planner purity.
  *
  * The function's responsibility is to answer:
  *   "Given what we know about this conversation's state, what should
@@ -37,15 +41,38 @@ import type {
   ConversationSnapshot,
   PlannerDecision,
 } from '../contracts';
+import { loggerFor } from '../../services/logger';
 import type { AgentRegistry } from './agent-registry';
+
+const log = loggerFor('orchestrator.planner');
 
 export function planNextDecision(
   snapshot: ConversationSnapshot,
   registry: AgentRegistry,
 ): PlannerDecision {
+  const child = log.child({
+    op: 'planNextDecision',
+    conversationId: snapshot.conversationId,
+    tenantId: snapshot.tenantId,
+  });
+
+  const decide = (decision: PlannerDecision, reason: string): PlannerDecision => {
+    child.info(
+      {
+        kind: decision.kind,
+        agentId: 'agentId' in decision ? decision.agentId : undefined,
+        reason,
+      },
+      'planner.decision.chosen',
+    );
+    return decision;
+  };
+
   const orderedAgents = [...registry.getFieldSchemas()].sort(
     (a, b) => a.displayOrder - b.displayOrder,
   );
+
+  child.info({ agentsTracked: orderedAgents.length }, 'planner.evaluate.start');
 
   // Step 1: are we waiting on a dispatched agent to settle?
   for (const schema of orderedAgents) {
@@ -55,7 +82,7 @@ export function planNextDecision(
       // The orchestrator clears lastDispatchedTaskId (or advances iteration)
       // when it has surfaced the completion. If it's still set, we're waiting
       // or the completion hasn't been announced yet.
-      return { kind: 'idle', reason: 'awaiting_dispatch' };
+      return decide({ kind: 'idle', reason: 'awaiting_dispatch' }, 'task_in_flight');
     }
   }
 
@@ -66,13 +93,16 @@ export function planNextDecision(
     for (const fieldName of schema.requiredFields) {
       const slot = agentState.requiredFields[fieldName];
       if (slot?.status === 'pending_confirmation') {
-        return {
-          kind: 'confirm_field',
-          agentId: schema.agentId,
-          fieldName,
-          pendingValue: slot.value,
-          reason: 'low_confidence',
-        };
+        return decide(
+          {
+            kind: 'confirm_field',
+            agentId: schema.agentId,
+            fieldName,
+            pendingValue: slot.value,
+            reason: 'low_confidence',
+          },
+          'pending_confirmation',
+        );
       }
     }
   }
@@ -85,12 +115,15 @@ export function planNextDecision(
     for (const fieldName of schema.requiredFields) {
       const slot = agentState.requiredFields[fieldName];
       if (!slot || slot.status === 'empty') {
-        return {
-          kind: 'request_field',
-          agentId: schema.agentId,
-          fieldName,
-          promptHint: registry.getPromptHint(schema.agentId, fieldName),
-        };
+        return decide(
+          {
+            kind: 'request_field',
+            agentId: schema.agentId,
+            fieldName,
+            promptHint: registry.getPromptHint(schema.agentId, fieldName),
+          },
+          'missing_required_field',
+        );
       }
     }
   }
@@ -100,11 +133,11 @@ export function planNextDecision(
   if (readyToDispatch) {
     // The orchestrator will call dispatch then emit announce_dispatch.
     // From the planner's point of view, we tell it "go do that".
-    return { kind: 'idle', reason: 'awaiting_dispatch' };
+    return decide({ kind: 'idle', reason: 'awaiting_dispatch' }, 'ready_to_dispatch');
   }
 
   // Step 5: all agents have deliverables. We're done until the user does something.
-  return { kind: 'idle', reason: 'all_complete' };
+  return decide({ kind: 'idle', reason: 'all_complete' }, 'all_complete');
 }
 
 /**

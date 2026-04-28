@@ -1,0 +1,30 @@
+{
+  "name": "name-agent",
+  "description": "Propone y finaliza el nombre comercial del negocio.",
+  "version": "0.1.0",
+  "skills": [],
+  "mypes:requirements": {
+    "required": [
+      {
+        "name": "business_name",
+        "type": "string",
+        "promptHint": "¿Cómo se llama tu negocio o cómo te gustaría llamarlo?"
+      },
+      {
+        "name": "business_profile",
+        "type": "string",
+        "promptHint": "Cuéntame brevemente a qué se dedica tu negocio y qué lo hace especial."
+      }
+    ],
+    "optional": []
+  },
+  "mypes:ui": {
+    "tabLabel": "Nombre",
+    "tabIcon": "type",
+    "displayOrder": 1,
+    "outputPreview": "business_name"
+  },
+  "supportedInterfaces": [
+    { "protocol": "local", "module": "agents/name-agent/handler.ts" }
+  ]
+}

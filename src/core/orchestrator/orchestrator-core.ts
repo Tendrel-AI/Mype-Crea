@@ -2,7 +2,7 @@
  * MYPES Platform — Orchestrator core
  * ===================================
  *
- * Location: src/orchestrator/orchestrator-core.ts
+ * Location: src/core/orchestrator/orchestrator-core.ts
  *
  * The reference implementation of OrchestratorCore. Wires together:
  *   - the conversation store
@@ -23,22 +23,48 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import type {
   AgentId,
   ConversationId,
   ConversationSnapshot,
   DeliverableId,
   FieldDelta,
+  FieldSlot,
   OrchestratorCore,
   PlannerDecision,
   TaskId,
   UUID,
 } from '../contracts';
 import type { A2AMessage, IAgentTransport, TaskState } from '../agent-types';
+import { loggerFor } from '../../services/logger';
 import type { AgentRegistry } from './agent-registry';
-// import type { IConversationStore } from './in-memory-store';
+import type { IConversationStore } from './in-memory-store';
 import { mergeFieldDelta } from './merge';
 import { findAgentReadyToDispatch, planNextDecision } from './planner';
+
+/**
+ * Subset of AgentTasksRepo the orchestrator consumes. The orchestrator
+ * doesn't need the full repo surface — narrowing the dep surface keeps
+ * tests easy to fake.
+ */
+export interface AgentTasksRepoLike {
+  insertRoot(input: {
+    conversationId: ConversationId;
+    agentId: string;
+    agentCardVersion: string;
+    idempotencyKey: UUID;
+    requirementsSnapshot: Record<string, unknown>;
+  }): Promise<{ id: TaskId }>;
+  markCompleted(id: TaskId): Promise<void>;
+  markFailed(
+    id: TaskId,
+    error: Record<string, unknown>,
+    errorCategory: 'transient' | 'content_policy' | 'permanent_bug',
+  ): Promise<void>;
+}
+
+const log = loggerFor('orchestrator.core');
 
 // ---------------------------------------------------------------------------
 // Decision notifier — in prod this is Postgres LISTEN/NOTIFY
@@ -82,6 +108,13 @@ export interface OrchestratorCoreDeps {
   readonly notifier: IDecisionNotifier;
   /** Factory used for task IDs and conversation creation defaults. Deterministic in tests. */
   readonly newTaskId: () => TaskId;
+  /**
+   * Optional factory for the agent_tasks repository, scoped to a tenant. When
+   * provided, dispatchAgent inserts a row and onTaskSettled marks
+   * completed/failed. When omitted (in-memory unit tests), the orchestrator
+   * keeps working off the in-memory taskOwnership map only.
+   */
+  readonly agentTasksFor?: (tenantId: UUID) => AgentTasksRepoLike;
 }
 
 export class OrchestratorCoreImpl implements OrchestratorCore {
@@ -118,17 +151,30 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
    * before the first applyDelta. In production, this happens in the HTTP
    * session handler when a new chat starts.
    */
-  async startConversation(conversationId: ConversationId, tenantId: UUID): Promise<void> {
+  async startConversation(
+    conversationId: ConversationId,
+    tenantId: UUID,
+    userId: UUID,
+  ): Promise<void> {
     this.conversationTenants.set(conversationId, tenantId);
-    await this.deps.store.getOrCreate(conversationId, tenantId);
+    await this.deps.store.getOrCreate(conversationId, tenantId, userId);
   }
 
   async applyDelta(delta: FieldDelta): Promise<ConversationSnapshot> {
-    if (!this.conversationTenants.has(delta.conversationId)) {
+    const tenantId = this.conversationTenants.get(delta.conversationId);
+    if (!tenantId) {
       throw new Error(
         `Conversation not started: ${delta.conversationId}. Call startConversation() first.`,
       );
     }
+
+    const child = log.child({
+      op: 'applyDelta',
+      tenantId,
+      conversationId: delta.conversationId,
+      source: delta.source,
+    });
+    child.info('orchestrator.applyDelta.start');
 
     // 1) Merge the delta into state.
     await mergeFieldDelta(delta, this.deps.store, this.deps.registry);
@@ -141,6 +187,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     const readyAgentId = findAgentReadyToDispatch(snapshotAfterMerge, orderedAgents);
 
     if (readyAgentId) {
+      child.info({ agentId: readyAgentId }, 'orchestrator.dispatch.triggered');
       await this.dispatchAgent(delta.conversationId, readyAgentId);
       // dispatch will emit announce_dispatch via the notifier.
     }
@@ -149,15 +196,26 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     const decision = await this.getNextDecision(delta.conversationId);
     this.deps.notifier.notify(delta.conversationId, decision);
 
+    child.info(
+      { decisionKind: decision.kind, dispatched: Boolean(readyAgentId) },
+      'orchestrator.applyDelta.complete',
+    );
     return snapshotAfterMerge;
   }
 
   async getNextDecision(conversationId: ConversationId): Promise<PlannerDecision> {
+    const tenantId = this.conversationTenants.get(conversationId);
+    const child = log.child({ op: 'getNextDecision', tenantId, conversationId });
+
     // If there's a pending completion we haven't surfaced, surface it now.
     const pending = this.pendingCompletions.get(conversationId);
     if (pending && pending.length > 0) {
       const next = pending.shift()!;
       if (next.state.status === 'completed') {
+        child.info(
+          { agentId: next.agentId, taskId: next.taskId },
+          'orchestrator.decision.announce_completion',
+        );
         return {
           kind: 'announce_completion',
           agentId: next.agentId,
@@ -170,6 +228,10 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
       }
       // Failed task — for now, fall through to the planner's view.
       // A later iteration may add an explicit 'announce_failure' decision kind.
+      child.warn(
+        { agentId: next.agentId, taskId: next.taskId },
+        'orchestrator.decision.task_failed_falling_through',
+      );
     }
 
     const snapshot = await this.deps.store.get(conversationId);
@@ -197,17 +259,40 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     const agentState = snapshot.agentStates[agentId]!;
     const tenantId = this.conversationTenants.get(conversationId)!;
     const entry = this.deps.registry.get(agentId);
+    const child = log.child({ op: 'dispatchAgent', tenantId, conversationId, agentId });
 
     // Build the requirements payload from filled slots.
     const requirements: Record<string, unknown> = {};
-    for (const [fieldName, slot] of Object.entries(agentState.requiredFields)) {
+    for (const [fieldName, slot] of Object.entries(agentState.requiredFields) as Array<
+      [string, FieldSlot]
+    >) {
       if (slot.status === 'filled') requirements[fieldName] = slot.value;
     }
-    for (const [fieldName, slot] of Object.entries(agentState.optionalFields)) {
+    for (const [fieldName, slot] of Object.entries(agentState.optionalFields) as Array<
+      [string, FieldSlot]
+    >) {
       if (slot.status === 'filled') requirements[fieldName] = slot.value;
     }
 
-    const taskId = this.deps.newTaskId();
+    // If the agent_tasks repo is wired, the persisted row's id is the source
+    // of truth for taskId. Otherwise fall back to the in-memory id factory
+    // (used by unit tests without a DB).
+    let taskId: TaskId;
+    if (this.deps.agentTasksFor) {
+      const repo = this.deps.agentTasksFor(tenantId);
+      const inserted = await repo.insertRoot({
+        conversationId,
+        agentId,
+        agentCardVersion: entry.card.version,
+        idempotencyKey: randomUUID(),
+        requirementsSnapshot: requirements,
+      });
+      taskId = inserted.id;
+      child.info({ taskId }, 'agent_task row inserted');
+    } else {
+      taskId = this.deps.newTaskId();
+    }
+
     const message: A2AMessage = {
       taskId,
       tenantId,
@@ -220,6 +305,8 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     await this.deps.store.recordDispatch(conversationId, agentId, taskId);
     this.taskOwnership.set(taskId, { conversationId, agentId });
     await this.deps.transport.dispatch(message);
+
+    child.info({ taskId }, 'task dispatched');
 
     // Emit an immediate announce_dispatch decision.
     this.deps.notifier.notify(conversationId, {
@@ -235,9 +322,41 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
    */
   onTaskSettled = async (taskId: TaskId, state: TaskState): Promise<void> => {
     const owner = this.taskOwnership.get(taskId);
-    if (!owner) return; // task dispatched by something we don't manage (or already surfaced)
+    if (!owner) {
+      log.debug({ op: 'onTaskSettled', taskId }, 'orchestrator.task.settled_unowned');
+      return; // task dispatched by something we don't manage (or already surfaced)
+    }
 
     this.taskOwnership.delete(taskId);
+
+    const tenantId = this.conversationTenants.get(owner.conversationId);
+    const child = log.child({
+      op: 'onTaskSettled',
+      tenantId,
+      conversationId: owner.conversationId,
+      agentId: owner.agentId,
+      taskId,
+      status: state.status,
+    });
+    child.info('orchestrator.task.settled');
+
+    // Persist the terminal state if the agent_tasks repo is wired.
+    if (this.deps.agentTasksFor && tenantId) {
+      const repo = this.deps.agentTasksFor(tenantId);
+      try {
+        if (state.status === 'completed') {
+          await repo.markCompleted(taskId);
+        } else if (state.status === 'failed') {
+          await repo.markFailed(
+            taskId,
+            { kind: state.result.error.kind, message: state.result.error.message },
+            'transient',
+          );
+        }
+      } catch (err) {
+        child.error({ err }, 'orchestrator.task.persist_failed');
+      }
+    }
 
     const bucket = this.pendingCompletions.get(owner.conversationId) ?? [];
     bucket.push({ taskId, agentId: owner.agentId, state });
