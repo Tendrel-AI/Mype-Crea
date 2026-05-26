@@ -82,7 +82,7 @@ SUITE('agent_tasks repository (integration)', () => {
     const sys = systemRepos({ id: tenantId });
     const row = await sys.agentTasks.insertRoot({
       conversationId,
-      agentId: 'name-agent',
+      agentId: 'test-fixture-agent',
       agentCardVersion: '1.0.0',
       idempotencyKey: randomUUID(),
       requirementsSnapshot: { business_name: 'Sazón Andino' },
@@ -99,7 +99,7 @@ SUITE('agent_tasks repository (integration)', () => {
     const sys = systemRepos({ id: tenantId });
     const row = await sys.agentTasks.insertRoot({
       conversationId,
-      agentId: 'name-agent',
+      agentId: 'test-fixture-agent',
       agentCardVersion: '1.0.0',
       idempotencyKey: randomUUID(),
       requirementsSnapshot: {},
@@ -125,7 +125,7 @@ SUITE('agent_tasks repository (integration)', () => {
     await expect(
       sys.agentTasks.insertRoot({
         conversationId,
-        agentId: 'name-agent',
+        agentId: 'test-fixture-agent',
         agentCardVersion: '1.0.0',
         idempotencyKey: randomUUID(),
         requirementsSnapshot: { reference: foreignUuid },

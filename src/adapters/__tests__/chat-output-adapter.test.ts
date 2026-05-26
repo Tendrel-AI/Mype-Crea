@@ -14,38 +14,37 @@ vi.mock('../../repos', () => ({
 }));
 
 import { ChatOutputAdapter } from '../chat-output-adapter';
-import { buildDefaultRegistry } from '../../core/orchestrator/bootstrap-registry';
+import {
+  buildAgentRequirementState,
+  buildSingleAgentFixtureRegistry,
+  buildSnapshot,
+  FakeLLMProvider,
+  TEST_CONVERSATION_ID,
+  TEST_TENANT_ID,
+  TEST_USER_ID,
+} from '../../core/__tests__/_fixtures';
 import { resetProvider, setProvider } from '../../services/llm';
-import type { ConversationSnapshot, PlannerDecision } from '../../core/contracts';
+import type { PlannerDecision } from '../../core/contracts';
 
-const conversationId = '00000000-0000-0000-0000-000000000003';
-const tenantId = '00000000-0000-0000-0000-000000000001';
+const conversationId = TEST_CONVERSATION_ID;
+const tenantId = TEST_TENANT_ID;
 
 const ctx = {
   tenant: { id: tenantId },
-  user: { id: '00000000-0000-0000-0000-000000000002' },
+  user: { id: TEST_USER_ID },
   conversationId,
   promptVersion: 'responder.chat-step1.v1',
 };
 
-const emptySnapshot: ConversationSnapshot = {
-  conversationId,
-  tenantId,
+const emptySnapshot = buildSnapshot({
   agentStates: {
-    'name-agent': {
-      requiredFields: {},
-      optionalFields: {},
-      iterationCount: 0,
-    },
+    'test-fixture-agent': buildAgentRequirementState(),
   },
-  updatedAt: new Date().toISOString(),
-};
+});
 
-const filledSnapshot: ConversationSnapshot = {
-  conversationId,
-  tenantId,
+const filledSnapshot = buildSnapshot({
   agentStates: {
-    'name-agent': {
+    'test-fixture-agent': buildAgentRequirementState({
       requiredFields: {
         business_name: { status: 'filled', value: 'Café Andino', confidence: 1 },
         business_profile: {
@@ -54,43 +53,21 @@ const filledSnapshot: ConversationSnapshot = {
           confidence: 1,
         },
       },
-      optionalFields: {},
       iterationCount: 1,
-    },
-  },
-  updatedAt: new Date().toISOString(),
-};
-
-interface CapturedCall {
-  systemPrompt: string;
-  messageCount: number;
-}
-
-function fakeProvider(scriptedReply: string, captured: CapturedCall[]) {
-  return {
-    resolve: () => ({
-      purpose: 'responder' as const,
-      modelId: 'google/gemini-2.5-pro',
-      client: {
-        chat: {
-          completions: {
-            create: vi.fn(async (params: any) => {
-              const sys = params.messages.find((m: any) => m.role === 'system')?.content ?? '';
-              captured.push({ systemPrompt: sys, messageCount: params.messages.length });
-              return {
-                id: 'chatcmpl-fake',
-                choices: [{ message: { role: 'assistant', content: scriptedReply } }],
-                usage: { prompt_tokens: 50, completion_tokens: 30, total_tokens: 80 },
-              };
-            }),
-          },
-        },
-      } as any,
     }),
-  };
+  },
+});
+
+function makeResponderProvider(scriptedReply: string): FakeLLMProvider {
+  return new FakeLLMProvider({
+    purpose: 'responder',
+    modelId: 'google/gemini-2.5-pro',
+  }).scriptContent(scriptedReply);
 }
 
 describe('ChatOutputAdapter', () => {
+  let provider: FakeLLMProvider;
+
   beforeEach(() => {
     recordSpy.mockClear();
   });
@@ -98,146 +75,301 @@ describe('ChatOutputAdapter', () => {
     resetProvider();
   });
 
-  it('renders request_field with the field name in the prompt', async () => {
-    const captured: CapturedCall[] = [];
-    setProvider(fakeProvider('Cuéntame el nombre que has pensado para tu negocio.', captured));
-    const adapter = new ChatOutputAdapter(buildDefaultRegistry());
+  it('renders request_fields with both field names in one ask, no leaked user values', async () => {
+    setProvider(provider = makeResponderProvider('¿Cómo se llama tu negocio y qué estilo buscás?'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
-    const decision: PlannerDecision = {
-      kind: 'request_field',
-      agentId: 'name-agent',
-      fieldName: 'business_name',
-      promptHint: '¿Cómo se llama tu negocio?',
-    };
+    const decisions: ReadonlyArray<PlannerDecision> = [
+      {
+        kind: 'request_fields',
+        agentId: 'test-fixture-agent',
+        fields: [
+          { fieldName: 'business_name', promptHint: '¿Cómo se llama tu negocio?' },
+          { fieldName: 'business_profile', promptHint: '¿Qué hace tu negocio?' },
+        ],
+      },
+    ];
     const { content } = await adapter.render({
-      decision,
+      decisions,
       recentMessages: [{ role: 'user', content: 'hola' }],
+      snapshot: filledSnapshot,
+      llmContext: ctx,
+    });
+
+    expect(content.length).toBeGreaterThan(0);
+    expect(provider.captured[0].systemPrompt).toContain('business_name');
+    expect(provider.captured[0].systemPrompt).toContain('business_profile');
+    expect(provider.captured[0].systemPrompt).toContain('request_fields');
+    // The two-field branch tells the responder to ask both in one sentence.
+    expect(provider.captured[0].systemPrompt).toContain('AMBOS campos en UNA sola oración');
+    // Status-only summary: filled, but the actual value must not appear.
+    expect(provider.captured[0].systemPrompt).toContain('filled');
+    expect(provider.captured[0].systemPrompt).not.toContain('Café Andino');
+    expect(provider.captured[0].systemPrompt).not.toContain('café orgánico de Cajamarca');
+  });
+
+  it('renders a single-field request_fields with the singular instruction', async () => {
+    setProvider(provider = makeResponderProvider('¿Cómo se llama tu negocio?'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+
+    const decisions: ReadonlyArray<PlannerDecision> = [
+      {
+        kind: 'request_fields',
+        agentId: 'test-fixture-agent',
+        fields: [
+          { fieldName: 'business_name', promptHint: '¿Cómo se llama tu negocio?' },
+        ],
+      },
+    ];
+    await adapter.render({
+      decisions,
+      recentMessages: [],
       snapshot: emptySnapshot,
       llmContext: ctx,
     });
 
-    expect(content).toContain('nombre');
-    expect(captured[0].systemPrompt).toContain('business_name');
-    expect(captured[0].systemPrompt).toContain('request_field');
+    expect(provider.captured[0].systemPrompt).toContain('UNA sola pregunta natural');
+    expect(provider.captured[0].systemPrompt).toContain('business_name');
+  });
+
+  it('does not leak previousValue on a re-asked field after reset', async () => {
+    setProvider(provider = makeResponderProvider('¿Me cuentas otra vez el nombre del negocio?'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+
+    const decisions: ReadonlyArray<PlannerDecision> = [
+      {
+        kind: 'request_fields',
+        agentId: 'test-fixture-agent',
+        fields: [
+          {
+            fieldName: 'business_name',
+            promptHint: '¿Cómo se llama tu negocio?',
+            previousValue: 'Café Andino',
+          },
+        ],
+      },
+    ];
+    await adapter.render({
+      decisions,
+      recentMessages: [],
+      snapshot: emptySnapshot,
+      llmContext: ctx,
+    });
+
+    expect(provider.captured[0].systemPrompt).not.toContain('Café Andino');
   });
 
   it('renders confirm_field with the pending value in the prompt', async () => {
-    const captured: CapturedCall[] = [];
-    setProvider(fakeProvider('¿Confirmas que tu negocio se llama "Café Andino"?', captured));
-    const adapter = new ChatOutputAdapter(buildDefaultRegistry());
+    setProvider(provider = makeResponderProvider('¿Confirmas que tu negocio se llama "Café Andino"?'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
-    const decision: PlannerDecision = {
-      kind: 'confirm_field',
-      agentId: 'name-agent',
-      fieldName: 'business_name',
-      pendingValue: 'Café Andino',
-      reason: 'low_confidence',
-    };
+    const decisions: ReadonlyArray<PlannerDecision> = [
+      {
+        kind: 'confirm_field',
+        agentId: 'test-fixture-agent',
+        fieldName: 'business_name',
+        pendingValue: 'Café Andino',
+        reason: 'low_confidence',
+      },
+    ];
     const { content } = await adapter.render({
-      decision,
+      decisions,
       recentMessages: [],
       snapshot: emptySnapshot,
       llmContext: ctx,
     });
 
     expect(content).toContain('Café Andino');
-    expect(captured[0].systemPrompt).toContain('Café Andino');
-    expect(captured[0].systemPrompt).toContain('confirm_field');
+    expect(provider.captured[0].systemPrompt).toContain('Café Andino');
+    expect(provider.captured[0].systemPrompt).toContain('confirm_field');
   });
 
-  it('renders announce_dispatch with a holding-message prompt', async () => {
-    const captured: CapturedCall[] = [];
-    setProvider(fakeProvider('Estoy guardando tu información, dame un momento.', captured));
-    const adapter = new ChatOutputAdapter(buildDefaultRegistry());
+  it('renders announce_dispatch with explicit bans on greetings and waiting filler', async () => {
+    setProvider(provider = makeResponderProvider('Empecé el diseño; aparecerá en el panel.'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
-    const decision: PlannerDecision = {
-      kind: 'announce_dispatch',
-      agentId: 'name-agent',
-      taskId: '11111111-1111-1111-1111-111111111111',
-    };
+    const decisions: ReadonlyArray<PlannerDecision> = [
+      {
+        kind: 'announce_dispatch',
+        agentId: 'test-fixture-agent',
+        taskId: '11111111-1111-1111-1111-111111111111',
+      },
+    ];
     const { content } = await adapter.render({
-      decision,
+      decisions,
       recentMessages: [],
       snapshot: emptySnapshot,
       llmContext: ctx,
     });
 
     expect(content.length).toBeGreaterThan(0);
-    expect(captured[0].systemPrompt).toContain('announce_dispatch');
+    expect(provider.captured[0].systemPrompt).toContain('announce_dispatch');
+    expect(provider.captured[0].systemPrompt).toContain('PROHIBIDO usar "estoy trabajando"');
+    expect(provider.captured[0].systemPrompt).toContain('PROHIBIDO usar saludos');
   });
 
-  it('renders announce_completion with the captured fields summarized', async () => {
-    const captured: CapturedCall[] = [];
+  it('bundles announce_dispatch with request_fields and instructs a single bridged reply', async () => {
     setProvider(
-      fakeProvider(
-        '¡Listo! Tu negocio "Café Andino" ya tiene su perfil. Sigamos con el logo.',
-        captured,
-      ),
-    );
-    const adapter = new ChatOutputAdapter(buildDefaultRegistry());
+      provider = makeResponderProvider('Ya estoy generando tu logo. Para el slogan, ¿qué tono buscás?'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
-    const decision: PlannerDecision = {
-      kind: 'announce_completion',
-      agentId: 'name-agent',
-      taskId: '11111111-1111-1111-1111-111111111111',
-      deliverableIds: [],
-    };
-    const { content } = await adapter.render({
-      decision,
+    const decisions: ReadonlyArray<PlannerDecision> = [
+      {
+        kind: 'announce_dispatch',
+        agentId: 'logo-agent',
+        taskId: '11111111-1111-1111-1111-111111111111',
+      },
+      {
+        kind: 'request_fields',
+        agentId: 'tagline-agent',
+        fields: [{ fieldName: 'tone', promptHint: '¿Qué tono buscás?' }],
+      },
+    ];
+    await adapter.render({
+      decisions,
+      recentMessages: [],
+      snapshot: emptySnapshot,
+      llmContext: ctx,
+    });
+
+    // Both decision kinds must appear in the prompt as numbered blocks.
+    expect(provider.captured[0].systemPrompt).toContain('Decisión 1:');
+    expect(provider.captured[0].systemPrompt).toContain('Decisión 2:');
+    expect(provider.captured[0].systemPrompt).toContain('announce_dispatch');
+    expect(provider.captured[0].systemPrompt).toContain('request_fields');
+    // The bundled-bridge guardrail must be appended.
+    expect(provider.captured[0].systemPrompt).toContain('combines un anuncio de despacho');
+  });
+
+  it('every rendered prompt carries the global no-greetings / no-waiting-filler guardrails', async () => {
+    const decisions: ReadonlyArray<PlannerDecision> = [
+      {
+        kind: 'request_fields',
+        agentId: 'test-fixture-agent',
+        fields: [{ fieldName: 'business_name', promptHint: 'q' }],
+      },
+      {
+        kind: 'confirm_field',
+        agentId: 'test-fixture-agent',
+        fieldName: 'business_name',
+        pendingValue: 'X',
+        reason: 'low_confidence',
+      },
+      {
+        kind: 'announce_dispatch',
+        agentId: 'test-fixture-agent',
+        taskId: '11111111-1111-1111-1111-111111111111',
+      },
+      {
+        kind: 'announce_completion',
+        agentId: 'test-fixture-agent',
+        taskId: '11111111-1111-1111-1111-111111111111',
+        deliverableIds: [],
+        artifacts: [],
+      },
+      { kind: 'announce_all_complete' },
+    ];
+    for (const decision of decisions) {
+      setProvider(provider = makeResponderProvider('ok'));
+      const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+      await adapter.render({
+        decisions: [decision],
+        recentMessages: [],
+        snapshot: emptySnapshot,
+        llmContext: ctx,
+      });
+      expect(provider.captured[0].systemPrompt, `kind=${decision.kind}`).toContain('NO uses saludos');
+      expect(provider.captured[0].systemPrompt, `kind=${decision.kind}`).toContain('NO uses muletillas de espera');
+    }
+  });
+
+  it('renders announce_completion (image artifact only) without leaking snapshot values', async () => {
+    setProvider(
+      provider = makeResponderProvider('Tu logo está en el panel lateral. Sigamos con el siguiente paso.'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+
+    const decisions: ReadonlyArray<PlannerDecision> = [
+      {
+        kind: 'announce_completion',
+        agentId: 'test-fixture-agent',
+        taskId: '11111111-1111-1111-1111-111111111111',
+        deliverableIds: [],
+        artifacts: [
+          { kind: 'image', url: 'https://example.test/logo.png', metadata: {} },
+        ],
+      },
+    ];
+    await adapter.render({
+      decisions,
       recentMessages: [],
       snapshot: filledSnapshot,
       llmContext: ctx,
     });
 
-    expect(content).toContain('Café Andino');
-    // The system prompt should include the filled fields so the responder
-    // can summarize them.
-    expect(captured[0].systemPrompt).toContain('business_name');
-    expect(captured[0].systemPrompt).toContain('Café Andino');
+    expect(provider.captured[0].systemPrompt).toContain('announce_completion');
+    expect(provider.captured[0].systemPrompt).toContain('business_name');
+    expect(provider.captured[0].systemPrompt).not.toContain('Café Andino');
+    expect(provider.captured[0].systemPrompt).not.toContain('café orgánico de Cajamarca');
+    expect(provider.captured[0].systemPrompt).toContain('panel lateral');
   });
 
-  it('renders idle: awaiting_user as an open invitation', async () => {
-    const captured: CapturedCall[] = [];
-    setProvider(fakeProvider('¿Sobre qué te gustaría hablar?', captured));
-    const adapter = new ChatOutputAdapter(buildDefaultRegistry());
+  it('renders announce_completion with text artifacts as a numbered list of options', async () => {
+    setProvider(
+      provider = makeResponderProvider('Aquí tienes tres opciones: 1. Sazón Andino, 2. Sabor del Norte, 3. Andes Café. ¿Cuál prefieres?'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
-    const decision: PlannerDecision = { kind: 'idle', reason: 'awaiting_user' };
+    const decisions: ReadonlyArray<PlannerDecision> = [
+      {
+        kind: 'announce_completion',
+        agentId: 'test-fixture-agent',
+        taskId: '11111111-1111-1111-1111-111111111111',
+        deliverableIds: [],
+        artifacts: [
+          { kind: 'text', inline: 'Sazón Andino' },
+          { kind: 'text', inline: 'Sabor del Norte' },
+          { kind: 'text', inline: 'Andes Café' },
+        ],
+      },
+    ];
     const { content } = await adapter.render({
-      decision,
+      decisions,
+      recentMessages: [],
+      snapshot: emptySnapshot,
+      llmContext: ctx,
+    });
+
+    expect(provider.captured[0].systemPrompt).toContain('Sazón Andino');
+    expect(provider.captured[0].systemPrompt).toContain('Sabor del Norte');
+    expect(provider.captured[0].systemPrompt).toContain('Andes Café');
+    expect(provider.captured[0].systemPrompt).toContain('1. Sazón Andino');
+    expect(provider.captured[0].systemPrompt).toContain('2. Sabor del Norte');
+    expect(provider.captured[0].systemPrompt).toContain('3. Andes Café');
+    expect(content).toContain('Sazón Andino');
+  });
+
+  it('renders announce_all_complete as a step-finished message', async () => {
+    setProvider(provider = makeResponderProvider('Hemos terminado este paso, sigamos.'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+
+    const decisions: ReadonlyArray<PlannerDecision> = [{ kind: 'announce_all_complete' }];
+    const { content } = await adapter.render({
+      decisions,
       recentMessages: [],
       snapshot: emptySnapshot,
       llmContext: ctx,
     });
 
     expect(content.length).toBeGreaterThan(0);
-    expect(captured[0].systemPrompt).toContain('awaiting_user');
-  });
-
-  it('renders idle: all_complete as a step-finished message', async () => {
-    const captured: CapturedCall[] = [];
-    setProvider(fakeProvider('Hemos terminado este paso, sigamos.', captured));
-    const adapter = new ChatOutputAdapter(buildDefaultRegistry());
-
-    const decision: PlannerDecision = { kind: 'idle', reason: 'all_complete' };
-    const { content } = await adapter.render({
-      decision,
-      recentMessages: [],
-      snapshot: emptySnapshot,
-      llmContext: ctx,
-    });
-
-    expect(content.length).toBeGreaterThan(0);
-    expect(captured[0].systemPrompt).toContain('all_complete');
+    expect(provider.captured[0].systemPrompt).toContain('announce_all_complete');
   });
 
   it('forwards the last user/assistant turns as conversation context', async () => {
-    const captured: CapturedCall[] = [];
-    setProvider(fakeProvider('ok', captured));
-    const adapter = new ChatOutputAdapter(buildDefaultRegistry());
+    setProvider(provider = makeResponderProvider('ok'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
-    const decision: PlannerDecision = { kind: 'idle', reason: 'awaiting_user' };
+    const decisions: ReadonlyArray<PlannerDecision> = [{ kind: 'announce_all_complete' }];
     await adapter.render({
-      decision,
+      decisions,
       recentMessages: [
         { role: 'user', content: 'hola' },
         { role: 'assistant', content: 'hola, cuéntame de tu negocio' },
@@ -248,6 +380,6 @@ describe('ChatOutputAdapter', () => {
     });
 
     // 1 system + 2 chat turns; the system row from recentMessages is dropped.
-    expect(captured[0].messageCount).toBe(3);
+    expect(provider.captured[0].messageCount).toBe(3);
   });
 });

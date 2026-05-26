@@ -58,7 +58,37 @@ export async function mergeFieldDelta(
     conversationId: delta.conversationId,
     source: delta.source,
   });
+
+  const incomingFields = Object.fromEntries(
+    Object.entries(delta.fields).map(([agentId, fields]) => [
+      agentId,
+      Object.fromEntries(
+        Object.entries(fields).map(([name, v]) => [
+          name,
+          { confidence: v.confidence, valuePreview: previewValue(v.value) },
+        ]),
+      ),
+    ]),
+  );
+  child.info(
+    {
+      contract: 'FieldDelta',
+      timestamp: delta.timestamp,
+      fieldsCount,
+      intentsCount,
+      fields: incomingFields,
+      intents: (delta.intents ?? []).map((i) => ({ kind: i.kind, agentId: 'agentId' in i ? i.agentId : undefined })),
+    },
+    'merger.input',
+  );
   child.info({ fieldsCount, intentsCount }, 'merge.delta.received');
+
+  const outcomes: Array<{
+    agentId: string;
+    fieldName: string;
+    outcome: FieldOutcome;
+    confidence?: number;
+  }> = [];
 
   const snapshot = await store.get(delta.conversationId);
   if (!snapshot) {
@@ -80,6 +110,7 @@ export async function mergeFieldDelta(
     }
     if (!agentKnown) {
       for (const fieldName of Object.keys(fields)) {
+        outcomes.push({ agentId, fieldName, outcome: 'rejected_unknown_agent' });
         child.debug(
           { agentId, fieldName, outcome: 'rejected_unknown_agent' satisfies FieldOutcome },
           'merge.field.rejected',
@@ -93,6 +124,7 @@ export async function mergeFieldDelta(
 
     for (const [fieldName, incoming] of Object.entries(fields)) {
       if (incoming.confidence < CONFIDENCE_THRESHOLDS.STORE_AND_CONFIRM) {
+        outcomes.push({ agentId, fieldName, outcome: 'rejected_low_confidence', confidence: incoming.confidence });
         child.debug(
           {
             agentId,
@@ -108,6 +140,7 @@ export async function mergeFieldDelta(
       const isRequired = fieldSchemas.requiredFields.includes(fieldName);
       const isOptional = fieldSchemas.optionalFields.includes(fieldName);
       if (!isRequired && !isOptional) {
+        outcomes.push({ agentId, fieldName, outcome: 'rejected_unknown_field' });
         child.debug(
           {
             agentId,
@@ -130,6 +163,7 @@ export async function mergeFieldDelta(
         currentSlot.status !== 'empty' &&
         currentSlot.confidence > incoming.confidence
       ) {
+        outcomes.push({ agentId, fieldName, outcome: 'conflict_kept_existing', confidence: incoming.confidence });
         child.debug(
           {
             agentId,
@@ -160,6 +194,7 @@ export async function mergeFieldDelta(
         nextSlot,
       );
       mutationsApplied++;
+      outcomes.push({ agentId, fieldName, outcome: nextStatus, confidence: incoming.confidence });
       child.debug(
         {
           agentId,
@@ -218,4 +253,13 @@ export async function mergeFieldDelta(
   }
 
   child.info({ mutationsApplied }, 'merge.delta.complete');
+  child.info(
+    { mutationsApplied, outcomes, intentsProcessed: intentsCount },
+    'merger.output',
+  );
+}
+
+function previewValue(value: unknown): string {
+  if (typeof value !== 'string') return JSON.stringify(value);
+  return value.length > 80 ? `${value.slice(0, 77)}...` : value;
 }

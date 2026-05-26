@@ -16,9 +16,16 @@ import type {
   FieldName,
   FieldSlot,
   TaskId,
+  UUID,
 } from '../core/contracts';
 import type { AgentFieldSchema } from '../core/orchestrator/in-memory-store';
-import { withTenantTransaction, type Tenant, type TxClient, type User } from '../db/with-transaction';
+import {
+  withTenantAdminTransaction,
+  withTenantTransaction,
+  type Tenant,
+  type TxClient,
+  type User,
+} from '../db/with-transaction';
 
 type AgentStatesJson = Record<AgentId, AgentRequirementState>;
 
@@ -192,3 +199,24 @@ export function conversationsRepo(tenant: Tenant, user: User) {
 }
 
 export type ConversationsRepo = ReturnType<typeof conversationsRepo>;
+
+/**
+ * System-scoped lookup: read the owning user_id of a conversation under a
+ * tenant. Used by background workers (no User in scope) that need to scope
+ * a subsequent user-bound write — e.g. the logo-agent worker needs the
+ * owner's user_id to insert into `deliverables` (tenant + user RLS).
+ *
+ * Runs under tenant-admin so the user-axis check is bypassed for this read.
+ */
+export async function getConversationOwnerUserId(
+  tenant: Tenant,
+  conversationId: ConversationId,
+): Promise<UUID | null> {
+  return withTenantAdminTransaction(tenant, async (tx) => {
+    const res = await tx.query<{ user_id: UUID }>(
+      `SELECT user_id FROM conversations WHERE id = $1 LIMIT 1`,
+      [conversationId],
+    );
+    return res.rows.length > 0 ? res.rows[0].user_id : null;
+  });
+}

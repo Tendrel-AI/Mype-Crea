@@ -110,3 +110,30 @@ export interface AgentTaskRow {
   readonly lastAttemptAt: string | null;
   readonly createdAt: string;
 }
+
+// ---------------------------------------------------------------------------
+// deliverables
+// ---------------------------------------------------------------------------
+
+export type DeliverableKind = 'logo' | 'business_name' | 'tagline' | 'label' | 'social_pack';
+
+export interface DeliverableInsert {
+  readonly conversationId: ConversationId;
+  readonly agentTaskId: TaskId;
+  readonly kind: DeliverableKind;
+  readonly contentUrl?: string | null;
+  readonly contentInline?: Record<string, unknown> | null;
+}
+
+export interface DeliverableRow {
+  readonly id: UUID;
+  readonly conversationId: ConversationId;
+  readonly agentTaskId: TaskId;
+  readonly userId: UUID;
+  readonly kind: DeliverableKind;
+  readonly contentUrl: string | null;
+  readonly contentInline: Record<string, unknown> | null;
+  readonly selectedAt: string | null;
+  readonly supersededBy: UUID | null;
+  readonly createdAt: string;
+}

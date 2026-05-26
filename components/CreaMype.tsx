@@ -4,34 +4,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
 import { Send, Loader2, Sparkles, Image as ImageIcon, LayoutTemplate, Megaphone, CheckCircle2, LogOut, Menu, Globe, PlusCircle } from 'lucide-react';
-import { generateImageAction } from '../app/actions/image';
 import { signOutAction } from '../app/actions/auth';
-import { chatAction, chatActionStep1, type ChatMessage } from '../app/actions/chat';
+import { chatAction } from '../app/actions/chat';
 
 interface CreaMypeProps {
   userEmail: string;
   userName: string;
 }
-
-const cleanHtmlContent = (html: string) => {
-  if (!html) return '';
-  let cleaned = html.trim();
-
-  // Remove markdown backticks if present
-  if (cleaned.startsWith('```html')) {
-    cleaned = cleaned.replace(/^```html\n?/, '').replace(/\n?```$/, '');
-  } else if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```\n?/, '').replace(/\n?```$/, '');
-  }
-
-  // Extract body content if the model included full HTML tags
-  const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  if (bodyMatch && bodyMatch[1]) {
-    cleaned = bodyMatch[1];
-  }
-
-  return cleaned.trim();
-};
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -74,13 +53,15 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
   const [activeTab, setActiveTab] = useState<'create' | 'gallery' | 'landing'>('create');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-  const [step, setStep] = useState<Step>(1);
   const [assets, setAssets] = useState<BrandAssets>(EMPTY_ASSETS);
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [loadingStatus, setLoadingStatus] = useState<string>('');
   const [showRestartModal, setShowRestartModal] = useState(false);
+  // Set of agent ids that are currently processing (claimed but no artifact
+  // delivered yet). Populated by `task_processing` SSE events from the worker
+  // and cleared by `artifact` events. Drives the per-panel spinner.
+  const [processingAgents, setProcessingAgents] = useState<Set<string>>(() => new Set());
 
   // Server-side conversations.id — generated once per session, regenerated on
   // "Nuevo". Threaded into chatAction so messages and llm_calls rows are
@@ -91,8 +72,18 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
       : '',
   );
 
-  // OpenAI-compatible chat history (sent to OpenRouter via chatAction)
-  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  // Step is derived from filled assets (logo arrives via SSE; the other
+  // panels stay at "Pendiente" until their sub-agents land). The orchestrator
+  // has no step concept — this is a UI affordance only.
+  const step: Step = assets.marketingPlan
+    ? 6
+    : assets.landingPage
+      ? 5
+      : assets.labelUrl
+        ? 4
+        : assets.logoUrl
+          ? 3
+          : 1;
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -104,236 +95,102 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
     scrollToBottom();
   }, [messages, isLoading]);
 
+  // Subscribe to artifact events from the orchestrator. The SSE stream is
+  // scoped to the current conversationId; resetting the conversation
+  // (Nuevo button) closes the old EventSource and opens a fresh one.
+  useEffect(() => {
+    if (!conversationId) return;
+    const url = `/api/agents/stream?conversationId=${conversationId}`;
+    const source = new EventSource(url);
+    source.addEventListener('open', () => {
+      console.info('[SSE] connected', { conversationId, readyState: source.readyState });
+    });
+    source.addEventListener('error', () => {
+      // EventSource doesn't expose status codes; readyState tells us whether
+      // the browser will retry (CONNECTING=0) or has given up (CLOSED=2).
+      // CLOSED here means the server returned a non-2xx (e.g. 404 from the
+      // SSE route) and the WHATWG spec forbids auto-reconnect on HTTP errors.
+      const readyStateName =
+        source.readyState === EventSource.CONNECTING
+          ? 'CONNECTING (will retry)'
+          : source.readyState === EventSource.CLOSED
+            ? 'CLOSED (will not retry — likely an HTTP error from /api/agents/stream)'
+            : 'OPEN';
+      console.error('[SSE] connection error', {
+        conversationId,
+        url,
+        readyState: source.readyState,
+        readyStateName,
+      });
+    });
+    source.addEventListener('task_processing', (raw: MessageEvent<string>) => {
+      try {
+        const event = JSON.parse(raw.data) as { agentId: string };
+        setProcessingAgents((prev) => {
+          const next = new Set(prev);
+          next.add(event.agentId);
+          return next;
+        });
+      } catch (err) {
+        console.error('Failed to parse task_processing event', err);
+      }
+    });
+    source.addEventListener('artifact', (raw: MessageEvent<string>) => {
+      try {
+        const event = JSON.parse(raw.data) as {
+          agentId: string;
+          artifacts: Array<{ kind: string; url?: string }>;
+        };
+        // Whatever the agent produced, the spinner for that agent should
+        // disappear. Even if there's no image url (text-only artifact), the
+        // task is no longer "processing".
+        setProcessingAgents((prev) => {
+          if (!prev.has(event.agentId)) return prev;
+          const next = new Set(prev);
+          next.delete(event.agentId);
+          return next;
+        });
+        const imgUrl = event.artifacts.find((a) => a.kind === 'image')?.url;
+        if (!imgUrl) return;
+        if (event.agentId === 'logo-agent') {
+          setAssets((prev) => ({ ...prev, logoUrl: imgUrl }));
+        }
+      } catch (err) {
+        console.error('Failed to parse artifact event', err);
+      }
+    });
+    return () => {
+      source.close();
+    };
+  }, [conversationId]);
+
   const handleSend = async () => {
     if (!inputText.trim()) return;
 
     const userText = inputText.trim();
     setInputText('');
 
-    const newUserMsg: Message = { id: Date.now().toString(), role: 'user', text: userText };
-    setMessages(prev => [...prev, newUserMsg]);
-
-    const currentHistory: ChatMessage[] = [...chatHistory, { role: 'user', content: userText }];
-
+    setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text: userText }]);
     setIsLoading(true);
-    setLoadingStatus('Analizando...');
-
-    // Paso 1 (nombre del negocio) runs through the 4-layer orchestrator:
-    //   ChatInputAdapter (Flash) → core (merge + planner) → name-agent →
-    //   ChatOutputAdapter (Pro). Pasos 2-5 stay on the legacy tool-driven
-    //   chatAction below.
-    if (step === 1) {
-      try {
-        const result = await chatActionStep1({
-          conversationId,
-          lastUserInput: userText,
-        });
-
-        // Mirror the turn into the OpenAI-compatible history so when we
-        // hand off to chatAction in step 2 the conversation reads continuously.
-        const updatedHistory: ChatMessage[] = [
-          ...currentHistory,
-          { role: 'assistant', content: result.content || null },
-        ];
-        setChatHistory(updatedHistory);
-
-        setMessages(prev => [
-          ...prev,
-          {
-            id: Date.now().toString(),
-            role: 'model',
-            text: result.content || 'Lo siento, no pude generar una respuesta. ¿Puedes intentar de nuevo?',
-          },
-        ]);
-
-        if (
-          result.decision.kind === 'announce_completion' &&
-          result.decision.agentId === 'name-agent'
-        ) {
-          setAssets(prev => ({
-            ...prev,
-            name: result.extractedAssets.name ?? prev.name,
-            profile: result.extractedAssets.profile ?? prev.profile,
-          }));
-          setStep(2);
-        }
-      } catch (error: any) {
-        console.error('chatActionStep1 error:', error);
-        setMessages(prev => [
-          ...prev,
-          {
-            id: Date.now().toString(),
-            role: 'model',
-            text: 'Hubo un error al procesar tu solicitud. Por favor, intenta de nuevo.',
-          },
-        ]);
-      } finally {
-        setIsLoading(false);
-        setLoadingStatus('');
-      }
-      return;
-    }
-
-    let currentLogoUrl = assets.logoUrl;
-    let currentLabelUrl = assets.labelUrl;
-    let currentStep = step;
-    const currentAssets = { ...assets };
 
     try {
-      let keepProcessing = true;
-      let loopCount = 0;
-      const MAX_LOOPS = 10;
-
-      while (keepProcessing) {
-        loopCount++;
-        if (loopCount > MAX_LOOPS) {
-          throw new Error("La IA se ha atascado intentando realizar la tarea. Por favor, intenta de nuevo con instrucciones más simples.");
-        }
-
-        const { content, toolCalls } = await chatAction({
-          conversationId,
-          messages: currentHistory,
-          step: currentStep,
-          assets: currentAssets,
-          // Persist the user input only on the first round-trip of this send;
-          // subsequent loop iterations are tool follow-ups, not new user turns.
-          lastUserInput: loopCount === 1 ? userText : undefined,
-        });
-
-        currentHistory.push({
-          role: 'assistant',
-          content: content || null,
-          tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
-        });
-
-        if (toolCalls.length > 0) {
-          for (const call of toolCalls) {
-            const args = JSON.parse(call.function.arguments || '{}');
-            const name = call.function.name;
-            let functionResponseData: any = { success: true };
-
-            try {
-              if (name === 'finalize_name') {
-                setLoadingStatus('Guardando perfil de negocio...');
-                currentAssets.name = args.business_name;
-                currentAssets.profile = args.business_profile;
-                currentStep = 2;
-                setAssets(prev => ({ ...prev, name: args.business_name, profile: args.business_profile }));
-                setStep(2);
-                functionResponseData = { message: "Nombre guardado exitosamente. Avanzando al Paso 2." };
-              }
-              else if (name === 'generate_logo') {
-                setLoadingStatus('Generando logo con IA (esto puede tomar unos segundos)...');
-                const imageUrl = await generateImageAction(args.image_prompt);
-                currentLogoUrl = imageUrl;
-                currentAssets.logoUrl = imageUrl;
-                currentStep = 3;
-                setAssets(prev => ({ ...prev, logoUrl: imageUrl }));
-                setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text: 'Aquí tienes el concepto del logo:', isImage: true, imageAssetKey: 'logoUrl' }]);
-                setStep(3);
-                functionResponseData = { message: "Logo generado y guardado exitosamente. Avanzando al Paso 3." };
-              }
-              else if (name === 'generate_label') {
-                setLoadingStatus('Generando diseño de etiqueta con IA...');
-                const imageUrl = await generateImageAction(args.image_prompt, currentLogoUrl);
-                currentLabelUrl = imageUrl;
-                currentAssets.labelUrl = imageUrl;
-                currentStep = 4;
-                setAssets(prev => ({ ...prev, labelUrl: imageUrl }));
-                setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text: 'Aquí tienes el diseño de la etiqueta:', isImage: true, imageAssetKey: 'labelUrl' }]);
-                setStep(4);
-                functionResponseData = { message: "Etiqueta generada y guardada exitosamente. Avanzando al Paso 4." };
-              }
-              else if (name === 'finalize_landing_page' || name === 'edit_landing_page') {
-                setLoadingStatus(name === 'finalize_landing_page' ? 'Construyendo landing page...' : 'Actualizando landing page...');
-                const htmlContent = cleanHtmlContent(args.html_content);
-
-                if (!htmlContent || htmlContent.length < 150 || !htmlContent.includes('<div') || !htmlContent.includes('class=')) {
-                  throw new Error("El HTML generado es inválido, está incompleto o no usa Tailwind CSS. Por favor, genera el código HTML completo y detallado (solo el contenido del <body>) usando clases de Tailwind CSS. No uses markdown.");
-                }
-
-                currentAssets.landingPage = htmlContent;
-                setAssets(prev => ({ ...prev, landingPage: htmlContent }));
-
-                if (name === 'finalize_landing_page') {
-                  currentStep = 5;
-                  setStep(5);
-                  functionResponseData = { message: "Landing page guardada exitosamente. Avanzando al Paso 5." };
-                } else {
-                  functionResponseData = { message: "Landing page actualizada exitosamente." };
-                }
-              }
-              else if (name === 'finalize_marketing') {
-                setLoadingStatus('Finalizando plan de marketing...');
-                currentAssets.marketingPlan = args.markdown_content;
-                currentStep = 6;
-                setAssets(prev => ({ ...prev, marketingPlan: args.markdown_content }));
-                setStep(6);
-                functionResponseData = { message: "Plan de marketing guardado exitosamente. Flujo completado." };
-              }
-              else if (name === 'edit_logo') {
-                setLoadingStatus('Editando logo con IA...');
-                const imageUrl = await generateImageAction(args.image_prompt, currentLogoUrl);
-                currentLogoUrl = imageUrl;
-                currentAssets.logoUrl = imageUrl;
-                setAssets(prev => ({ ...prev, logoUrl: imageUrl }));
-                setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text: 'Aquí tienes el logo actualizado:', isImage: true, imageAssetKey: 'logoUrl' }]);
-                functionResponseData = { message: "Logo editado y actualizado exitosamente." };
-              }
-              else if (name === 'edit_label') {
-                setLoadingStatus('Editando etiqueta con IA...');
-                const imageUrl = await generateImageAction(args.image_prompt, currentLabelUrl);
-                currentLabelUrl = imageUrl;
-                currentAssets.labelUrl = imageUrl;
-                setAssets(prev => ({ ...prev, labelUrl: imageUrl }));
-                setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text: 'Aquí tienes la etiqueta actualizada:', isImage: true, imageAssetKey: 'labelUrl' }]);
-                functionResponseData = { message: "Etiqueta editada y actualizada exitosamente." };
-              }
-              else if (name === 'edit_marketing_plan') {
-                setLoadingStatus('Actualizando plan de marketing...');
-                currentAssets.marketingPlan = args.markdown_content;
-                setAssets(prev => ({ ...prev, marketingPlan: args.markdown_content }));
-                functionResponseData = { message: "Plan de marketing actualizado exitosamente." };
-              }
-            } catch (err: any) {
-              console.error("Error executing tool:", err);
-              functionResponseData = { success: false, error: err.message };
-            }
-
-            currentHistory.push({
-              role: 'tool',
-              tool_call_id: call.id,
-              content: JSON.stringify(functionResponseData),
-            });
-
-            if (functionResponseData.success) {
-              setLoadingStatus('Escribiendo respuesta...');
-            }
-          }
-        } else {
-          if (content) {
-            setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text: content }]);
-          } else {
-            setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text: 'Lo siento, no pude generar una respuesta clara. ¿Podrías reformular tu petición?' }]);
-          }
-          keepProcessing = false;
-        }
-      }
-
-      setChatHistory(currentHistory);
-
+      const { content } = await chatAction({ conversationId, userMessage: userText });
+      setMessages(prev => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          role: 'model',
+          text: content || 'Lo siento, no pude generar una respuesta clara. ¿Podrías reformular tu petición?',
+        },
+      ]);
     } catch (error: any) {
-      console.error("Chat error:", error);
-      if (error.message?.includes('FAL_KEY')) {
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text: 'Error: La clave FAL_KEY no está configurada.' }]);
-      } else if (error.message?.includes('OPENROUTER_API_KEY')) {
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text: 'Error: La clave OPENROUTER_API_KEY no está configurada.' }]);
-      } else {
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text: 'Hubo un error al procesar tu solicitud. Por favor, intenta de nuevo.' }]);
-      }
+      console.error('Chat error:', error);
+      const text = error?.message?.includes('OPENROUTER_API_KEY')
+        ? 'Error: La clave OPENROUTER_API_KEY no está configurada.'
+        : 'Hubo un error al procesar tu solicitud. Por favor, intenta de nuevo.';
+      setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text }]);
     } finally {
       setIsLoading(false);
-      setLoadingStatus('');
     }
   };
 
@@ -345,11 +202,10 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
   };
 
   const handleRestart = () => {
-    setStep(1);
     setAssets(EMPTY_ASSETS);
     setMessages([WELCOME_MESSAGE]);
-    setChatHistory([]);
     setConversationId(crypto.randomUUID());
+    setProcessingAgents(new Set());
     setShowRestartModal(false);
   };
 
@@ -381,6 +237,8 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
                 {assets.logoUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={assets.logoUrl} alt="Logo" className="w-6 h-6 rounded-md object-cover" />
+                ) : processingAgents.has('logo-agent') ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
                 ) : (
                   <Sparkles className="w-5 h-5" />
                 )}
@@ -488,6 +346,8 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
               {assets.logoUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={assets.logoUrl} alt="Logo" className="w-full h-full object-cover" />
+              ) : processingAgents.has('logo-agent') ? (
+                <Loader2 size={18} className="animate-spin" />
               ) : (
                 <Sparkles size={18} />
               )}
@@ -558,7 +418,7 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-start">
               <div className="bg-white border border-neutral-200 text-neutral-700 shadow-sm rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-3 text-sm">
                 <Loader2 size={16} className="animate-spin text-orange-500" />
-                <span>{loadingStatus}</span>
+                <span>Pensando...</span>
               </div>
             </motion.div>
           )}
@@ -594,7 +454,7 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
       <div className="hidden md:flex flex-1 flex-col bg-neutral-50 overflow-y-auto">
         <div className="p-8 max-w-4xl mx-auto w-full space-y-10">
 
-          {/* Progress Tracker */}
+          {/* Progress Tracker — clickable; scrolls the right panel to the matching section. */}
           <div className="flex items-center justify-between relative">
             <div className="absolute left-0 top-1/2 -translate-y-1/2 w-full h-0.5 bg-neutral-200 -z-10"></div>
             {steps.map((s) => {
@@ -602,18 +462,27 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
               const isCompleted = step > s.num;
               const Icon = s.icon;
               return (
-                <div key={s.num} className="flex flex-col items-center gap-2 bg-neutral-50 px-2">
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center border-2 transition-colors ${
+                <button
+                  key={s.num}
+                  type="button"
+                  onClick={() => {
+                    const el = document.getElementById(`brand-step-${s.num}`);
+                    el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }}
+                  className="flex flex-col items-center gap-2 bg-neutral-50 px-2 cursor-pointer group focus:outline-none"
+                  title={`Ir a: ${s.title}`}
+                >
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center border-2 transition-colors group-hover:border-orange-400 ${
                     isCompleted ? 'bg-orange-600 border-orange-600 text-white' :
                     isActive ? 'bg-white border-orange-500 text-orange-500' :
-                    'bg-white border-neutral-200 text-neutral-400'
+                    'bg-white border-neutral-200 text-neutral-400 group-hover:text-orange-500'
                   }`}>
                     {isCompleted ? <CheckCircle2 size={18} /> : <Icon size={18} />}
                   </div>
-                  <span className={`text-xs font-medium ${isActive || isCompleted ? 'text-neutral-900' : 'text-neutral-500'}`}>
+                  <span className={`text-xs font-medium group-hover:text-orange-600 ${isActive || isCompleted ? 'text-neutral-900' : 'text-neutral-500'}`}>
                     {s.title}
                   </span>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -623,9 +492,10 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
 
             {/* Step 1: Brand Identity */}
             <motion.div
+              id="brand-step-1"
               initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: step >= 2 ? 1 : 0.3, y: 0 }}
-              className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6"
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 scroll-mt-4"
             >
               <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
                 <Sparkles size={16} /> Identidad de Marca
@@ -643,10 +513,10 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
             </motion.div>
 
             {/* Step 2 & 3: Visual Assets */}
-            <div className="grid grid-cols-2 gap-6">
+            <div id="brand-step-2" className="grid grid-cols-2 gap-6 scroll-mt-4">
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: step >= 3 ? 1 : 0.3, y: 0 }}
+                animate={{ opacity: 1, y: 0 }}
                 className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 flex flex-col"
               >
                 <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
@@ -656,6 +526,11 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
                   {assets.logoUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={assets.logoUrl} alt="Logo" className="w-full h-full object-cover" />
+                  ) : processingAgents.has('logo-agent') ? (
+                    <div className="flex flex-col items-center gap-2 text-orange-500">
+                      <Loader2 size={28} className="animate-spin" />
+                      <span className="text-xs text-neutral-500">Generando logo...</span>
+                    </div>
                   ) : (
                     <span className="text-neutral-500 text-sm">Pendiente</span>
                   )}
@@ -663,9 +538,10 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
               </motion.div>
 
               <motion.div
+                id="brand-step-3"
                 initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: step >= 4 ? 1 : 0.3, y: 0 }}
-                className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 flex flex-col"
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 flex flex-col scroll-mt-4"
               >
                 <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
                   <ImageIcon size={16} /> Etiqueta
@@ -674,6 +550,11 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
                   {assets.labelUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={assets.labelUrl} alt="Label" className="w-full h-full object-cover" />
+                  ) : processingAgents.has('label-agent') ? (
+                    <div className="flex flex-col items-center gap-2 text-orange-500">
+                      <Loader2 size={28} className="animate-spin" />
+                      <span className="text-xs text-neutral-500">Generando etiqueta...</span>
+                    </div>
                   ) : (
                     <span className="text-neutral-500 text-sm">Pendiente</span>
                   )}
@@ -683,9 +564,10 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
 
             {/* Step 4: Landing Page */}
             <motion.div
+              id="brand-step-4"
               initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: step >= 5 ? 1 : 0.3, y: 0 }}
-              className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6"
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 scroll-mt-4"
             >
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider flex items-center gap-2">
@@ -748,9 +630,10 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
 
             {/* Step 5: Marketing Plan */}
             <motion.div
+              id="brand-step-5"
               initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: step >= 6 ? 1 : 0.3, y: 0 }}
-              className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6"
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 scroll-mt-4"
             >
               <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
                 <Megaphone size={16} /> Plan de Marketing

@@ -26,6 +26,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import type {
   AgentId,
+  AnnounceDispatchDecision,
   ConversationId,
   ConversationSnapshot,
   DeliverableId,
@@ -42,6 +43,7 @@ import type { AgentRegistry } from './agent-registry';
 import type { IConversationStore } from './in-memory-store';
 import { mergeFieldDelta } from './merge';
 import { findAgentReadyToDispatch, planNextDecision } from './planner';
+import type { IArtifactNotifier } from './artifact-notifier';
 
 /**
  * Subset of AgentTasksRepo the orchestrator consumes. The orchestrator
@@ -63,6 +65,7 @@ export interface AgentTasksRepoLike {
     errorCategory: 'transient' | 'content_policy' | 'permanent_bug',
   ): Promise<void>;
 }
+
 
 const log = loggerFor('orchestrator.core');
 
@@ -115,6 +118,12 @@ export interface OrchestratorCoreDeps {
    * keeps working off the in-memory taskOwnership map only.
    */
   readonly agentTasksFor?: (tenantId: UUID) => AgentTasksRepoLike;
+  /**
+   * Optional artifact notifier. When provided, onTaskSettled publishes the
+   * artifacts produced by a completed task on this channel. The SSE/UI edge
+   * subscribes here. Decision flow is unaffected when omitted.
+   */
+  readonly artifactNotifier?: IArtifactNotifier;
 }
 
 export class OrchestratorCoreImpl implements OrchestratorCore {
@@ -137,6 +146,13 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
    * applyDelta surfaces the decision.
    */
   private readonly pendingCompletions = new Map<ConversationId, PendingCompletion[]>();
+
+  /**
+   * Dispatches that have happened but whose announce_dispatch decision has
+   * not yet been surfaced through getNextDecision. The Responder reads these
+   * once and the entry is removed; subsequent turns no longer re-announce.
+   */
+  private readonly pendingDispatches = new Map<ConversationId, AnnounceDispatchDecision[]>();
 
   constructor(private readonly deps: OrchestratorCoreDeps) {
     // Wire completion notifications from the transport back into the core.
@@ -174,17 +190,45 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
       conversationId: delta.conversationId,
       source: delta.source,
     });
-    child.info('orchestrator.applyDelta.start');
+
+    // Stamp the cycle entry with the contract that crosses this boundary.
+    // `orchestrator.input` is the symmetric counterpart of the upstream
+    // `extractor.output`: the same FieldDelta, observed from inside the core.
+    const incomingFields = Object.fromEntries(
+      Object.entries(delta.fields).map(([agentId, fields]) => [
+        agentId,
+        Object.fromEntries(
+          Object.entries(fields).map(([name, v]) => [
+            name,
+            { confidence: v.confidence, valuePreview: previewValue(v.value) },
+          ]),
+        ),
+      ]),
+    );
+    child.info(
+      {
+        contract: 'FieldDelta',
+        timestamp: delta.timestamp,
+        fieldCount: Object.values(delta.fields).reduce((acc, f) => acc + Object.keys(f).length, 0),
+        intentCount: delta.intents?.length ?? 0,
+        fields: incomingFields,
+        intents: (delta.intents ?? []).map((i) => ({
+          kind: i.kind,
+          agentId: 'agentId' in i ? i.agentId : undefined,
+        })),
+      },
+      'orchestrator.input',
+    );
 
     // 1) Merge the delta into state.
     await mergeFieldDelta(delta, this.deps.store, this.deps.registry);
 
     // 2) Check whether any agent is now ready to dispatch.
     const snapshotAfterMerge = (await this.deps.store.get(delta.conversationId))!;
-    const orderedAgents = [...this.deps.registry.getFieldSchemas()].sort(
-      (a, b) => a.displayOrder - b.displayOrder,
+    const readyAgentId = findAgentReadyToDispatch(
+      snapshotAfterMerge,
+      this.deps.registry.getFieldSchemas(),
     );
-    const readyAgentId = findAgentReadyToDispatch(snapshotAfterMerge, orderedAgents);
 
     if (readyAgentId) {
       child.info({ agentId: readyAgentId }, 'orchestrator.dispatch.triggered');
@@ -192,53 +236,90 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
       // dispatch will emit announce_dispatch via the notifier.
     }
 
-    // 3) Emit the current planner decision so subscribers catch up.
-    const decision = await this.getNextDecision(delta.conversationId);
-    this.deps.notifier.notify(delta.conversationId, decision);
+    // 3) Emit the current planner plan so subscribers catch up. We notify
+    // per decision so existing IDecisionNotifier subscribers (single-decision
+    // shape) stay compatible after the multi-decision change.
+    const plan = await this.getNextDecision(delta.conversationId);
+    for (const decision of plan) {
+      this.deps.notifier.notify(delta.conversationId, decision);
+    }
 
     child.info(
-      { decisionKind: decision.kind, dispatched: Boolean(readyAgentId) },
-      'orchestrator.applyDelta.complete',
+      {
+        contract: 'PlannerDecision[]',
+        plan: plan.map((decision) => ({
+          kind: decision.kind,
+          agentId: 'agentId' in decision ? decision.agentId : undefined,
+          fieldName: 'fieldName' in decision ? decision.fieldName : undefined,
+        })),
+        dispatched: Boolean(readyAgentId),
+        dispatchedAgent: readyAgentId ?? null,
+      },
+      'orchestrator.output',
     );
     return snapshotAfterMerge;
   }
 
-  async getNextDecision(conversationId: ConversationId): Promise<PlannerDecision> {
+  async getNextDecision(conversationId: ConversationId): Promise<ReadonlyArray<PlannerDecision>> {
     const tenantId = this.conversationTenants.get(conversationId);
     const child = log.child({ op: 'getNextDecision', tenantId, conversationId });
 
-    // If there's a pending completion we haven't surfaced, surface it now.
-    const pending = this.pendingCompletions.get(conversationId);
-    if (pending && pending.length > 0) {
-      const next = pending.shift()!;
-      if (next.state.status === 'completed') {
+    const plan: PlannerDecision[] = [];
+
+    // 1. Drain any dispatch announcements queued since the last read.
+    const dispatches = this.pendingDispatches.get(conversationId);
+    if (dispatches && dispatches.length > 0) {
+      this.pendingDispatches.delete(conversationId);
+      for (const announcement of dispatches) {
+        plan.push(announcement);
         child.info(
-          { agentId: next.agentId, taskId: next.taskId },
-          'orchestrator.decision.announce_completion',
+          { agentId: announcement.agentId, taskId: announcement.taskId },
+          'orchestrator.decision.announce_dispatch',
         );
-        return {
-          kind: 'announce_completion',
-          agentId: next.agentId,
-          taskId: next.taskId,
-          // Deliverables persistence is out of scope for the harness;
-          // we surface the task ID as a stand-in deliverable reference.
-          // A real implementation would query the deliverables table here.
-          deliverableIds: [next.taskId as unknown as DeliverableId],
-        };
       }
-      // Failed task — for now, fall through to the planner's view.
-      // A later iteration may add an explicit 'announce_failure' decision kind.
-      child.warn(
-        { agentId: next.agentId, taskId: next.taskId },
-        'orchestrator.decision.task_failed_falling_through',
-      );
     }
 
+    // 2. Drain completion announcements (failed tasks fall through silently
+    // for now; a future `announce_failure` variant can take their place).
+    const pending = this.pendingCompletions.get(conversationId);
+    if (pending && pending.length > 0) {
+      this.pendingCompletions.delete(conversationId);
+      for (const next of pending) {
+        if (next.state.status === 'completed') {
+          child.info(
+            {
+              agentId: next.agentId,
+              taskId: next.taskId,
+              artifactCount: next.state.result.artifacts.length,
+            },
+            'orchestrator.decision.announce_completion',
+          );
+          plan.push({
+            kind: 'announce_completion',
+            agentId: next.agentId,
+            taskId: next.taskId,
+            deliverableIds: next.deliverableIds,
+            artifacts: next.state.result.artifacts,
+          });
+        } else {
+          child.warn(
+            { agentId: next.agentId, taskId: next.taskId },
+            'orchestrator.decision.task_failed_falling_through',
+          );
+        }
+      }
+    }
+
+    // 3. Ask the pure planner what the user-facing next step is. The planner
+    // never produces announce_dispatch or announce_completion itself — those
+    // are spliced in above by the orchestrator queues.
     const snapshot = await this.deps.store.get(conversationId);
     if (!snapshot) {
       throw new Error(`Unknown conversation: ${conversationId}`);
     }
-    return planNextDecision(snapshot, this.deps.registry);
+    plan.push(...planNextDecision(snapshot, this.deps.registry));
+
+    return plan;
   }
 
   async getSnapshot(conversationId: ConversationId): Promise<ConversationSnapshot> {
@@ -302,30 +383,84 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
       createdAt: new Date().toISOString(),
     };
 
+    child.info(
+      {
+        contract: 'A2AMessage',
+        taskId,
+        agentCardVersion: message.agentCardVersion,
+        requirementKeys: Object.keys(requirements),
+        requirementsPreview: Object.fromEntries(
+          Object.entries(requirements).map(([k, v]) => [k, previewValue(v)]),
+        ),
+      },
+      'orchestrator.dispatch.input',
+    );
+
     await this.deps.store.recordDispatch(conversationId, agentId, taskId);
     this.taskOwnership.set(taskId, { conversationId, agentId });
     await this.deps.transport.dispatch(message);
 
-    child.info({ taskId }, 'task dispatched');
+    child.info(
+      { contract: 'TaskId', taskId, transport: this.deps.transport.constructor.name },
+      'orchestrator.dispatch.output',
+    );
 
-    // Emit an immediate announce_dispatch decision.
-    this.deps.notifier.notify(conversationId, {
+    // Queue an announce_dispatch decision so the next getNextDecision call
+    // surfaces it once. Also notify the side-channel notifier immediately so
+    // any subscribers wake up.
+    const announcement: AnnounceDispatchDecision = {
       kind: 'announce_dispatch',
       agentId,
       taskId,
-    });
+    };
+    const bucket = this.pendingDispatches.get(conversationId) ?? [];
+    bucket.push(announcement);
+    this.pendingDispatches.set(conversationId, bucket);
+
+    this.deps.notifier.notify(conversationId, announcement);
   }
 
   /**
    * Called by the transport when a task settles (succeeds or fails).
    * Wired at construction time in the bootstrapper (see test for the pattern).
+   *
+   * `deliverableIds` is supplied by the caller (the agent worker) when the
+   * worker has already persisted the artifacts as `deliverables` rows. The
+   * orchestrator does NOT persist deliverables itself — that's the worker's
+   * job, since the worker is the one running the agent and producing the
+   * artifacts. The orchestrator just threads the resulting ids into the
+   * `announce_completion` decision so the chat layer can reference them.
    */
-  onTaskSettled = async (taskId: TaskId, state: TaskState): Promise<void> => {
+  onTaskSettled = async (
+    taskId: TaskId,
+    state: TaskState,
+    deliverableIds: ReadonlyArray<DeliverableId> = [],
+  ): Promise<void> => {
     const owner = this.taskOwnership.get(taskId);
     if (!owner) {
-      log.debug({ op: 'onTaskSettled', taskId }, 'orchestrator.task.settled_unowned');
+      log.warn(
+        {
+          op: 'onTaskSettled',
+          taskId,
+          status: state.status,
+          knownTaskCount: this.taskOwnership.size,
+        },
+        'orchestrator.task.settled_unowned',
+      );
       return; // task dispatched by something we don't manage (or already surfaced)
     }
+
+    log.info(
+      {
+        op: 'onTaskSettled',
+        taskId,
+        conversationId: owner.conversationId,
+        agentId: owner.agentId,
+        status: state.status,
+        deliverableCount: deliverableIds.length,
+      },
+      'orchestrator.task_settled.entered',
+    );
 
     this.taskOwnership.delete(taskId);
 
@@ -338,7 +473,25 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
       taskId,
       status: state.status,
     });
-    child.info('orchestrator.task.settled');
+
+    const artifactSummary =
+      state.status === 'completed'
+        ? state.result.artifacts.map((a) => ({ kind: a.kind, hasUrl: Boolean(a.url) }))
+        : [];
+    const errorSummary =
+      state.status === 'failed'
+        ? { kind: state.result.error.kind, message: state.result.error.message }
+        : null;
+    child.info(
+      {
+        contract: 'TaskState',
+        status: state.status,
+        artifactCount: artifactSummary.length,
+        artifacts: artifactSummary,
+        error: errorSummary,
+      },
+      'orchestrator.task_settled.input',
+    );
 
     // Persist the terminal state if the agent_tasks repo is wired.
     if (this.deps.agentTasksFor && tenantId) {
@@ -358,13 +511,72 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
       }
     }
 
+    // Clear the in-flight marker on the agent state. Without this, the
+    // planner's Rule 1 ("any agent has a dispatched-but-unsettled task ->
+    // idle: awaiting_dispatch") fires forever after the first dispatch in a
+    // conversation, masking subsequent ready-to-dispatch agents with a stale
+    // "task_in_flight" reason. iterationCount stays incremented so
+    // findAgentReadyToDispatch still treats this agent as already-handled
+    // (re-runs are user-triggered iterations per §2.7, not auto-dispatch).
+    try {
+      await this.deps.store.clearDispatch(owner.conversationId, owner.agentId);
+    } catch (err) {
+      child.error({ err }, 'orchestrator.task.clear_dispatch_failed');
+    }
+
     const bucket = this.pendingCompletions.get(owner.conversationId) ?? [];
-    bucket.push({ taskId, agentId: owner.agentId, state });
+    bucket.push({ taskId, agentId: owner.agentId, state, deliverableIds });
     this.pendingCompletions.set(owner.conversationId, bucket);
 
+    // Side-channel: surface artifacts to anyone subscribed (the SSE route).
+    // Decisions stay pure; transports are responsible for the actual deliverables.
+    const artifactCount =
+      state.status === 'completed' ? state.result.artifacts.length : 0;
+    if (
+      this.deps.artifactNotifier &&
+      state.status === 'completed' &&
+      state.result.artifacts.length > 0
+    ) {
+      this.deps.artifactNotifier.publish({
+        conversationId: owner.conversationId,
+        agentId: owner.agentId,
+        taskId,
+        artifacts: state.result.artifacts,
+      });
+      child.info(
+        {
+          artifactCount: state.result.artifacts.length,
+          deliverableCount: deliverableIds.length,
+          notifierClass: this.deps.artifactNotifier.constructor.name,
+        },
+        'orchestrator.artifact.published',
+      );
+    } else {
+      child.warn(
+        {
+          hasNotifier: Boolean(this.deps.artifactNotifier),
+          status: state.status,
+          artifactCount,
+        },
+        'orchestrator.artifact.publish_skipped',
+      );
+    }
+
     // Wake subscribers.
-    const decision = await this.getNextDecision(owner.conversationId);
-    this.deps.notifier.notify(owner.conversationId, decision);
+    const plan = await this.getNextDecision(owner.conversationId);
+    for (const decision of plan) {
+      this.deps.notifier.notify(owner.conversationId, decision);
+    }
+    child.info(
+      {
+        contract: 'PlannerDecision[]',
+        plan: plan.map((decision) => ({
+          kind: decision.kind,
+          agentId: 'agentId' in decision ? decision.agentId : undefined,
+        })),
+      },
+      'orchestrator.task_settled.output',
+    );
   };
 }
 
@@ -372,4 +584,13 @@ interface PendingCompletion {
   readonly taskId: TaskId;
   readonly agentId: AgentId;
   readonly state: TaskState;
+  readonly deliverableIds: ReadonlyArray<DeliverableId>;
+}
+
+function previewValue(value: unknown): string {
+  if (typeof value === 'string') {
+    return value.length > 80 ? `${value.slice(0, 77)}...` : value;
+  }
+  const json = JSON.stringify(value);
+  return json && json.length > 80 ? `${json.slice(0, 77)}...` : json ?? '';
 }

@@ -58,14 +58,24 @@ export async function withLlmLogging(
   }
   const latencyMs = Date.now() - t0;
   const usage = completion.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
+  const finishReason = completion.choices[0]?.finish_reason;
   child.info(
     {
       latencyMs,
       inputTokens: usage.prompt_tokens,
       outputTokens: usage.completion_tokens,
+      // 'length' here means the model hit max_tokens and was cut mid-output.
+      // Surface it explicitly so truncations don't disappear into the void.
+      finishReason,
     },
     'llm.request.complete',
   );
+  if (finishReason === 'length') {
+    child.warn(
+      { latencyMs, outputTokens: usage.completion_tokens, maxTokens: params.max_tokens },
+      'llm.request.truncated_by_max_tokens',
+    );
+  }
 
   // Persist outside the user-visible critical path.
   try {

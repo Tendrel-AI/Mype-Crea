@@ -258,6 +258,38 @@ export function agentTasksRepo(tenant: Tenant) {
       });
     },
 
+    /**
+     * Claim a specific pending task by id. Implements the per-architecture
+     * §2.5 claim semantics: `UPDATE ... SET status='in_progress' WHERE
+     * status='pending' AND id=$1 RETURNING *`. Returns null if the task is
+     * already in_progress, completed, failed, or doesn't exist under this
+     * tenant — never throws on contention. Used by the Redis-pub/sub-driven
+     * agent worker after it receives a wake-up notification.
+     */
+    async claimById(id: TaskId): Promise<AgentTaskRow | null> {
+      const child = log.child({ op: 'claimById', tenantId: tenant.id, taskId: id });
+      return withTenantTransaction(tenant, undefined, async (tx) => {
+        const res = await tx.query<AgentTaskRowDb>(
+          `UPDATE agent_tasks
+              SET status         = 'in_progress',
+                  last_attempt_at = now(),
+                  attempts        = attempts + 1,
+                  dispatched_at   = COALESCE(dispatched_at, now())
+            WHERE id     = $1
+              AND status = 'pending'
+            RETURNING *`,
+          [id],
+        );
+        if (res.rows.length === 0) {
+          child.debug('task not claimable (missing or not pending)');
+          return null;
+        }
+        const row = toDomain(res.rows[0]);
+        child.info({ agentId: row.agentId }, 'claimed task by id');
+        return row;
+      });
+    },
+
     async findById(id: TaskId): Promise<AgentTaskRow | null> {
       return withTenantTransaction(tenant, undefined, async (tx) => {
         const res = await tx.query<AgentTaskRowDb>(

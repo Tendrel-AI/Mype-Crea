@@ -15,8 +15,12 @@ import {
   InProcessDecisionNotifier,
   OrchestratorCoreImpl,
 } from '../orchestrator/orchestrator-core';
+import {
+  InProcessArtifactNotifier,
+  type ArtifactPublishedEvent,
+} from '../orchestrator/artifact-notifier';
 import { PostgresConversationStore } from '../orchestrator/postgres-store';
-import { buildDefaultRegistry } from '../orchestrator/bootstrap-registry';
+import { buildSingleAgentFixtureRegistry } from './_fixtures/registry';
 import { LocalAdapter } from '../../transport/local-adapter';
 import { newTaskId } from '../ids';
 import { closePool } from '../../db/pool';
@@ -89,7 +93,7 @@ SUITE('orchestrator + Postgres store (integration)', () => {
   });
 
   it('persists agent_states JSONB across the FieldDelta -> dispatch roundtrip', { timeout: 30_000 }, async () => {
-    const registry = buildDefaultRegistry();
+    const { registry, agentId } = buildSingleAgentFixtureRegistry();
     const store = new PostgresConversationStore(registry.getFieldSchemas());
 
     let coreRef: OrchestratorCoreImpl | null = null;
@@ -97,11 +101,13 @@ SUITE('orchestrator + Postgres store (integration)', () => {
       void coreRef?.onTaskSettled(taskId, state);
     });
     const notifier = new InProcessDecisionNotifier();
+    const artifactNotifier = new InProcessArtifactNotifier();
     const core = new OrchestratorCoreImpl({
       store,
       registry,
       transport,
       notifier,
+      artifactNotifier,
       newTaskId,
       agentTasksFor: (tid) => systemRepos({ id: tid }).agentTasks,
     });
@@ -114,6 +120,10 @@ SUITE('orchestrator + Postgres store (integration)', () => {
     const subscription = notifier.subscribe(conversationId, (d) => {
       observed.push(d);
     });
+    const artifactEvents: ArtifactPublishedEvent[] = [];
+    const artifactSubscription = artifactNotifier.subscribe(conversationId, (e) => {
+      artifactEvents.push(e);
+    });
 
     await core.startConversation(conversationId, tenantId, userId);
 
@@ -122,7 +132,7 @@ SUITE('orchestrator + Postgres store (integration)', () => {
       source: 'integration-test',
       timestamp: new Date().toISOString(),
       fields: {
-        'name-agent': {
+        [agentId]: {
           business_name: { value: 'Sazón Andino', confidence: 1.0 },
         },
       },
@@ -134,7 +144,7 @@ SUITE('orchestrator + Postgres store (integration)', () => {
       source: 'integration-test',
       timestamp: new Date().toISOString(),
       fields: {
-        'name-agent': {
+        [agentId]: {
           business_profile: {
             value: 'Comida tradicional peruana lista para llevar.',
             confidence: 1.0,
@@ -148,40 +158,53 @@ SUITE('orchestrator + Postgres store (integration)', () => {
 
     expect(observed.find((d) => d.kind === 'announce_dispatch')).toMatchObject({
       kind: 'announce_dispatch',
-      agentId: 'name-agent',
+      agentId,
     });
     expect(observed.find((d) => d.kind === 'announce_completion')).toMatchObject({
       kind: 'announce_completion',
-      agentId: 'name-agent',
+      agentId,
     });
 
     const snapshot = await core.getSnapshot(conversationId);
     expect(snapshot.tenantId).toBe(tenantId);
-    expect(snapshot.agentStates['name-agent'].requiredFields.business_name.status).toBe('filled');
-    expect(snapshot.agentStates['name-agent'].requiredFields.business_profile.status).toBe(
+    expect(snapshot.agentStates[agentId].requiredFields.business_name.status).toBe('filled');
+    expect(snapshot.agentStates[agentId].requiredFields.business_profile.status).toBe(
       'filled',
     );
-    expect(snapshot.agentStates['name-agent'].lastDispatchedTaskId).toBeDefined();
-    expect(snapshot.agentStates['name-agent'].iterationCount).toBe(1);
+    // After settle, the in-flight marker is cleared so the planner's Rule 1
+    // doesn't keep firing; iterationCount stays at 1 to record that the agent
+    // has already been dispatched once.
+    expect(snapshot.agentStates[agentId].lastDispatchedTaskId).toBeUndefined();
+    expect(snapshot.agentStates[agentId].iterationCount).toBe(1);
 
     // Read back through a fresh store instance to prove durability.
     const freshStore = new PostgresConversationStore(registry.getFieldSchemas());
     const reread = await freshStore.getOrCreate(conversationId, tenantId, userId);
-    expect(reread.agentStates['name-agent'].requiredFields.business_name.status).toBe('filled');
-    expect(reread.agentStates['name-agent'].iterationCount).toBe(1);
+    expect(reread.agentStates[agentId].requiredFields.business_name.status).toBe('filled');
+    expect(reread.agentStates[agentId].iterationCount).toBe(1);
 
     // Prove the agent_task row was persisted with iteration_root_id = id and
-    // terminal status set by onTaskSettled.
-    const taskId = snapshot.agentStates['name-agent'].lastDispatchedTaskId!;
+    // terminal status set by onTaskSettled. With lastDispatchedTaskId now
+    // cleared on settle, look up the task via the repo (the source of truth).
     const tasks = await systemRepos({ id: tenantId }).agentTasks.listByConversation(
       conversationId,
     );
-    const dispatched = tasks.find((t) => t.id === taskId);
+    const dispatched = tasks.find((t) => t.agentId === agentId);
     expect(dispatched).toBeDefined();
+    const taskId = dispatched!.id;
     expect(dispatched!.iterationRootId).toBe(taskId);
     expect(dispatched!.iterationNumber).toBe(1);
     expect(dispatched!.status).toBe('completed');
 
+    // The artifact notifier should have received exactly one event for the
+    // dispatched task. fixtureEchoHandler emits one artifact per filled
+    // requirement, so the event's artifact array is non-empty.
+    expect(artifactEvents).toHaveLength(1);
+    expect(artifactEvents[0].agentId).toBe(agentId);
+    expect(artifactEvents[0].taskId).toBe(taskId);
+    expect(artifactEvents[0].artifacts.length).toBeGreaterThan(0);
+
     subscription.dispose();
+    artifactSubscription.dispose();
   });
 });

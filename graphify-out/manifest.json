@@ -1,0 +1,470 @@
+{
+  "/Users/matias/Tendrel/Mype-Crea/postcss.config.mjs": {
+    "mtime": 1776269750.1802604,
+    "hash": "b2f5d23a090943dc40e19a92862cc2c1"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/next-env.d.ts": {
+    "mtime": 1776275120.486689,
+    "hash": "d0f8375ae1199dc7acd3977fc33b78b8"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/proxy.ts": {
+    "mtime": 1777991670.3930774,
+    "hash": "a508b729c30db92077c7f40f9659367f"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/eslint.config.mjs": {
+    "mtime": 1776269750.1772878,
+    "hash": "514279e2189c54adb2442e384cc25404"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/next.config.ts": {
+    "mtime": 1776275539.3975818,
+    "hash": "61fb9c88818aa8739cb27c935a481ad4"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777045461476_extensions.js": {
+    "mtime": 1777045514.6811442,
+    "hash": "b9a7f8cf8f198690a1bd0ccf4f26e797"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777047967923_app-schema-and-helpers.js": {
+    "mtime": 1777047995.0335143,
+    "hash": "53ae8db5ecff80d5075460dad600a5a5"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777047565128_messages.js": {
+    "mtime": 1777047586.3921828,
+    "hash": "63c43c04bd93ec46951fe15a692229a6"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777047866457_llm-calls.js": {
+    "mtime": 1777047890.852727,
+    "hash": "f7340ecd44eaf551bd7e41b1f5815e09"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777332530944_agent-states-on-conversations.js": {
+    "mtime": 1777332575.600791,
+    "hash": "e105ca2515ded9b815e3ba5e90167116"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777047478895_conversations.js": {
+    "mtime": 1777047544.8977973,
+    "hash": "9e618000d304a0904df5c54405a18396"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777047614739_agent-tasks.js": {
+    "mtime": 1777047858.7834954,
+    "hash": "41f45814e07a5712f1646247ba9d5858"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777046925701_tenants-and-users.js": {
+    "mtime": 1777063918.15707,
+    "hash": "38ce86f106141e32ab4ff3b821f83594"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777047788085_deliverables.js": {
+    "mtime": 1777047856.3268168,
+    "hash": "351a50bb6bce25110dc845d125567383"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777047900510_indexes.js": {
+    "mtime": 1777047941.3064418,
+    "hash": "914a6d0882a7fbe6dfa43e1d20eac4f1"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777048068790_app-role-and-grants.js": {
+    "mtime": 1777048115.6053102,
+    "hash": "0a8241cbd2f9fb73e955ae7ca9a74e55"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777045764915_enums.js": {
+    "mtime": 1777045832.4081097,
+    "hash": "d92fdf3581db1c9d4fdfe63b00ba341e"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777048001110_seed-pilot.js": {
+    "mtime": 1777063920.8246717,
+    "hash": "3eb396d594726dcd34fa3644c242f473"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/migrations/1777048001111_rls-policies.js": {
+    "mtime": 1777048055.1672168,
+    "hash": "57735573e28d7a22f3ac2bff6363b1a8"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/app/layout.tsx": {
+    "mtime": 1776269750.1767719,
+    "hash": "bfa3f11039c3a5ccb3a3cd88f4d2af55"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/app/page.tsx": {
+    "mtime": 1777386118.1482692,
+    "hash": "8d6aa1b791af38c05566d4fc7a2ebae0"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/app/actions/chat.ts": {
+    "mtime": 1777992908.5190935,
+    "hash": "8458fccb0016e60ab5cf8e90e0a58c31"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/app/actions/auth.ts": {
+    "mtime": 1776831636.068676,
+    "hash": "02d9705a48ac58c8e5490ab1f2f08679"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/app/api/agents/stream/route.ts": {
+    "mtime": 1777991130.8028798,
+    "hash": "ebc7155755b58a1526e6abef78453cd4"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/app/callback/route.ts": {
+    "mtime": 1777419019.7466683,
+    "hash": "190da55996391467468631266b52a0aa"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/app/login/page.tsx": {
+    "mtime": 1776824553.7425885,
+    "hash": "1b7c11f0a3c6ca3efcbed4cee17a58a2"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/agents/tagline-agent/handler.ts": {
+    "mtime": 1777329279.1049228,
+    "hash": "6d0147f42b39ef0cc0d8310b1076cf1e"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/agents/logo-agent/handler.ts": {
+    "mtime": 1778259879.4823682,
+    "hash": "1fb730cf04145027beefae9ea230aabe"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/agents/logo-agent/__tests__/handler.test.ts": {
+    "mtime": 1777819582.9042156,
+    "hash": "fae5493dca640e24e706270263281d11"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/agents/label-agent/handler.ts": {
+    "mtime": 1777329280.3300493,
+    "hash": "968e37309e6f1fc0c2cc8331bba47dde"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/agents/social-agent/handler.ts": {
+    "mtime": 1777329280.8475783,
+    "hash": "96b85f73cbb91828a1387a89f998575d"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/components/CreaMype.tsx": {
+    "mtime": 1777990983.7767217,
+    "hash": "3d3c73eeefded645a4940834e435d93b"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/components/ErrorBoundary.tsx": {
+    "mtime": 1776269750.177182,
+    "hash": "cb37f238aa79232e9e8e711e2d35eb79"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/hooks/use-mobile.ts": {
+    "mtime": 1776269750.177802,
+    "hash": "209b5193af16624cdd89d3591480dd48"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/scripts/db-smoke.mjs": {
+    "mtime": 1777331820.2062886,
+    "hash": "38f978e9684bab12bdee71cfe28282b8"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/scripts/repo-smoke.mjs": {
+    "mtime": 1777333115.4285643,
+    "hash": "d2db0c67d0cf812c2bd232537d0e1dae"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/lib/utils.ts": {
+    "mtime": 1776269750.1782784,
+    "hash": "5a6fd53fdcf2be529e9cc0b718fde352"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/repos/conversations.ts": {
+    "mtime": 1777988387.6087842,
+    "hash": "ea957ee3afa4b504c62902dff0e5cb60"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/repos/messages.ts": {
+    "mtime": 1777384047.2761397,
+    "hash": "8086a6d0cbba7ba11b3fde463bc7ba1c"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/repos/llm-calls.ts": {
+    "mtime": 1777384009.0948846,
+    "hash": "aa20492d5de51e0b67163120ca4a6a56"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/repos/index.ts": {
+    "mtime": 1777987673.6511803,
+    "hash": "062416b8e021f12694565cd4579bae6f"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/repos/models.ts": {
+    "mtime": 1777987652.9658628,
+    "hash": "ddce8d992acaec33d1d4931c72402933"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/repos/deliverables.ts": {
+    "mtime": 1777987643.277983,
+    "hash": "e60b33998ec9a586b2a1c99f8937f021"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/repos/agent-tasks.ts": {
+    "mtime": 1777923631.039848,
+    "hash": "3f8bafa091b783f20abe020281c252de"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/repos/__tests__/llm-calls.integration.test.ts": {
+    "mtime": 1777384483.8508973,
+    "hash": "d81dfc6576dbec8a36c4bef9b16fe299"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/repos/__tests__/agent-tasks.integration.test.ts": {
+    "mtime": 1777558596.944217,
+    "hash": "00b70168765f04b49697efe54b29b455"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/repos/__tests__/messages.integration.test.ts": {
+    "mtime": 1777384500.5679603,
+    "hash": "2b785bd490978d2908b06eda1966c292"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/transport/redis-queue-adapter.ts": {
+    "mtime": 1777923667.6480868,
+    "hash": "f17b1da25c3044745d24e810838a7560"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/transport/local-adapter.ts": {
+    "mtime": 1777329014.3345976,
+    "hash": "429e8195f58e5aef30b8523d151c4af4"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/transport/__tests__/redis-queue-adapter.test.ts": {
+    "mtime": 1777923882.400678,
+    "hash": "15cb383cb8cd41ed601509267735e440"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/ids.ts": {
+    "mtime": 1777328941.249364,
+    "hash": "8aceec3408f4f38838ef99d049cbb43e"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/errors.ts": {
+    "mtime": 1777328947.3400464,
+    "hash": "d8b1e2564950522c7a8a3f2955e72eab"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/contracts.ts": {
+    "mtime": 1778523404.3469577,
+    "hash": "583826a9d4ea498088bedcfd33781cdc"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/agent-types.ts": {
+    "mtime": 1776863098.219467,
+    "hash": "9a2cef38fa16570ee7561a495f575e24"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/contracts/deltas.ts": {
+    "mtime": 1778523370.0291016,
+    "hash": "cbfa8b9903afc928af124ee0e0f60360"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/contracts/ids.ts": {
+    "mtime": 1778523345.207501,
+    "hash": "a3e351e0d186578409f06a4e8cda0787"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/contracts/core.ts": {
+    "mtime": 1778523392.46183,
+    "hash": "d82e9139153d61bc9142dbe980ca70b2"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/contracts/decisions.ts": {
+    "mtime": 1778523385.9717042,
+    "hash": "033a443bf3e017308a97d52d9647a5bb"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/contracts/conversation.ts": {
+    "mtime": 1778523349.763345,
+    "hash": "dda56022ab19aee72826ae4e865c4786"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/contracts/index.ts": {
+    "mtime": 1778523394.3408184,
+    "hash": "4f2090eb5dc84710933357ed5427c82c"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/__tests__/orchestrator-smoke.test.ts": {
+    "mtime": 1778523583.9745984,
+    "hash": "19bd045d7a5b65b951f6d34fb56bb6e9"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/__tests__/orchestrator-postgres.integration.test.ts": {
+    "mtime": 1777984057.0480092,
+    "hash": "e18b1ad53c2163f32755cd456902f17e"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/__tests__/cross-tenant-isolation.test.ts": {
+    "mtime": 1777330104.6329849,
+    "hash": "3ceb9a0772665f0eef22bf679e7da6b5"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/__tests__/_fixtures/snapshot.ts": {
+    "mtime": 1778523508.6516325,
+    "hash": "331ea03f78ed75e6a1c2a534284e86b3"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/__tests__/_fixtures/delta.ts": {
+    "mtime": 1778523510.8920941,
+    "hash": "ee71e44a9a6c6563eacbe93096e0a1c0"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/__tests__/_fixtures/llm.ts": {
+    "mtime": 1778523525.3114827,
+    "hash": "59c1144fe5a6582b2eab7c3c958f0cd7"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/__tests__/_fixtures/core.ts": {
+    "mtime": 1778523528.794235,
+    "hash": "b013127b2dfa304ef3f48d93834aead6"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/__tests__/_fixtures/registry.ts": {
+    "mtime": 1777558461.8219035,
+    "hash": "69c3296f6f6a45f6f68c7ab34d257cce"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/__tests__/_fixtures/index.ts": {
+    "mtime": 1778523530.3752077,
+    "hash": "d80ee6d0e042e7748bc3bab5f695ca32"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/__tests__/_fixtures/a2a.ts": {
+    "mtime": 1778523513.548009,
+    "hash": "2fcf397401a03fd9b2ca8dbf713767d4"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/orchestrator-core.ts": {
+    "mtime": 1777992794.5730019,
+    "hash": "35d153f04df83954d28c2198e146c690"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/agent-registry.ts": {
+    "mtime": 1777329045.7855418,
+    "hash": "252d66a62b856d7610cec24b4b2a6809"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/bootstrap-registry.ts": {
+    "mtime": 1777987159.4944203,
+    "hash": "07550afee089b43739279fd40bf32375"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/notifiers.ts": {
+    "mtime": 1777989406.261608,
+    "hash": "6c54c5aaf6d69d78d379321b529769d0"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/redis-decision-notifier.ts": {
+    "mtime": 1777860937.6039598,
+    "hash": "ab63af00b131fc2854a04a4aad1ff85a"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/in-memory-store.ts": {
+    "mtime": 1777332921.7312844,
+    "hash": "0f229f5760f4842b554ce4f952c866b6"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/redis-artifact-notifier.ts": {
+    "mtime": 1777987817.2258167,
+    "hash": "9c48888c89575f85477af90fe7bb8755"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/runtime.ts": {
+    "mtime": 1778523903.6510608,
+    "hash": "1d81ab803bf66560c2f114dc37ee8254"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/redis-agent-lifecycle-notifier.ts": {
+    "mtime": 1777986297.3235018,
+    "hash": "c56d1401ea601f24ecdd052010269cde"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/agent-lifecycle-notifier.ts": {
+    "mtime": 1777986282.2960205,
+    "hash": "fd799ecd329c774a32a6f35bdc84b2b1"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/runtime-config.ts": {
+    "mtime": 1778523882.161445,
+    "hash": "8b83fd4f29b82dc0b954745ae2a14e34"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/artifact-notifier.ts": {
+    "mtime": 1777990285.7691104,
+    "hash": "f0b0f04506969ab765d12a2200be0268"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/postgres-store.ts": {
+    "mtime": 1777332964.809223,
+    "hash": "8a0de3e6a0a4bd2d4aa2ad48ece4d9fe"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/merge.ts": {
+    "mtime": 1777556436.8573124,
+    "hash": "d6646fdb719c860972d67b52283fc8f3"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/planner.ts": {
+    "mtime": 1777992733.221072,
+    "hash": "c63c790da813b2498a6a5ad646fd271a"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/__tests__/runtime-config.test.ts": {
+    "mtime": 1778523918.6271179,
+    "hash": "8541ab4277cae9839161f58f6d8b8449"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/__tests__/planner.test.ts": {
+    "mtime": 1777993053.2927816,
+    "hash": "6dd3b6b2c18117d22fd03c5f49ff41c1"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/core/orchestrator/__tests__/artifact-notifier.test.ts": {
+    "mtime": 1777819724.7379718,
+    "hash": "82e24f655ca0eee400602e312fe134e4"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/auth/resolve-identity.ts": {
+    "mtime": 1777386091.122442,
+    "hash": "a7e83a7e5dfcfc32c39ce058f8a39764"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/adapters/chat-output-adapter.ts": {
+    "mtime": 1777992875.3100708,
+    "hash": "5fa736d71ffcb961bb1231fd79989f0c"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/adapters/chat-input-adapter.ts": {
+    "mtime": 1777902448.6786706,
+    "hash": "fc3e147053d96d018e047c27777be209"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/adapters/__tests__/chat-output-adapter.test.ts": {
+    "mtime": 1778523763.5308511,
+    "hash": "c8d1d747296fa58ccebadb4a6e7e3e86"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/adapters/__tests__/chat-input-adapter.test.ts": {
+    "mtime": 1778523619.4534993,
+    "hash": "1280d0d3cc5a85f021148a01a2f79d2d"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/db/pool.ts": {
+    "mtime": 1777332704.7998564,
+    "hash": "0ed93f9d60ccdc14891d6b6c6522b95b"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/db/with-transaction.ts": {
+    "mtime": 1777386107.9941647,
+    "hash": "0f48f094f81bb6722a33e6ba1a269e28"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/workers/_kit.ts": {
+    "mtime": 1778523430.765507,
+    "hash": "06b4adf93954e740240ab263fcf8cacf"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/workers/logo-agent-worker.ts": {
+    "mtime": 1778523448.627553,
+    "hash": "fb4d517cf4e4cc24d48729dea2a9a40d"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/workers/__tests__/logo-agent-worker.test.ts": {
+    "mtime": 1778523793.241308,
+    "hash": "d9187c5efee8f5b4673b374060511e5c"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/workers/__tests__/_helpers.ts": {
+    "mtime": 1778523819.9973075,
+    "hash": "6894b871a7117882915e82fed3f98b6c"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/llm-logger.ts": {
+    "mtime": 1777983241.0017197,
+    "hash": "da9ec2d16cd1aece8bfa248344ec42ea"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/logger.ts": {
+    "mtime": 1777393086.1826515,
+    "hash": "38fd841d7804313dc75189f34ce9e510"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/llm/types.ts": {
+    "mtime": 1777392852.236658,
+    "hash": "9310690f89c24f02ea7e9a9c0d49432c"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/llm/openrouter-provider.ts": {
+    "mtime": 1777392860.9570746,
+    "hash": "7fe190c508e9da3b2bbcba2e0a6a90e5"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/llm/index.ts": {
+    "mtime": 1777392869.4215536,
+    "hash": "c0bc5ff395b18779960f5c4bfd550020"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/redis/index.ts": {
+    "mtime": 1777989455.4206212,
+    "hash": "8bb0f07c57f38b476072937af62ce0f0"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/image/fal-provider.ts": {
+    "mtime": 1777819438.2658498,
+    "hash": "e7a17c1695732e0bc025b82cd8181278"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/image/generator.ts": {
+    "mtime": 1777819448.304148,
+    "hash": "22e8e58b34b2950861fcfbd38f975024"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/image/types.ts": {
+    "mtime": 1777819427.6834738,
+    "hash": "de365df38b933fdd3c7dcc0d5eb8e667"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/image/index.ts": {
+    "mtime": 1777819456.3295932,
+    "hash": "17d8f8d51566a5e22b002861e4757c73"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/image/__tests__/fal-provider.test.ts": {
+    "mtime": 1777819508.8107584,
+    "hash": "fcb3eccfbc04a1f4f6328b9377eb531a"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/image/__tests__/generator.test.ts": {
+    "mtime": 1777819489.4930537,
+    "hash": "8acc1c1e2460688fdf0cc27e5cd84889"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/src/services/__tests__/llm-logger.test.ts": {
+    "mtime": 1777384640.7584882,
+    "hash": "e3033b62f7ac7d3ae35c768f8791382d"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/README.md": {
+    "mtime": 1776269750.1763988,
+    "hash": "183da219028d70d1a9c457ec3e4a0d90"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/CLAUDE.md": {
+    "mtime": 1777989473.2222989,
+    "hash": "bef716e003ea8c31c75129fa78fccb2c"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/claude/skills/database/SKILL.md": {
+    "mtime": 1777066296.2571135,
+    "hash": "6af863c05024f246a3cc0df0f24e5509"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/claude/skills/mypes-architecture/SKILL.md": {
+    "mtime": 1778259879.4808,
+    "hash": "4c17f95da94ec0b475b9b9e545200b71"
+  },
+  "/Users/matias/Tendrel/Mype-Crea/claude/skills/mypes-testing/SKILL.md": {
+    "mtime": 1776834195.7787013,
+    "hash": "6200fe47bd651c7c58e986a543644946"
+  }
+}

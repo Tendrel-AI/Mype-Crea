@@ -8,6 +8,7 @@
  */
 import { agentTasksRepo, type AgentTasksRepo } from './agent-tasks';
 import { conversationsRepo, type ConversationsRepo } from './conversations';
+import { deliverablesRepo, type DeliverablesRepo } from './deliverables';
 import { llmCallsRepo, type LlmCallsRepo } from './llm-calls';
 import { messagesRepo, type MessagesRepo } from './messages';
 import type { Tenant, User } from '../db/with-transaction';
@@ -16,6 +17,7 @@ export interface Repos {
   readonly conversations: ConversationsRepo;
   readonly messages: MessagesRepo;
   readonly agentTasks: AgentTasksRepo;
+  readonly deliverables: DeliverablesRepo;
   readonly llmCalls: LlmCallsRepo;
 }
 
@@ -24,6 +26,7 @@ export function repos(tenant: Tenant, user: User): Repos {
     conversations: conversationsRepo(tenant, user),
     messages: messagesRepo(tenant, user),
     agentTasks: agentTasksRepo(tenant),
+    deliverables: deliverablesRepo(tenant, user),
     llmCalls: llmCallsRepo(tenant, user),
   };
 }
