@@ -26,6 +26,8 @@ export function buildFakeCore(opts: FakeOrchestratorCoreOptions = {}): Orchestra
   return {
     applyDelta: async () => snapshot,
     getNextDecision: async () => decisions,
+    peekNextDecision: async () => decisions,
+    acknowledgeDecisions: async () => undefined,
     getSnapshot: async () => snapshot,
   };
 }

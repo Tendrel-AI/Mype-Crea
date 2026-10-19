@@ -6,10 +6,26 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Send, Loader2, Sparkles, Image as ImageIcon, LayoutTemplate, Megaphone, CheckCircle2, LogOut, Menu, Globe, PlusCircle } from 'lucide-react';
 import { signOutAction } from '../app/actions/auth';
 import { chatAction } from '../app/actions/chat';
+import { createConversationAction, loadConversationAction } from '../app/actions/conversations';
 
 interface CreaMypeProps {
   userEmail: string;
   userName: string;
+  initialConversationId?: string;
+  initialTurns?: ReadonlyArray<{
+    requestId: string;
+    userMessage: string | null;
+    content: string | null;
+    stage: string;
+    failureCategory: string | null;
+    notices: ReadonlyArray<{ code: string; content: string | null }>;
+  }>;
+  initialDeliverables?: ReadonlyArray<{
+    kind: string;
+    contentUrl: string | null;
+    contentInline: Record<string, unknown> | null;
+  }>;
+  initialError?: string;
 }
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6;
@@ -31,6 +47,7 @@ interface Message {
   imageUrl?: string;
   imageAssetKey?: 'logoUrl' | 'labelUrl';
   isSystem?: boolean;
+  isNotice?: boolean;
 }
 
 const WELCOME_MESSAGE: Message = {
@@ -49,12 +66,24 @@ const EMPTY_ASSETS: BrandAssets = {
   marketingPlan: '',
 };
 
-export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
+export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialError }: CreaMypeProps) {
   const [activeTab, setActiveTab] = useState<'create' | 'gallery' | 'landing'>('create');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-  const [assets, setAssets] = useState<BrandAssets>(EMPTY_ASSETS);
-  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
+  const [assets, setAssets] = useState<BrandAssets>(() => ({
+    ...EMPTY_ASSETS,
+    logoUrl: initialDeliverables.find((item) => item.kind === 'logo' && item.contentUrl)?.contentUrl ?? '',
+  }));
+  const [messages, setMessages] = useState<Message[]>(() => initialTurns.length
+    ? initialTurns.flatMap((turn) => [
+        ...(turn.userMessage ? [{ id: `${turn.requestId}:user`, role: 'user' as const, text: turn.userMessage }] : []),
+        ...(turn.content ? [{ id: `${turn.requestId}:assistant`, role: 'model' as const, text: turn.content }] : []),
+        ...turn.notices.filter((notice) => notice.content).map((notice, noticeIndex) => ({
+          id: `${turn.requestId}:notice:${noticeIndex}`, role: 'model' as const, text: notice.content!, isNotice: true,
+        })),
+      ])
+    : [WELCOME_MESSAGE]);
+  const incompleteTurn = [...initialTurns].reverse().find((turn) => turn.stage !== 'responded');
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showRestartModal, setShowRestartModal] = useState(false);
@@ -66,11 +95,16 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
   // Server-side conversations.id — generated once per session, regenerated on
   // "Nuevo". Threaded into chatAction so messages and llm_calls rows are
   // attributed to the right conversation row.
-  const [conversationId, setConversationId] = useState<string>(() =>
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : '',
+  const [conversationId, setConversationId] = useState<string>(initialConversationId);
+  const [retryTurn, setRetryTurn] = useState<{ requestId: string; userMessage: string } | null>(() =>
+    incompleteTurn && ['reserved', 'extracted', 'effects_committed'].includes(incompleteTurn.stage) && incompleteTurn.userMessage
+      ? { requestId: incompleteTurn.requestId, userMessage: incompleteTurn.userMessage }
+      : null,
   );
+  const [needsNewConversation, setNeedsNewConversation] = useState(() =>
+    Boolean(incompleteTurn && ['effects_started', 'uncertain'].includes(incompleteTurn.stage)),
+  );
+  const [conversationError, setConversationError] = useState(initialError ?? '');
 
   // Step is derived from filled assets (logo arrives via SSE; the other
   // panels stay at "Pendiente" until their sub-agents land). The orchestrator
@@ -166,29 +200,50 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
 
   const handleSend = async () => {
     if (!inputText.trim()) return;
+    if (retryTurn || needsNewConversation) return;
 
     const userText = inputText.trim();
-    setInputText('');
+    if (!conversationId) {
+      setConversationError('No hay una configuración activa para iniciar una conversación. Contacta al administrador de tu organización.');
+      return;
+    }
+    const requestId = crypto.randomUUID();
+    await submitTurn(userText, requestId);
+  };
 
-    setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text: userText }]);
+  const submitTurn = async (userText: string, requestId: string) => {
+    setInputText('');
+    setMessages(prev => prev.some((message) => message.id === `${requestId}:user`)
+      ? prev
+      : [...prev, { id: `${requestId}:user`, role: 'user', text: userText }]);
     setIsLoading(true);
 
     try {
-      const { content } = await chatAction({ conversationId, userMessage: userText });
+      const result = await chatAction({ conversationId, requestId, userMessage: userText });
+      if (!result.ok) {
+        setMessages(prev => [...prev, { id: `${requestId}:error`, role: 'model', text: result.message }]);
+        setRetryTurn(result.retryable && !result.uncertain ? { requestId, userMessage: userText } : null);
+        setNeedsNewConversation(result.uncertain);
+        return;
+      }
       setMessages(prev => [
         ...prev,
         {
-          id: Date.now().toString(),
+          id: `${requestId}:assistant`,
           role: 'model',
-          text: content || 'Lo siento, no pude generar una respuesta clara. ¿Podrías reformular tu petición?',
+          text: result.content || 'No pude preparar una respuesta clara. ¿Podrías reformular tu petición?',
         },
+        ...result.notices.map((notice, noticeIndex) => ({
+          id: `${requestId}:notice:${noticeIndex}`, role: 'model' as const, text: notice.content ?? '', isNotice: true,
+        })),
       ]);
-    } catch (error: any) {
-      console.error('Chat error:', error);
-      const text = error?.message?.includes('OPENROUTER_API_KEY')
-        ? 'Error: La clave OPENROUTER_API_KEY no está configurada.'
-        : 'Hubo un error al procesar tu solicitud. Por favor, intenta de nuevo.';
+      setRetryTurn(null);
+      setNeedsNewConversation(false);
+    } catch (error: unknown) {
+      console.error('Chat request failed.', error);
+      const text = 'No pudimos confirmar el resultado de esta solicitud. Recarga la conversación antes de continuar.';
       setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text }]);
+      setRetryTurn(null);
     } finally {
       setIsLoading(false);
     }
@@ -202,11 +257,27 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
   };
 
   const handleRestart = () => {
-    setAssets(EMPTY_ASSETS);
-    setMessages([WELCOME_MESSAGE]);
-    setConversationId(crypto.randomUUID());
-    setProcessingAgents(new Set());
-    setShowRestartModal(false);
+    void (async () => {
+      setIsLoading(true);
+      try {
+        const result = await createConversationAction();
+        if (!result.ok) {
+          setConversationError(result.message);
+          return;
+        }
+        setAssets(EMPTY_ASSETS);
+        setMessages([WELCOME_MESSAGE]);
+        setConversationId(result.conversationId);
+        setRetryTurn(null);
+        setNeedsNewConversation(false);
+        setConversationError('');
+        setProcessingAgents(new Set());
+        window.history.pushState({}, '', `/?conversationId=${encodeURIComponent(result.conversationId)}`);
+        setShowRestartModal(false);
+      } finally {
+        setIsLoading(false);
+      }
+    })();
   };
 
   const steps = [
@@ -380,7 +451,9 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
               >
                 <div
                   className={`max-w-[85%] rounded-2xl px-4 py-3 ${
-                    msg.role === 'user'
+                    msg.isNotice
+                      ? 'bg-amber-50 text-amber-900 border border-amber-200 rounded-tl-sm'
+                      : msg.role === 'user'
                       ? 'bg-orange-600 text-white rounded-tr-sm'
                       : 'bg-white text-neutral-800 rounded-tl-sm border border-neutral-200 shadow-sm'
                   }`}
@@ -426,6 +499,29 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
         </div>
 
         <div className="p-4 bg-white border-t border-neutral-200">
+          {conversationError && (
+            <div role="status" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {conversationError}
+            </div>
+          )}
+          {retryTurn && (
+            <div className="mb-3 rounded-lg border border-orange-200 bg-orange-50 p-3 text-sm text-orange-900">
+              <p>Hay un turno anterior sin respuesta. Al continuar, se usará el mismo identificador para evitar duplicar la solicitud.</p>
+              <button
+                type="button"
+                onClick={() => void submitTurn(retryTurn.userMessage, retryTurn.requestId)}
+                disabled={isLoading}
+                className="mt-2 rounded-lg border border-orange-300 px-3 py-2 font-medium hover:bg-orange-100 disabled:opacity-50"
+              >
+                Continuar este turno
+              </button>
+            </div>
+          )}
+          {needsNewConversation && (
+            <p role="status" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              No pudimos confirmar el resultado del turno anterior. No vuelvas a enviar ese mensaje; inicia un producto nuevo para continuar.
+            </p>
+          )}
           <div className="relative flex items-end gap-2">
             <textarea
               value={inputText}
@@ -434,11 +530,11 @@ export default function CreaMype({ userEmail, userName }: CreaMypeProps) {
               placeholder="Escribe tu mensaje aquí..."
               className="w-full bg-neutral-50 border border-neutral-200 text-neutral-900 rounded-xl px-4 py-3 pr-12 focus:outline-none focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 resize-none min-h-[52px] max-h-32"
               rows={1}
-              disabled={isLoading}
+              disabled={isLoading || Boolean(retryTurn) || needsNewConversation}
             />
             <button
               onClick={handleSend}
-              disabled={!inputText.trim() || isLoading}
+              disabled={!inputText.trim() || isLoading || Boolean(retryTurn) || needsNewConversation}
               className="absolute right-2 bottom-2 p-2 bg-orange-600 hover:bg-orange-500 disabled:bg-neutral-200 disabled:text-neutral-400 text-white rounded-lg transition-colors flex-shrink-0"
             >
               <Send size={18} />

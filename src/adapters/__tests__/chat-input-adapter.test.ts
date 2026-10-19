@@ -30,6 +30,7 @@ import {
   TEST_USER_ID,
 } from '../../core/__tests__/_fixtures';
 import { AgentRegistry } from '../../core/orchestrator/agent-registry';
+import { createCurrentAdapterBehaviorSnapshot } from '../../services/ai-config/adapter-behavior';
 
 const ctx = {
   tenant: { id: TEST_TENANT_ID },
@@ -290,5 +291,59 @@ describe('ChatInputAdapter', () => {
     });
 
     expect(delta.fields).toEqual({});
+  });
+
+  it('uses an explicitly supplied frozen template and model after validating the registry schema', async () => {
+    const provider = makeExtractorProvider(JSON.stringify({ fields: { business_name: null, business_profile: null, tone: null } }));
+    const { registry } = buildSingleAgentFixtureRegistry();
+    const fields = registry.getFieldSchemas().flatMap((schema) => [
+      ...schema.requiredFields.map((name) => ({
+        name,
+        required: true,
+        promptHint: registry.getPromptHint(schema.agentId, name),
+        agents: [schema.agentId],
+      })),
+      ...schema.optionalFields.map((name) => ({
+        name,
+        required: false,
+        promptHint: registry.getPromptHint(schema.agentId, name),
+        agents: [schema.agentId],
+      })),
+    ]);
+    const behavior = createCurrentAdapterBehaviorSnapshot(fields);
+    const frozen = {
+      ...behavior,
+      extractor: {
+        ...behavior.extractor,
+        promptTemplate: `${behavior.extractor.promptTemplate}\nFrozen template marker.`,
+      },
+    };
+    const adapter = new ChatInputAdapter(buildFakeCore(), registry);
+
+    await adapter.extract({
+      conversationId,
+      userMessage: 'hola',
+      llmContext: ctx,
+      execution: { model: { ...provider.resolve('extractor'), provider: 'openrouter' }, behavior: frozen },
+    });
+
+    expect(provider.create).toHaveBeenCalledTimes(1);
+    expect(provider.captured[0].systemPrompt).toContain('Frozen template marker.');
+    expect((provider.create.mock.calls[0][0] as any).temperature).toBe(0);
+  });
+
+  it('rejects a frozen field schema that differs from the runtime registry before provider invocation', async () => {
+    const provider = makeExtractorProvider('{}');
+    const { registry } = buildSingleAgentFixtureRegistry();
+    const behavior = createCurrentAdapterBehaviorSnapshot();
+    const adapter = new ChatInputAdapter(buildFakeCore(), registry);
+
+    await expect(adapter.extract({
+      conversationId,
+      userMessage: 'hola',
+      llmContext: ctx,
+      execution: { model: { ...provider.resolve('extractor'), provider: 'openrouter' }, behavior },
+    })).rejects.toThrow(/does not match the runtime agent registry/);
+    expect(provider.create).not.toHaveBeenCalled();
   });
 });

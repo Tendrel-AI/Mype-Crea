@@ -29,6 +29,7 @@ function fakeClient(behavior: 'success' | 'fail') {
           if (behavior === 'fail') throw new Error('upstream LLM error');
           return {
             id: 'chatcmpl-fake',
+            model: 'served-model-revision',
             choices: [{ message: { role: 'assistant', content: 'ok' } }],
             usage: { prompt_tokens: 11, completion_tokens: 22, total_tokens: 33 },
           };
@@ -59,7 +60,7 @@ describe('withLlmLogging', () => {
     const arg = (recordSpy.mock.calls[0] as any[])[0] as any;
     expect(arg.inputTokens).toBe(11);
     expect(arg.outputTokens).toBe(22);
-    expect(arg.model).toBe('google/gemini-2.5-pro');
+    expect(arg.model).toBe('served-model-revision');
     expect(arg.promptVersion).toBe('unit.v1');
     expect(typeof arg.latencyMs).toBe('number');
     expect(arg.latencyMs).toBeGreaterThanOrEqual(0);

@@ -113,6 +113,51 @@ describe('logo-agent worker', () => {
     expect(settledState.status).toBe('completed');
   });
 
+  it('atomically settles artifacts and outbox before awaiting trusted core settlement', async () => {
+    const subscriber = new FakeSubscriber();
+    const registry = new AgentRegistry();
+    const artifacts = [{ kind: 'image', url: 'https://example.test/logo.png' }];
+    registry.register(logoCard as AgentCard, vi.fn(async (message: A2AMessage) => ({
+      status: 'completed' as const,
+      taskId: message.taskId,
+      artifacts,
+      completedAt: '2026-05-04T00:00:01Z',
+    })), undefined);
+    const row = buildAgentTaskRow();
+    const findById = vi.fn(async () => ({ ...row, status: 'pending' as const }));
+    const claimById = vi.fn(async () => row);
+    const settleTaskAndEnqueue = vi.fn(async () => ({ deliverableIds: ['99999999-9999-4999-8999-999999999999'] }));
+    const deliverablesFor = vi.fn();
+    const onTaskSettled = vi.fn(async () => undefined);
+
+    await startLogoAgentWorker(buildWorkerTestContext({
+      subscriber,
+      registry,
+      systemReposFor: () => ({ agentTasks: { findById, claimById } as never, llmCalls: {} as never }),
+      settleTaskFor: () => ({ settleTaskAndEnqueue } as never),
+      deliverablesFor,
+      onTaskSettled,
+    }));
+    subscriber.emitMessage(channelForAgent('logo-agent' as AgentId), JSON.stringify({
+      taskId: row.id,
+      tenantId: '66666666-6666-6666-6666-666666666666',
+      agentId: 'logo-agent',
+    }));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(settleTaskAndEnqueue).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: row.conversationId,
+      taskId: row.id,
+      state: 'completed',
+      deliverableKind: 'logo',
+      artifacts,
+    }));
+    expect(deliverablesFor).not.toHaveBeenCalled();
+    expect(onTaskSettled).toHaveBeenCalledWith(row.id, expect.objectContaining({ status: 'completed' }),
+      ['99999999-9999-4999-8999-999999999999'], expect.objectContaining({ durableSettlement: true, ownerUserId: '22222222-2222-2222-2222-222222222222' }));
+  });
+
   it('skips when claimById returns null (already in_progress or completed)', async () => {
     const subscriber = new FakeSubscriber();
     const registry = new AgentRegistry();
@@ -152,6 +197,106 @@ describe('logo-agent worker', () => {
     expect(claimById).toHaveBeenCalled();
     expect(fakeHandler).not.toHaveBeenCalled();
     expect(onTaskSettled).not.toHaveBeenCalled();
+  });
+
+  it.fails('does not claim a non-logo task delivered on the logo channel', async () => {
+    const subscriber = new FakeSubscriber();
+    const row = buildAgentTaskRow({ agentId: 'tagline-agent' as AgentId, status: 'pending' });
+    const findById = vi.fn(async () => row);
+    const claimById = vi.fn(async () => ({ ...row, status: 'in_progress' as const }));
+
+    await startLogoAgentWorker(
+      buildWorkerTestContext({
+        subscriber,
+        systemReposFor: () =>
+          ({
+            agentTasks: { findById, claimById } as never,
+            llmCalls: {} as never,
+          }),
+      }),
+    );
+
+    subscriber.emitMessage(
+      channelForAgent('logo-agent' as AgentId),
+      JSON.stringify({
+        taskId: row.id,
+        tenantId: '66666666-6666-6666-6666-666666666666',
+        agentId: 'logo-agent',
+      }),
+    );
+    await flushMicrotasks();
+
+    expect(findById).toHaveBeenCalledWith(row.id);
+    expect(claimById).not.toHaveBeenCalled();
+  });
+
+  it('awaits async onTaskSettled before finishing message handling', async () => {
+    const subscriber = new FakeSubscriber();
+    const registry = new AgentRegistry();
+    const fakeHandler: AgentHandler<undefined> = vi.fn(async (message: A2AMessage) => ({
+      status: 'completed' as const,
+      taskId: message.taskId,
+      artifacts: [],
+      completedAt: '2026-05-04T00:00:01Z',
+    }));
+    registry.register(logoCard as AgentCard, fakeHandler, undefined);
+
+    const row = buildAgentTaskRow();
+    const findById = vi.fn(async () => ({ ...row, status: 'pending' as const }));
+    const claimById = vi.fn(async () => row);
+    let releaseSettlement!: () => void;
+    let settlementFinished = false;
+    const settlementGate = new Promise<void>((resolve) => {
+      releaseSettlement = resolve;
+    });
+    const onTaskSettled = vi.fn(async () => {
+      await settlementGate;
+      settlementFinished = true;
+    });
+
+    await startLogoAgentWorker(
+      buildWorkerTestContext({
+        subscriber,
+        registry,
+        systemReposFor: () =>
+          ({
+            agentTasks: { findById, claimById } as never,
+            llmCalls: {} as never,
+          }),
+        onTaskSettled,
+      }),
+    );
+
+    const onMessage = subscriber.listeners('message')[0] as (
+      channel: string,
+      payload: string,
+    ) => Promise<void>;
+    let handlingFinished = false;
+    const handling = onMessage(
+      channelForAgent('logo-agent' as AgentId),
+      JSON.stringify({
+        taskId: row.id,
+        tenantId: '66666666-6666-6666-6666-666666666666',
+        agentId: 'logo-agent',
+      }),
+    ).then(() => {
+      handlingFinished = true;
+    });
+
+    try {
+      await flushMicrotasks();
+      expect(onTaskSettled).toHaveBeenCalledTimes(1);
+      expect(handlingFinished).toBe(false);
+      releaseSettlement();
+      await handling;
+      expect(settlementFinished).toBe(true);
+      expect(handlingFinished).toBe(true);
+    } finally {
+      // Release the fake async callback even when the expected-failure
+      // assertion fires, so the worker cannot leave a pending promise behind.
+      releaseSettlement();
+      await handling;
+    }
   });
 
   it('forwards a failed TaskState when the handler throws', async () => {

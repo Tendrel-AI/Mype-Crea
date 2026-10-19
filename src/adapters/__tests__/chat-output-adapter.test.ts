@@ -25,6 +25,7 @@ import {
 } from '../../core/__tests__/_fixtures';
 import { resetProvider, setProvider } from '../../services/llm';
 import type { PlannerDecision } from '../../core/contracts';
+import { createCurrentAdapterBehaviorSnapshot } from '../../services/ai-config/adapter-behavior';
 
 const conversationId = TEST_CONVERSATION_ID;
 const tenantId = TEST_TENANT_ID;
@@ -381,5 +382,52 @@ describe('ChatOutputAdapter', () => {
 
     // 1 system + 2 chat turns; the system row from recentMessages is dropped.
     expect(provider.captured[0].messageCount).toBe(3);
+  });
+
+  it('uses frozen responder templates and explicit model, and honors a zero-history policy', async () => {
+    const provider = makeResponderProvider('ok');
+    const behavior = createCurrentAdapterBehaviorSnapshot();
+    const frozen = {
+      ...behavior,
+      responder: {
+        ...behavior.responder,
+        promptTemplate: `${behavior.responder.promptTemplate}\nFrozen template marker.`,
+        historyLimit: 0,
+      },
+    };
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+
+    await adapter.render({
+      decisions: [{ kind: 'announce_all_complete' }],
+      recentMessages: [{ role: 'user', content: 'must not be included' }],
+      snapshot: emptySnapshot,
+      llmContext: ctx,
+      execution: { model: { ...provider.resolve('responder'), provider: 'openrouter' }, behavior: frozen },
+    });
+
+    expect(provider.create).toHaveBeenCalledTimes(1);
+    expect(provider.captured[0].systemPrompt).toContain('Frozen template marker.');
+    expect(provider.captured[0].systemPrompt).toContain('español neutro latinoamericano');
+    expect(provider.captured[0].messageCount).toBe(1);
+    expect((provider.create.mock.calls[0][0] as any).temperature).toBe(0.7);
+  });
+
+  it('rejects unsupported frozen responder renderers before provider invocation', async () => {
+    const provider = makeResponderProvider('ok');
+    const behavior = createCurrentAdapterBehaviorSnapshot();
+    const frozen = {
+      ...behavior,
+      responder: { ...behavior.responder, rendererVersion: 'responder.renderer.unknown' },
+    };
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+
+    await expect(adapter.render({
+      decisions: [{ kind: 'announce_all_complete' }],
+      recentMessages: [],
+      snapshot: emptySnapshot,
+      llmContext: ctx,
+      execution: { model: { ...provider.resolve('responder'), provider: 'openrouter' }, behavior: frozen },
+    })).rejects.toThrow(/Unsupported frozen responder adapter behavior/);
+    expect(provider.create).not.toHaveBeenCalled();
   });
 });

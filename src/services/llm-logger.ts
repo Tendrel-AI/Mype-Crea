@@ -10,11 +10,7 @@
  * not break the user-visible response. The architecture skill explicitly
  * tolerates losing rows on transient failure for this table.
  */
-import type OpenAI from 'openai';
-import type {
-  ChatCompletion,
-  ChatCompletionCreateParamsNonStreaming,
-} from 'openai/resources/chat/completions';
+import type { ChatCompletion, ChatRequest, IChatClient, ModelPurpose } from './llm/types';
 import type { ConversationId, TaskId } from '../core/contracts';
 import type { Tenant, User } from '../db/with-transaction';
 import { systemRepos, repos } from '../repos';
@@ -31,11 +27,13 @@ export interface LlmLoggingContext {
   readonly promptVersion: string;
   /** Optional caller-provided revision string; defaults to 'unknown'. */
   readonly modelRevision?: string;
+  readonly provider?: 'openrouter' | 'anthropic';
+  readonly purpose?: ModelPurpose;
 }
 
 export async function withLlmLogging(
-  client: OpenAI,
-  params: ChatCompletionCreateParamsNonStreaming,
+  client: IChatClient,
+  params: ChatRequest,
   ctx: LlmLoggingContext,
 ): Promise<ChatCompletion> {
   const child = log.child({
@@ -44,6 +42,8 @@ export async function withLlmLogging(
     conversationId: ctx.conversationId,
     agentTaskId: ctx.agentTaskId,
     model: params.model,
+    provider: ctx.provider ?? (process.env.LLM_PROVIDER === 'anthropic' ? 'anthropic' : 'openrouter'),
+    purpose: ctx.purpose ?? 'responder',
   });
 
   child.info('llm.request.start');
@@ -62,6 +62,7 @@ export async function withLlmLogging(
   child.info(
     {
       latencyMs,
+      model: completion.model ?? params.model,
       inputTokens: usage.prompt_tokens,
       outputTokens: usage.completion_tokens,
       // 'length' here means the model hit max_tokens and was cut mid-output.
@@ -85,7 +86,7 @@ export async function withLlmLogging(
     await repo.record({
       conversationId: ctx.conversationId,
       agentTaskId: ctx.agentTaskId,
-      model: params.model,
+      model: completion.model ?? params.model,
       modelRevision: ctx.modelRevision ?? 'unknown',
       promptVersion: ctx.promptVersion,
       inputTokens: usage.prompt_tokens,

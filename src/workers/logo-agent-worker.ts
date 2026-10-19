@@ -160,7 +160,6 @@ export async function startLogoAgentWorker(
         child.error({ err }, 'worker.logo.lifecycle_publish_failed');
       }
     }
-
     const entry = deps.registry.get(LOGO_AGENT_ID);
 
     const a2a: A2AMessage = {
@@ -217,27 +216,39 @@ export async function startLogoAgentWorker(
     // table; it just receives the resulting ids and threads them into
     // announce_completion.
     let deliverableIds: DeliverableId[] = [];
-    if (
+    let ownerUserId: UUID | null = null;
+    try {
+      ownerUserId = await deps.resolveConversationOwner(
+        tenantId as UUID,
+        claimed.conversationId,
+      );
+    } catch (err) {
+      child.error({ err }, 'worker.logo.owner_lookup_failed');
+    }
+    let durableSettlement = false;
+    if (ownerUserId && deps.settleTaskFor) {
+      const settled = await deps.settleTaskFor(tenantId as UUID, ownerUserId).settleTaskAndEnqueue({
+        conversationId: claimed.conversationId,
+        taskId: claimed.id,
+        state: finalState.status,
+        deliverableKind: LOGO_DELIVERABLE_KIND,
+        artifacts: finalState.status === 'completed' ? finalState.result.artifacts : [],
+        ...(finalState.status === 'failed' ? { errorCategory: finalState.result.error.kind } : {}),
+      });
+      deliverableIds = settled.deliverableIds as DeliverableId[];
+      durableSettlement = true;
+    } else if (
       finalState.status === 'completed' &&
       finalState.result.artifacts.length > 0 &&
       deps.deliverablesFor
     ) {
-      let userId: UUID | null = null;
-      try {
-        userId = await deps.resolveConversationOwner(
-          tenantId as UUID,
-          claimed.conversationId,
-        );
-      } catch (err) {
-        child.error({ err }, 'worker.logo.owner_lookup_failed');
-      }
-      if (!userId) {
+      if (!ownerUserId) {
         child.warn(
           { conversationId: claimed.conversationId },
           'worker.logo.owner_unresolved_skipping_persistence',
         );
       } else {
-        const repo = deps.deliverablesFor(tenantId as UUID, userId);
+        const repo = deps.deliverablesFor(tenantId as UUID, ownerUserId);
         deliverableIds = await persistArtifacts(
           repo,
           claimed.id,
@@ -256,7 +267,16 @@ export async function startLogoAgentWorker(
       'worker.logo.on_settled.invoking',
     );
     try {
-      deps.onTaskSettled(claimed.id, finalState, deliverableIds);
+      if (!ownerUserId) {
+        throw new Error('Cannot settle task without verified conversation owner');
+      }
+      await deps.onTaskSettled(claimed.id, finalState, deliverableIds, {
+        tenantId: tenantId as UUID,
+        conversationId: claimed.conversationId,
+        ownerUserId,
+        agentId: claimed.agentId,
+        ...(durableSettlement ? { durableSettlement: true as const } : {}),
+      });
       child.info('worker.logo.on_settled.returned');
     } catch (err) {
       child.error({ err }, 'worker.logo.on_settled_threw');

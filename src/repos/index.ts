@@ -10,6 +10,9 @@ import { agentTasksRepo, type AgentTasksRepo } from './agent-tasks';
 import { conversationsRepo, type ConversationsRepo } from './conversations';
 import { deliverablesRepo, type DeliverablesRepo } from './deliverables';
 import { llmCallsRepo, type LlmCallsRepo } from './llm-calls';
+import { identityRepo, type IdentityRepo } from './identity';
+import { aiConfigRepo, type AiConfigRepo, type RepositoryActor } from './ai-config';
+import { aiEventsRepo, aiTurnsRepo, type AiEventsRepo, type AiTurnsRepo } from './ai-turns';
 import { messagesRepo, type MessagesRepo } from './messages';
 import type { Tenant, User } from '../db/with-transaction';
 
@@ -19,15 +22,19 @@ export interface Repos {
   readonly agentTasks: AgentTasksRepo;
   readonly deliverables: DeliverablesRepo;
   readonly llmCalls: LlmCallsRepo;
+  readonly aiConfig: AiConfigRepo;
+  readonly aiTurns: AiTurnsRepo;
 }
 
-export function repos(tenant: Tenant, user: User): Repos {
+export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repos {
   return {
     conversations: conversationsRepo(tenant, user),
     messages: messagesRepo(tenant, user),
     agentTasks: agentTasksRepo(tenant),
     deliverables: deliverablesRepo(tenant, user),
     llmCalls: llmCallsRepo(tenant, user),
+    aiConfig: aiConfigRepo(tenant, user, actor),
+    aiTurns: aiTurnsRepo(tenant, user, actor),
   };
 }
 
@@ -40,12 +47,16 @@ export function repos(tenant: Tenant, user: User): Repos {
 export interface SystemRepos {
   readonly agentTasks: AgentTasksRepo;
   readonly llmCalls: LlmCallsRepo;
+  readonly identity?: IdentityRepo;
+  readonly aiEvents?: AiEventsRepo;
 }
 
 export function systemRepos(tenant: Tenant): SystemRepos {
   return {
     agentTasks: agentTasksRepo(tenant),
     llmCalls: llmCallsRepo(tenant, undefined),
+    identity: identityRepo(tenant),
+    aiEvents: aiEventsRepo(tenant),
   };
 }
 

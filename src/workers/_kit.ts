@@ -19,8 +19,10 @@ import type {
 import type { TaskState } from '../core/agent-types';
 import type { AgentRegistry } from '../core/orchestrator/agent-registry';
 import type { IAgentLifecycleNotifier } from '../core/orchestrator/agent-lifecycle-notifier';
+import type { TaskSettlementContext } from '../core/orchestrator/runtime-config';
 import type { DeliverableInsert, DeliverableRow } from '../repos/models';
 import type { SystemRepos, Tenant } from '../repos';
+import type { AiTurnsRepo } from '../repos/ai-turns';
 
 export interface DeliverablesRepoLike {
   insert(input: DeliverableInsert): Promise<Pick<DeliverableRow, 'id'>>;
@@ -55,6 +57,8 @@ export interface WorkerContext {
     tenantId: UUID,
     userId: UUID,
   ) => DeliverablesRepoLike;
+  /** Atomic terminal task, deliverables, core-state and outbox commit. */
+  readonly settleTaskFor?: (tenantId: UUID, userId: UUID) => Pick<AiTurnsRepo, 'settleTaskAndEnqueue'>;
   /**
    * Wired to OrchestratorCoreImpl.onTaskSettled at runtime boot. The
    * `deliverableIds` parameter carries the ids of the deliverables rows the
@@ -64,7 +68,8 @@ export interface WorkerContext {
     taskId: TaskId,
     state: TaskState,
     deliverableIds: ReadonlyArray<DeliverableId>,
-  ) => void;
+    context?: TaskSettlementContext,
+  ) => Promise<void> | void;
   /**
    * Used to publish "task processing" lifecycle events as soon as the worker
    * has claimed a row. The SSE route subscribes here so the UI can render a

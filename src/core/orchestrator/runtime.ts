@@ -35,7 +35,7 @@ import { randomUUID } from 'node:crypto';
 import { repos, systemRepos } from '../../repos';
 import { getConversationOwnerUserId } from '../../repos/conversations';
 import { LocalAdapter } from '../../transport/local-adapter';
-import { RedisQueueAdapter } from '../../transport/redis-queue-adapter';
+import { channelForAgent, RedisQueueAdapter } from '../../transport/redis-queue-adapter';
 import { startLogoAgentWorker } from '../../workers/logo-agent-worker';
 import { getRedisPublisher, getRedisSubscriber } from '../../services/redis';
 import type { AgentId, ConversationId, TaskId, UUID } from '../contracts';
@@ -93,9 +93,11 @@ function buildTransport(
       getConversationOwnerUserId({ id: tenantId }, conversationId),
     deliverablesFor: (tenantId: UUID, userId: UUID) =>
       repos({ id: tenantId }, { id: userId }).deliverables,
+    settleTaskFor: (tenantId: UUID, userId: UUID) =>
+      repos({ id: tenantId }, { id: userId }).aiTurns,
     onTaskSettled,
     lifecycleNotifier: defaultLifecycleNotifier,
-  }).catch((err) =>
+  }).then(() => reconcileConfiguredTenantEvents()).catch((err) =>
     log.error({ err }, 'orchestrator.runtime.logo_worker_boot_failed'),
   );
 
@@ -108,6 +110,42 @@ function buildTransport(
     redisAgents: REDIS_DISPATCH_AGENTS,
     fallback: local,
   });
+}
+
+async function reconcileConfiguredTenantEvents(): Promise<void> {
+  const raw = process.env.WORKOS_ORGANIZATION_TENANTS;
+  if (!raw) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    log.error('orchestrator.runtime.tenant_map_invalid_for_event_reconcile');
+    return;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+  const tenantIds = [...new Set(Object.values(parsed))]
+    .filter((value): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
+  const publisher = getRedisPublisher();
+  await Promise.all(tenantIds.map(async (tenantId) => {
+    try {
+      const tenantRepositories = systemRepos({ id: tenantId as UUID });
+      await tenantRepositories.aiEvents?.reconcileSettledTasks({ limit: 500 });
+      if (!publisher) return;
+      const pending = await tenantRepositories.agentTasks.listPendingDispatches({
+        agentId: 'logo-agent',
+        limit: 500,
+      });
+      await Promise.all(pending.map(async (task) => {
+        await publisher.publish(channelForAgent(task.agentId as AgentId), JSON.stringify({
+          taskId: task.id,
+          tenantId,
+          agentId: task.agentId,
+        }));
+      }));
+    } catch (err) {
+      log.error({ tenantId, err }, 'orchestrator.runtime.startup_reconcile_failed');
+    }
+  }));
 }
 
 function build(): Runtime {

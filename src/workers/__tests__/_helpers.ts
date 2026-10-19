@@ -103,9 +103,10 @@ export function buildWorkerTestContext(
           llmCalls: {} as never,
         })),
     resolveConversationOwner:
-      overrides.resolveConversationOwner ?? vi.fn(async () => null),
+      overrides.resolveConversationOwner ?? vi.fn(async () => '22222222-2222-2222-2222-222222222222' as UUID),
     onTaskSettled: overrides.onTaskSettled ?? vi.fn(),
     deliverablesFor: overrides.deliverablesFor,
+    settleTaskFor: overrides.settleTaskFor,
     lifecycleNotifier: overrides.lifecycleNotifier,
   };
 }

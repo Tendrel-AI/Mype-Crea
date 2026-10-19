@@ -18,6 +18,7 @@ import type {
   TaskId,
   UUID,
 } from '../core/contracts';
+import type { AiConversationPin } from './models';
 import type { AgentFieldSchema } from '../core/orchestrator/in-memory-store';
 import {
   withTenantAdminTransaction,
@@ -101,6 +102,88 @@ async function writeAgentStates(
 
 export function conversationsRepo(tenant: Tenant, user: User) {
   return {
+    /**
+     * Create a new conversation pinned to the current tenant activation in the
+     * same transaction. Existing legacy rows remain unversioned forever.
+     */
+    async ensurePinnedConversation(input: {
+      readonly conversationId: ConversationId;
+      readonly schemas: ReadonlyArray<AgentFieldSchema>;
+    }): Promise<AiConversationPin> {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        await tx.query(
+          `INSERT INTO conversations
+             (id, tenant_id, user_id, ai_release_id, configuration_state)
+           SELECT $1, $2, $3, a.release_id, 'pinned'
+             FROM ai_release_activations a
+             JOIN ai_releases r
+               ON r.tenant_id = a.tenant_id
+              AND r.id = a.release_id
+            WHERE a.tenant_id = $2
+              AND r.status = 'frozen'
+            FOR SHARE OF a, r
+           ON CONFLICT (id) DO NOTHING`,
+          [input.conversationId, tenant.id, user.id],
+        );
+
+        const row = await tx.query<{
+          configuration_state: 'pinned' | 'legacy_unversioned';
+          ai_release_id: UUID | null;
+        }>(
+          `SELECT configuration_state, ai_release_id
+             FROM conversations
+            WHERE id = $1
+            LIMIT 1`,
+          [input.conversationId],
+        );
+        if (!row.rows[0]) {
+          throw new Error('No hay una configuración activa para iniciar una conversación nueva.');
+        }
+
+        const snapshot = await loadSnapshot(tx, input.conversationId, input.schemas);
+        if (!snapshot) throw new Error(`Conversation row not visible: ${input.conversationId}`);
+        const state = row.rows[0].configuration_state;
+        const releaseId = row.rows[0].ai_release_id;
+        if (state === 'pinned' && !releaseId) {
+          throw new Error(`Pinned conversation has no release: ${input.conversationId}`);
+        }
+        return {
+          conversationId: input.conversationId,
+          state,
+          releaseId,
+          snapshot,
+        };
+      });
+    },
+
+    /** Read the pin for the caller's own conversation without changing it. */
+    async readPinnedConversation(
+      conversationId: ConversationId,
+      schemas: ReadonlyArray<AgentFieldSchema>,
+    ): Promise<AiConversationPin | undefined> {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const row = await tx.query<{
+          configuration_state: 'pinned' | 'legacy_unversioned';
+          ai_release_id: UUID | null;
+        }>(
+          `SELECT configuration_state, ai_release_id
+             FROM conversations
+            WHERE id = $1
+            LIMIT 1`,
+          [conversationId],
+        );
+        if (!row.rows[0]) return undefined;
+        const snapshot = await loadSnapshot(tx, conversationId, schemas);
+        if (!snapshot) return undefined;
+        return {
+          conversationId,
+          state: row.rows[0].configuration_state,
+          releaseId: row.rows[0].ai_release_id,
+          snapshot,
+        };
+      });
+    },
+
     /**
      * Ensure a conversations row exists for (tenant, user, conversationId).
      * Returns the snapshot built from the persisted `agent_states` (or freshly

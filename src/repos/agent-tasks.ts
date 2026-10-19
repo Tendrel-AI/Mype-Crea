@@ -129,6 +129,19 @@ async function assertJsonbTenantSafe(tx: TxClient, payload: unknown): Promise<vo
 
 export function agentTasksRepo(tenant: Tenant) {
   return {
+    /** Tenant-only recovery scan for tasks committed before queue publication. */
+    async listPendingDispatches(input: { agentId?: string; limit?: number } = {}): Promise<AgentTaskRow[]> {
+      return withTenantTransaction(tenant, undefined, async (tx) => {
+        const result = await tx.query<AgentTaskRowDb>(
+          `SELECT * FROM agent_tasks
+            WHERE tenant_id=$1 AND status='pending' AND scheduled_for <= now()
+              AND ($2::text IS NULL OR agent_id=$2)
+            ORDER BY scheduled_for,id LIMIT $3`,
+          [tenant.id,input.agentId??null,Math.min(Math.max(input.limit??100,1),500)],
+        );
+        return result.rows.map(toDomain);
+      });
+    },
     /**
      * Insert a root task (iteration_number=1, parent_task_id=NULL,
      * iteration_root_id=id). The id is generated app-side so the same value

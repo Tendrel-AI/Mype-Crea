@@ -4,7 +4,7 @@
  * shape (prompt only vs prompt + image_urls), URL extraction, and the
  * missing-API-key guard.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { subscribeSpy, configSpy } = vi.hoisted(() => ({
   subscribeSpy: vi.fn(),
@@ -19,11 +19,36 @@ vi.mock('@fal-ai/client', () => ({
 }));
 
 import { FalImageProvider } from '../fal-provider';
+import { getImageGenerator, resetImageGenerator } from '../index';
 
 describe('FalImageProvider', () => {
   beforeEach(() => {
     subscribeSpy.mockReset();
     configSpy.mockReset();
+  });
+
+  afterEach(() => {
+    resetImageGenerator();
+    vi.unstubAllEnvs();
+  });
+
+  it.each(['openrouter', 'anthropic'])('keeps fal.ai independent of the %s LLM mode and credentials', async (provider) => {
+    vi.stubEnv('LLM_PROVIDER', provider);
+    vi.stubEnv('OPENROUTER_API_KEY', undefined);
+    vi.stubEnv('ANTHROPIC_API_KEY', undefined);
+    vi.stubEnv('FAL_KEY', 'test-fal-key');
+    subscribeSpy.mockResolvedValueOnce({
+      data: { images: [{ url: 'https://fal.cdn/independent.png' }] },
+    });
+
+    const result = await getImageGenerator().generate({ prompt: 'un logo', purpose: 'logo' });
+
+    expect(configSpy).toHaveBeenCalledWith({ credentials: 'test-fal-key' });
+    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/nano-banana-2', {
+      input: { prompt: 'un logo' },
+    });
+    expect(result.providerId).toBe('fal');
+    expect(result.url).toBe('https://fal.cdn/independent.png');
   });
 
   it('throws cleanly when constructed without an API key', () => {

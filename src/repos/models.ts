@@ -5,7 +5,146 @@
  * no behavior — that belongs in the per-table repos. Branded UUID aliases
  * come from src/core/contracts.ts; this file does not redeclare them.
  */
-import type { ConversationId, TaskId, UUID } from '../core/contracts';
+import type { ConversationId, ConversationSnapshot, TaskId, UUID } from '../core/contracts';
+import type { AiConfigManifestV1, JsonValue, ProviderId, Purpose } from '../services/ai-config/manifest';
+
+// ---------------------------------------------------------------------------
+// AI configuration, pinned conversations, and durable turns
+// ---------------------------------------------------------------------------
+
+export type AiReleaseStatus = 'draft' | 'frozen' | 'retired';
+export type AiTurnStage =
+  | 'reserved'
+  | 'extracted'
+  | 'effects_started'
+  | 'effects_committed'
+  | 'responded'
+  | 'uncertain';
+export type AiAttemptStatus = 'started' | 'succeeded' | 'failed' | 'uncertain';
+export type AiEventKind = 'artifact' | 'task_processing' | 'decision' | 'notice';
+
+export interface TenantAiRelease {
+  readonly id: UUID;
+  readonly tenantId: UUID;
+  readonly name: string;
+  readonly status: AiReleaseStatus;
+  readonly draftVersion: number;
+  readonly manifest: AiConfigManifestV1;
+  readonly canonicalContent: string;
+  readonly contentHash: string | null;
+  readonly baseSharedReleaseId: UUID | null;
+  readonly allowedOverridePaths: readonly string[];
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface SharedAiRelease {
+  readonly id: UUID;
+  readonly name: string;
+  readonly status: AiReleaseStatus;
+  readonly draftVersion: number;
+  readonly manifest: AiConfigManifestV1;
+  readonly canonicalContent: string;
+  readonly contentHash: string | null;
+  readonly allowedOverridePaths: readonly string[];
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface AiReleaseActivation {
+  readonly releaseId: UUID;
+  readonly version: number;
+  readonly updatedBy: UUID;
+  readonly updatedAt: string;
+}
+
+export interface ProviderAvailability {
+  readonly provider: ProviderId;
+  readonly enabled: boolean;
+  readonly version: number;
+  readonly updatedBy: UUID | null;
+}
+
+export interface AiConversationPin {
+  readonly conversationId: ConversationId;
+  readonly state: 'pinned' | 'legacy_unversioned';
+  readonly releaseId: UUID | null;
+  readonly snapshot: ConversationSnapshot;
+}
+
+export interface AiTurnRow {
+  readonly id: UUID;
+  readonly userId: UUID;
+  readonly conversationId: ConversationId;
+  readonly requestId: UUID;
+  readonly inputHash: string;
+  readonly inputContent: string | null;
+  readonly responseContent: string | null;
+  readonly releaseId: UUID;
+  readonly stage: AiTurnStage;
+  readonly version: number;
+  readonly payload: Readonly<Record<string, JsonValue>>;
+  readonly failureCategory: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface AiTurnNotice {
+  readonly id: UUID;
+  readonly turnId: UUID;
+  readonly conversationId: ConversationId;
+  readonly code: string;
+  readonly content: string | null;
+  readonly createdAt: string;
+}
+
+export interface AiTurnAttempt {
+  readonly id: UUID;
+  readonly turnId: UUID;
+  readonly purpose: Purpose;
+  readonly attemptNumber: number;
+  readonly primaryProfileId: string;
+  readonly effectiveProfileId: string;
+  readonly provider: ProviderId;
+  readonly model: string;
+  readonly modelRevision: string | null;
+  readonly status: AiAttemptStatus;
+  readonly failureCategory: string | null;
+  readonly providerStatus: number | null;
+  readonly requestContent: string | null;
+  readonly responseContent: string | null;
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly latencyMs: number | null;
+  readonly costAmount: number | null;
+  readonly costCurrency: string | null;
+  readonly costSource: 'provider_reported' | 'estimated' | null;
+  readonly pricingVersion: string | null;
+  readonly startedAt: string;
+  readonly finishedAt: string | null;
+}
+
+export interface AiTurnEvent {
+  readonly id: UUID;
+  readonly eventId: string;
+  readonly conversationId: ConversationId;
+  readonly turnId: UUID | null;
+  readonly taskId: TaskId;
+  readonly kind: AiEventKind;
+  readonly payload: Readonly<Record<string, JsonValue>>;
+  readonly createdAt: string;
+  readonly acknowledgedAt: string | null;
+}
+
+export interface UsageSummary {
+  readonly attempts: number;
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly unknownInputTokenAttempts: number;
+  readonly unknownOutputTokenAttempts: number;
+  readonly knownCost: number;
+  readonly unknownCostAttempts: number;
+}
 
 // ---------------------------------------------------------------------------
 // llm_calls

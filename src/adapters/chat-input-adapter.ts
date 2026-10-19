@@ -46,12 +46,17 @@ import {
 } from '../core/contracts';
 import type { AgentRegistry } from '../core/orchestrator/agent-registry';
 import { getProvider } from '../services/llm';
+import {
+  assertResolvedModelPurpose,
+  assertSupportedAdapterBehavior,
+  createCurrentAdapterBehaviorSnapshot,
+  type AdapterExecution,
+  type AdapterFieldBehavior,
+} from '../services/ai-config/adapter-behavior';
 import { withLlmLogging, type LlmLoggingContext } from '../services/llm-logger';
 import { loggerFor } from '../services/logger';
 
 const log = loggerFor('adapter.chat-input');
-
-const EXTRACTOR_TOOL_NAME = 'submit_extracted_fields';
 
 // Note: `\b` would not work between `í` and `,` because JS regex treats
 // non-ASCII letters as non-word characters by default. We anchor on `^\s*`
@@ -60,9 +65,6 @@ const AFFIRMATION_RE = /^\s*(s[ií]|ok|claro|correcto|confirmo|de acuerdo|por su
 
 const DENIAL_RE = /^\s*(no|incorrecto|nop|nel|negativo|para nada)(?=$|[^\p{L}])/iu;
 
-/** Stable bump when the extractor's prompt template or output schema changes. */
-const EXTRACTOR_PROMPT_VERSION = 'extractor.v3';
-
 export interface ExtractInput {
   readonly conversationId: ConversationId;
   readonly userMessage: string;
@@ -70,6 +72,8 @@ export interface ExtractInput {
   readonly priorDecision?: PlannerDecision;
   /** Tenant + user + audit fields for the LLM call. */
   readonly llmContext: LlmLoggingContext;
+  /** Explicit frozen execution for product turns; omitted by legacy/eval callers. */
+  readonly execution?: AdapterExecution;
 }
 
 interface FieldOwnership {
@@ -92,7 +96,7 @@ export class ChatInputAdapter implements InputAdapter {
    * await dispatch settlement before reading the next decision).
    */
   async extract(input: ExtractInput): Promise<FieldDelta> {
-    const { conversationId, userMessage, priorDecision, llmContext } = input;
+    const { conversationId, userMessage, priorDecision, llmContext, execution } = input;
     const child = log.child({
       op: 'extract',
       conversationId,
@@ -100,6 +104,13 @@ export class ChatInputAdapter implements InputAdapter {
     });
 
     const ownership = buildFieldOwnership(this.registry);
+    const currentFields = adapterFieldsFromOwnership(ownership);
+    const behavior = execution?.behavior ?? createCurrentAdapterBehaviorSnapshot(currentFields);
+    assertSupportedAdapterBehavior(behavior, 'extractor');
+    if (execution) assertResolvedModelPurpose(execution.model, 'extractor');
+    if (execution && !sameAdapterFields(behavior.extractor.fields, currentFields)) {
+      throw new Error('Frozen extractor field schema does not match the runtime agent registry.');
+    }
 
     child.info(
       {
@@ -199,13 +210,7 @@ export class ChatInputAdapter implements InputAdapter {
 
     // 2) LLM extraction over the deduped union of fields.
     // Lex-sort field entries so the schema, prompt, and logs are deterministic.
-    const fieldEntries = [...ownership.entries()]
-      .map(([name, entry]) => ({
-        name,
-        required: entry.required,
-        promptHint: entry.promptHint,
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const fieldEntries = behavior.extractor.fields;
     if (fieldEntries.length === 0) {
       child.warn('extractor.no_fields_registered');
       return emitOutput(
@@ -221,9 +226,17 @@ export class ChatInputAdapter implements InputAdapter {
 
     const fieldNames = fieldEntries.map((f) => f.name);
     const extractedSchema = buildExtractedFieldsSchema(fieldNames);
-    const toolJsonSchema = z.toJSONSchema(extractedSchema, { target: 'draft-7' });
-    const systemPrompt = buildExtractorSystemPrompt(fieldEntries);
-    const resolved = getProvider().resolve('extractor');
+    const toolJsonSchema = renderExtractorToolSchema(
+      behavior.extractor.fieldSchemaTemplate,
+      fieldNames,
+      extractedSchema,
+    );
+    const systemPrompt = renderExtractorSystemPrompt(
+      behavior.extractor.promptTemplate,
+      behavior.extractor.toolName,
+      fieldEntries,
+    );
+    const resolved = execution?.model ?? getProvider().resolve('extractor');
 
     // Surface the schema the API call is about to be forced into. Pair this
     // with `extractor.llm.raw_response` and `extractor.parse.result` to see
@@ -232,7 +245,7 @@ export class ChatInputAdapter implements InputAdapter {
       {
         model: resolved.modelId,
         fields: fieldEntries,
-        toolName: EXTRACTOR_TOOL_NAME,
+        toolName: behavior.extractor.toolName,
         jsonSchema: toolJsonSchema,
       },
       'extractor.llm.schema',
@@ -251,25 +264,21 @@ export class ChatInputAdapter implements InputAdapter {
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
         ],
-        temperature: 0,
-        max_tokens: 512,
+        temperature: behavior.extractor.temperature,
+        max_tokens: behavior.extractor.maxTokens,
         tools: [
           {
             type: 'function',
             function: {
-              name: EXTRACTOR_TOOL_NAME,
-              description:
-                'Submit the fields you grounded from the user message. Pass null for fields not expressed or implied.',
+              name: behavior.extractor.toolName,
+              description: behavior.extractor.toolDescription,
               parameters: toolJsonSchema as Record<string, unknown>,
             },
           },
         ],
-        tool_choice: {
-          type: 'function',
-          function: { name: EXTRACTOR_TOOL_NAME },
-        },
+        tool_choice: behavior.extractor.toolChoice,
       },
-      { ...llmContext, promptVersion: EXTRACTOR_PROMPT_VERSION, modelRevision: resolved.modelRevision },
+      { ...llmContext, promptVersion: behavior.extractor.promptVersion, modelRevision: resolved.modelRevision, provider: resolved.provider ?? 'openrouter', purpose: 'extractor' },
     );
 
     const toolCall = completion.choices[0]?.message?.tool_calls?.[0];
@@ -365,8 +374,10 @@ function previewMessage(s: string): string {
   return s.length > 80 ? `${s.slice(0, 77)}...` : s;
 }
 
-function buildExtractorSystemPrompt(
-  fields: ReadonlyArray<{ readonly name: string; readonly required: boolean; readonly promptHint: string }>,
+function renderExtractorSystemPrompt(
+  template: string,
+  toolName: string,
+  fields: ReadonlyArray<AdapterFieldBehavior>,
 ): string {
   const fieldLines = fields
     .map(
@@ -375,24 +386,56 @@ function buildExtractorSystemPrompt(
     )
     .join('\n');
 
-  return [
-    `Eres un extractor de campos para el orquestador MYPES.`,
-    `Tu única tarea: dado un mensaje del usuario en español, llama a la función "${EXTRACTOR_TOOL_NAME}" con los campos que puedas extraer.`,
-    `Estos campos pertenecen al conjunto de agentes registrados; el orquestador decidirá qué agente despachar.`,
-    ``,
-    `Campos disponibles:`,
-    fieldLines,
-    ``,
-    `Reglas:`,
-    `- Si el campo NO está expresado o implicado en el mensaje, pasa null en ese campo.`,
-    `- "confidence" es un número entre 0.0 y 1.0:`,
-    `    1.0  - el usuario indica el valor literalmente`,
-    `    0.9  - claramente implicado por el mensaje`,
-    `    0.7  - probable pero ambiguo`,
-    `    <0.6 - no estás seguro: pasa null en ese campo`,
-    `- NO inventes valores. NO uses contexto fuera del mensaje del usuario.`,
-    `- Llama a la función exactamente una vez. No incluyas texto adicional.`,
-  ].join('\n');
+  return template.replaceAll('{{toolName}}', toolName).replaceAll('{{fieldLines}}', fieldLines);
+}
+
+function adapterFieldsFromOwnership(ownership: Map<string, FieldOwnership>): AdapterFieldBehavior[] {
+  return [...ownership.entries()]
+    .map(([name, entry]) => ({
+      name,
+      required: entry.required,
+      promptHint: entry.promptHint,
+      agents: [...entry.agents].sort(),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function sameAdapterFields(
+  frozen: ReadonlyArray<AdapterFieldBehavior>,
+  current: ReadonlyArray<AdapterFieldBehavior>,
+): boolean {
+  return JSON.stringify(frozen) === JSON.stringify(current);
+}
+
+function renderExtractorToolSchema(
+  template: Readonly<Record<string, unknown>>,
+  fieldNames: ReadonlyArray<string>,
+  parserSchema: ReturnType<typeof buildExtractedFieldsSchema>,
+): Record<string, unknown> {
+  const generated = z.toJSONSchema(parserSchema, { target: 'draft-7' }) as Record<string, unknown>;
+  const expected = JSON.parse(JSON.stringify(template)) as Record<string, unknown>;
+  const expectedProperties = expected.properties as Record<string, unknown>;
+  const expectedFields = expectedProperties.fields as Record<string, unknown>;
+  const actualProperties = generated.properties as Record<string, unknown>;
+  const actualFields = actualProperties.fields as Record<string, unknown>;
+  expectedFields.properties = actualFields.properties;
+  expectedFields.required = [...fieldNames];
+  if (JSON.stringify(sortObject(expected)) !== JSON.stringify(sortObject(generated))) {
+    throw new Error('Frozen extractor tool schema does not match the supported parser schema.');
+  }
+  return generated;
+}
+
+function sortObject(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortObject);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, sortObject(nested)]),
+    );
+  }
+  return value;
 }
 
 const FieldValueZ = z

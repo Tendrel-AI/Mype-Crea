@@ -3,15 +3,15 @@
  * `responder.ts` cannot: whether the reply does exactly what the planner's
  * decisions ask (faithfulness) and whether the tone fits the product.
  *
- * Reuses the OpenRouter client from `getProvider()` (no second OpenAI client
- * in the codebase) with a judge model from a different family than the
- * Responder (Gemini), to limit self-preference bias. Override with
+ * Reuses the configured provider from `getProvider()` (no second client
+ * in the codebase). OpenRouter uses a Claude judge against Gemini responses;
+ * Anthropic mode uses Haiku to judge Sonnet responses. Override with
  * EVAL_JUDGE_MODEL. Judge calls are eval cost, not product usage, so they do
  * not go through withLlmLogging / llm_calls.
  */
 import { z } from 'zod';
 import type { PlannerDecision } from '../../src/core/contracts';
-import { getProvider } from '../../src/services/llm';
+import { getProvider, selectedProviderName, type LLMProviderName } from '../../src/services/llm';
 import type { Feedback } from './extractor';
 
 export const JUDGE_PROMPT_VERSION = 'judge.responder.v1';
@@ -26,8 +26,20 @@ const VerdictZ = z.object({
 
 export type Verdict = z.infer<typeof VerdictZ>;
 
-export function judgeModel(): string {
-  return process.env.EVAL_JUDGE_MODEL ?? DEFAULT_JUDGE_MODEL;
+export function judgeModel(provider: LLMProviderName = selectedProviderName()): string {
+  const configured = process.env.EVAL_JUDGE_MODEL;
+  if (provider === 'anthropic') {
+    if (configured !== undefined && !/^claude-haiku-[a-z0-9-]+$/i.test(configured.trim())) {
+      throw new Error(
+        'EVAL_JUDGE_MODEL must be a Claude Haiku model ID when LLM_PROVIDER=anthropic; the judge requires forced tool use.',
+      );
+    }
+    return configured?.trim() ?? 'claude-haiku-5-5';
+  }
+  if (configured !== undefined && (!configured.trim() || configured.trim().includes(' '))) {
+    throw new Error('EVAL_JUDGE_MODEL must be a non-empty OpenRouter model slug.');
+  }
+  return configured?.trim() ?? DEFAULT_JUDGE_MODEL;
 }
 
 const SYSTEM_PROMPT = [
@@ -55,11 +67,14 @@ export async function judgeReply(input: {
   readonly decisions: ReadonlyArray<PlannerDecision>;
   readonly reply: string;
 }): Promise<{ verdict: Verdict; feedback: ReadonlyArray<Feedback> }> {
-  const { client } = getProvider().resolve('responder');
+  const resolved = getProvider().resolve('extractor');
+  const selectedProvider = resolved.provider ?? selectedProviderName();
+  const selectedModel = judgeModel(selectedProvider);
+  const { client } = resolved;
   const completion = await client.chat.completions.create({
-    model: judgeModel(),
-    temperature: 0,
+    model: selectedModel,
     max_tokens: 600,
+    ...(selectedProvider === 'anthropic' ? {} : { temperature: 0 }),
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       {
@@ -86,7 +101,11 @@ export async function judgeReply(input: {
   return {
     verdict,
     feedback: [
-      { key: 'responder.judge.faithfulness', score: (verdict.faithfulness - 1) / 4, comment: verdict.reasoning },
+      {
+        key: 'responder.judge.faithfulness',
+        score: (verdict.faithfulness - 1) / 4,
+        comment: verdict.reasoning,
+      },
       { key: 'responder.judge.tone', score: (verdict.tone - 1) / 4 },
     ],
   };

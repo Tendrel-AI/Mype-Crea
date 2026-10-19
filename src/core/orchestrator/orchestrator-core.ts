@@ -40,6 +40,7 @@ import type {
 import type { A2AMessage, IAgentTransport, TaskState } from '../agent-types';
 import { loggerFor } from '../../services/logger';
 import type { AgentRegistry } from './agent-registry';
+import type { TaskSettlementContext } from './runtime-config';
 import type { IConversationStore } from './in-memory-store';
 import { mergeFieldDelta } from './merge';
 import { findAgentReadyToDispatch, planNextDecision } from './planner';
@@ -172,8 +173,9 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     tenantId: UUID,
     userId: UUID,
   ): Promise<void> {
-    this.conversationTenants.set(conversationId, tenantId);
     await this.deps.store.getOrCreate(conversationId, tenantId, userId);
+    // Cache only after the scoped store call has authorized the actor.
+    this.conversationTenants.set(conversationId, tenantId);
   }
 
   async applyDelta(delta: FieldDelta): Promise<ConversationSnapshot> {
@@ -239,7 +241,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     // 3) Emit the current planner plan so subscribers catch up. We notify
     // per decision so existing IDecisionNotifier subscribers (single-decision
     // shape) stay compatible after the multi-decision change.
-    const plan = await this.getNextDecision(delta.conversationId);
+    const plan = await this.peekNextDecision(delta.conversationId);
     for (const decision of plan) {
       this.deps.notifier.notify(delta.conversationId, decision);
     }
@@ -261,15 +263,21 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
   }
 
   async getNextDecision(conversationId: ConversationId): Promise<ReadonlyArray<PlannerDecision>> {
+    const plan = await this.peekNextDecision(conversationId);
+    await this.acknowledgeDecisions(conversationId, plan);
+    return plan;
+  }
+
+  /** Read the current plan without consuming queued announcements. */
+  async peekNextDecision(conversationId: ConversationId): Promise<ReadonlyArray<PlannerDecision>> {
     const tenantId = this.conversationTenants.get(conversationId);
     const child = log.child({ op: 'getNextDecision', tenantId, conversationId });
 
     const plan: PlannerDecision[] = [];
 
-    // 1. Drain any dispatch announcements queued since the last read.
+    // 1. Include dispatch announcements that remain unacknowledged.
     const dispatches = this.pendingDispatches.get(conversationId);
     if (dispatches && dispatches.length > 0) {
-      this.pendingDispatches.delete(conversationId);
       for (const announcement of dispatches) {
         plan.push(announcement);
         child.info(
@@ -279,11 +287,10 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
       }
     }
 
-    // 2. Drain completion announcements (failed tasks fall through silently
+    // 2. Include completion announcements (failed tasks fall through silently
     // for now; a future `announce_failure` variant can take their place).
     const pending = this.pendingCompletions.get(conversationId);
     if (pending && pending.length > 0) {
-      this.pendingCompletions.delete(conversationId);
       for (const next of pending) {
         if (next.state.status === 'completed') {
           child.info(
@@ -320,6 +327,42 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     plan.push(...planNextDecision(snapshot, this.deps.registry));
 
     return plan;
+  }
+
+  /**
+   * A controller calls this only after it has durably checkpointed the plan
+   * for a turn. Task IDs make acknowledgement safe when another completion
+   * is appended after the plan was read.
+   */
+  async acknowledgeDecisions(
+    conversationId: ConversationId,
+    decisions: ReadonlyArray<PlannerDecision>,
+  ): Promise<void> {
+    const acknowledged = new Set(
+      decisions.flatMap((decision) =>
+        decision.kind === 'announce_dispatch' || decision.kind === 'announce_completion'
+          ? [`${decision.kind}:${decision.taskId}`]
+          : [],
+      ),
+    );
+    if (acknowledged.size === 0) return;
+
+    const dispatches = this.pendingDispatches.get(conversationId);
+    if (dispatches) {
+      const remaining = dispatches.filter(
+        (decision) => !acknowledged.has(`announce_dispatch:${decision.taskId}`),
+      );
+      if (remaining.length) this.pendingDispatches.set(conversationId, remaining);
+      else this.pendingDispatches.delete(conversationId);
+    }
+    const completions = this.pendingCompletions.get(conversationId);
+    if (completions) {
+      const remaining = completions.filter(
+        (completion) => !acknowledged.has(`announce_completion:${completion.taskId}`),
+      );
+      if (remaining.length) this.pendingCompletions.set(conversationId, remaining);
+      else this.pendingCompletions.delete(conversationId);
+    }
   }
 
   async getSnapshot(conversationId: ConversationId): Promise<ConversationSnapshot> {
@@ -435,8 +478,23 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     taskId: TaskId,
     state: TaskState,
     deliverableIds: ReadonlyArray<DeliverableId> = [],
+    context?: TaskSettlementContext,
   ): Promise<void> => {
-    const owner = this.taskOwnership.get(taskId);
+    let owner = this.taskOwnership.get(taskId);
+    if (!owner && context) {
+      // Context comes only from the worker after it re-reads the canonical
+      // task and resolves the conversation owner under tenant scope.
+      await this.startConversation(
+        context.conversationId as ConversationId,
+        context.tenantId as UUID,
+        context.ownerUserId as UUID,
+      );
+      owner = {
+        conversationId: context.conversationId as ConversationId,
+        agentId: context.agentId as AgentId,
+      };
+      this.taskOwnership.set(taskId, owner);
+    }
     if (!owner) {
       log.warn(
         {
@@ -494,7 +552,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     );
 
     // Persist the terminal state if the agent_tasks repo is wired.
-    if (this.deps.agentTasksFor && tenantId) {
+    if (this.deps.agentTasksFor && tenantId && !context?.durableSettlement) {
       const repo = this.deps.agentTasksFor(tenantId);
       try {
         if (state.status === 'completed') {
@@ -518,10 +576,12 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     // "task_in_flight" reason. iterationCount stays incremented so
     // findAgentReadyToDispatch still treats this agent as already-handled
     // (re-runs are user-triggered iterations per §2.7, not auto-dispatch).
-    try {
-      await this.deps.store.clearDispatch(owner.conversationId, owner.agentId);
-    } catch (err) {
-      child.error({ err }, 'orchestrator.task.clear_dispatch_failed');
+    if (!context?.durableSettlement) {
+      try {
+        await this.deps.store.clearDispatch(owner.conversationId, owner.agentId);
+      } catch (err) {
+        child.error({ err }, 'orchestrator.task.clear_dispatch_failed');
+      }
     }
 
     const bucket = this.pendingCompletions.get(owner.conversationId) ?? [];
@@ -563,7 +623,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     }
 
     // Wake subscribers.
-    const plan = await this.getNextDecision(owner.conversationId);
+    const plan = await this.peekNextDecision(owner.conversationId);
     for (const decision of plan) {
       this.deps.notifier.notify(owner.conversationId, decision);
     }

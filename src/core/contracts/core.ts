@@ -49,6 +49,15 @@ export interface OrchestratorCore {
    */
   getNextDecision(conversationId: ConversationId): Promise<ReadonlyArray<PlannerDecision>>;
 
+  /** Read decisions without consuming completion/dispatch announcements. */
+  peekNextDecision(conversationId: ConversationId): Promise<ReadonlyArray<PlannerDecision>>;
+
+  /** Acknowledge announcements only after their durable turn checkpoint. */
+  acknowledgeDecisions(
+    conversationId: ConversationId,
+    decisions: ReadonlyArray<PlannerDecision>,
+  ): Promise<void>;
+
   /**
    * Return a snapshot of conversation state (for debugging, tests, and the
    * admin dashboard — never for rendering user-facing UI).

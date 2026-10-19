@@ -36,11 +36,13 @@ export class PostgresConversationStore implements IConversationStore {
     userId: UUID,
   ): Promise<ConversationSnapshot> {
     const actor: ConversationActor = { tenant: { id: tenantId }, user: { id: userId } };
-    this.actorByConversation.set(conversationId, actor);
-    return repos(actor.tenant, actor.user).conversations.getOrCreate(
+    const snapshot = await repos(actor.tenant, actor.user).conversations.getOrCreate(
       conversationId,
       this.schemas,
     );
+    // Do not let a failed/unauthorized lookup poison the actor cache.
+    this.actorByConversation.set(conversationId, actor);
+    return snapshot;
   }
 
   async get(conversationId: ConversationId): Promise<ConversationSnapshot | undefined> {

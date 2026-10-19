@@ -2,7 +2,7 @@
  * Setup for `npm run eval` (vitest.eval.config.ts). Runs before every
  * *.eval.ts file.
  *
- * - Evals call the real LLM through OpenRouter, so fail fast without a key.
+ * - Evals call the configured real LLM provider, so fail fast without its key.
  * - The repos factory is mocked so `withLlmLogging` never needs a database:
  *   evals measure model behavior, and eval traffic must not land in the
  *   product's `llm_calls` audit table.
@@ -13,11 +13,10 @@ import { vi } from 'vitest';
 
 process.env.LOG_LEVEL ??= 'warn';
 
-if (!process.env.OPENROUTER_API_KEY) {
-  throw new Error(
-    'Evals call the real LLM: set OPENROUTER_API_KEY in .env.local (see docs/agents/testing.md → Evals).',
-  );
-}
+const provider = process.env.LLM_PROVIDER ?? 'openrouter';
+if (provider !== 'openrouter' && provider !== 'anthropic') throw new Error('LLM_PROVIDER must be "openrouter" or "anthropic".');
+const requiredKey = provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENROUTER_API_KEY';
+if (!process.env[requiredKey]?.trim()) throw new Error(`Evals call the real LLM: set ${requiredKey} in .env.local (see docs/agents/testing.md → Evals).`);
 
 vi.mock('../../src/repos', () => ({
   repos: () => ({ llmCalls: { record: async () => 'eval-llm-call' } }),

@@ -1,10 +1,28 @@
 import { getSignInUrl, getSignUpUrl, withAuth } from '@workos-inc/authkit-nextjs';
 import { Sparkles } from 'lucide-react';
 
+function singleConfiguredOrganization(): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(process.env.WORKOS_ORGANIZATION_TENANTS ?? '');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const entries = Object.entries(parsed);
+    if (entries.some(([id, tenantId]) =>
+      !/^org_[A-Za-z0-9]+$/.test(id) ||
+      typeof tenantId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(tenantId),
+    )) return undefined;
+    const organizations = entries.map(([id]) => id);
+    return organizations.length === 1 ? organizations[0] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export default async function LoginPage() {
   const { user } = await withAuth();
-  const signInUrl = await getSignInUrl();
-  const signUpUrl = await getSignUpUrl();
+  const organizationId = singleConfiguredOrganization();
+  const signInUrl = await getSignInUrl(organizationId ? { organizationId } : undefined);
+  const signUpUrl = await getSignUpUrl(organizationId ? { organizationId } : undefined);
 
   return (
     <div className="flex h-screen items-center justify-center bg-neutral-50 text-neutral-900 font-sans">

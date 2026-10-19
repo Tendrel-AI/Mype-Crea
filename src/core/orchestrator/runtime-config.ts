@@ -41,7 +41,17 @@ export type OnTaskSettled = (
   taskId: TaskId,
   state: TaskState,
   deliverableIds: ReadonlyArray<DeliverableId>,
-) => void;
+  context?: TaskSettlementContext,
+) => Promise<void> | void;
+
+/** Server-verified task ownership recovered from the canonical task/conversation rows. */
+export interface TaskSettlementContext {
+  readonly tenantId: UUID;
+  readonly conversationId: UUID;
+  readonly ownerUserId: UUID;
+  readonly agentId: string;
+  readonly durableSettlement?: true;
+}
 
 /** Inputs to `buildRuntime`. Every field is replaceable. */
 export interface RuntimeConfig {
@@ -66,8 +76,8 @@ export interface RuntimeConfig {
  */
 export function buildRuntime(config: RuntimeConfig): Runtime {
   let coreRef: OrchestratorCoreImpl | null = null;
-  const onTaskSettled: OnTaskSettled = (taskId, state, deliverableIds) => {
-    void coreRef?.onTaskSettled(taskId, state, deliverableIds);
+  const onTaskSettled: OnTaskSettled = async (taskId, state, deliverableIds, context) => {
+    await coreRef?.onTaskSettled(taskId, state, deliverableIds, context);
   };
 
   const transport = config.transportFactory(onTaskSettled);
