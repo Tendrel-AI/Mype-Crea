@@ -20,3 +20,27 @@ View your app in AI Studio: https://ai.studio/apps/edc460b0-60ec-4ba7-887a-d754e
 2. Copy `.env.example` to `.env.local`. Set `LLM_PROVIDER` to `openrouter` or `anthropic`, then set only the matching provider key (`OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY`).
 3. Run the app:
    `npm run dev`
+
+## Continuous integration (KAN-14)
+
+GitHub Actions runs on pull requests targeting `developer` and pushes to `developer`.
+The initial checks are a clean `npm ci` install, ESLint, TypeScript, unit tests,
+and a production build. The workflow also starts an isolated PostgreSQL service,
+applies the migrations, and verifies that the application connection uses
+`app_user` without `BYPASSRLS`. It never reads `.env.local`, production credentials,
+or service secrets.
+
+The initial unit test command excludes `*.integration.test.ts` and the real-model
+eval suite. KAN-17 will add the two-tenant integration suite to the isolated CI
+database and make it a required check. Real LLM and image calls and LangSmith
+trace uploads remain manual; no paid credentials are provided to CI.
+
+To block merges on failure, a repository administrator must protect `developer`
+and require the five CI job checks: `Lint`, `TypeScript`, `Unit tests`,
+`Database migrations`, and `Production build`. The workflow reports failures
+even before branch protection is enabled.
+
+The CI decision and follow-on work are tracked in
+[KAN-61](https://matyaslopz.atlassian.net/browse/KAN-61),
+[KAN-14](https://matyaslopz.atlassian.net/browse/KAN-14), and
+[KAN-17](https://matyaslopz.atlassian.net/browse/KAN-17).
