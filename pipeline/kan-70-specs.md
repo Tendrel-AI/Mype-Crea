@@ -75,3 +75,13 @@ with incremental disabled. Real DB migrations/integration tests require user agr
 the migration and checks are concrete and reviewable. No paid model/image/eval calls.
 Update affected local-only docs/rules without force-adding them. Do not claim KAN-70 complete
 after foundation modules alone; report remaining acceptance gaps honestly.
+
+## Offline implementation status (2026-10-18)
+
+Implemented in source and covered by focused fake/pure tests: owner-authorized conversation trace
+export (messages, turns, attempts, notices, deliverables, and pinned release identity), explicit
+usage accounting status (`complete`/`partial`/`unknown`/`no_attempts`), and an explicit
+`unconfigured` budget status. These fields do not set or enforce a monetary budget; that policy
+remains deferred to KAN-43. The migration and repository SQL/RLS still need the dedicated
+PostgreSQL integration validation before database acceptance can be claimed. See
+`docs/agents/testing.md` for the exact test and approval boundary.

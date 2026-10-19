@@ -3,10 +3,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
-import { Send, Loader2, Sparkles, Image as ImageIcon, LayoutTemplate, Megaphone, CheckCircle2, LogOut, Menu, Globe, PlusCircle } from 'lucide-react';
+import { Send, Loader2, Sparkles, Image as ImageIcon, LayoutTemplate, Megaphone, CheckCircle2, LogOut, Menu, Globe, PlusCircle, Download } from 'lucide-react';
 import { signOutAction } from '../app/actions/auth';
 import { chatAction } from '../app/actions/chat';
-import { createConversationAction, loadConversationAction } from '../app/actions/conversations';
+import { createConversationAction, exportConversationTraceAction, loadConversationAction } from '../app/actions/conversations';
 
 interface CreaMypeProps {
   userEmail: string;
@@ -280,6 +280,22 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     })();
   };
 
+  const handleExportConversation = async () => {
+    if (!conversationId) return;
+    const result = await exportConversationTraceAction({ conversationId });
+    if (!result.ok) {
+      setConversationError(result.message);
+      return;
+    }
+    const blob = new Blob([result.content], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `crea-mype-conversation-${conversationId}.json`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
+
   const steps = [
     { num: 1, title: 'Nombre', icon: Sparkles },
     { num: 2, title: 'Logo', icon: ImageIcon },
@@ -426,6 +442,12 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
             <h1 className="font-semibold text-lg tracking-tight">CreaMype</h1>
           </div>
           <div className="flex items-center gap-4">
+            {conversationId && <button
+              type="button"
+              onClick={() => void handleExportConversation()}
+              className="text-xs font-medium px-2.5 py-1 rounded-full bg-neutral-100 text-neutral-600 hover:bg-neutral-200 transition-colors flex items-center gap-1"
+              title="Descargar la conversación y sus registros"
+            ><Download className="w-3 h-3" />Exportar</button>}
             <div className="text-xs font-medium px-2.5 py-1 rounded-full bg-neutral-100 text-neutral-600">
               Paso {Math.min(step, 5)} de 5
             </div>

@@ -50,7 +50,17 @@ type AdminData = {
   providers: Array<{ provider: 'openrouter' | 'anthropic'; enabled: boolean; version: number }>;
   providerStatus: Array<{ provider: string; available: boolean }>;
   syncEvents: Array<Record<string, unknown>>;
-  usage: Record<string, unknown> | null;
+  usage: {
+    attempts: number;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    unknownInputTokenAttempts: number;
+    unknownOutputTokenAttempts: number;
+    knownCost: number;
+    unknownCostAttempts: number;
+    costAccountingStatus: 'no_attempts' | 'complete' | 'partial' | 'unknown';
+    budgetStatus: 'unconfigured';
+  } | null;
   turns: Array<{ id: string; stage: string; failureCategory: string | null; createdAt: string }>;
 };
 
@@ -199,7 +209,23 @@ export default function AiConfigurationAdmin({ initialData }: { initialData: Rec
       </section>
 
       <section className="grid gap-6 lg:grid-cols-2">
-        <div className="space-y-3 rounded-xl border bg-white p-5 shadow-sm"><h2 className="font-semibold">Uso y presupuesto</h2><p className="text-sm text-slate-600">El presupuesto monetario no está configurado aquí. Los costos desconocidos permanecen desconocidos.</p>{data.usage ? <dl className="grid grid-cols-2 gap-2 text-sm"><dt>Intentos registrados</dt><dd>{String(data.usage.attempts ?? '—')}</dd><dt>Tokens de entrada</dt><dd>{data.usage.inputTokens === null ? 'Desconocidos en algunos intentos' : String(data.usage.inputTokens)}</dd><dt>Tokens de salida</dt><dd>{data.usage.outputTokens === null ? 'Desconocidos en algunos intentos' : String(data.usage.outputTokens)}</dd><dt>Costos no disponibles</dt><dd>{String(data.usage.unknownCostAttempts ?? '—')}</dd><dt>Costo conocido acumulado</dt><dd>{Number(data.usage.unknownCostAttempts ?? 0) >= Number(data.usage.attempts ?? 0) ? 'Desconocido' : String(data.usage.knownCost ?? 'Desconocido')}</dd></dl> : <p className="text-sm">Sin resumen de uso disponible.</p>}</div>
+        <div className="space-y-3 rounded-xl border bg-white p-5 shadow-sm">
+          <h2 className="font-semibold">Uso y presupuesto</h2>
+          {data.usage ? <>
+            <p className="text-sm text-slate-600">
+              Presupuesto: {data.usage.budgetStatus === 'unconfigured' ? 'sin configurar' : 'estado no disponible'}.
+              {' '}Estado del costo: {data.usage.costAccountingStatus === 'complete' ? 'completo' : data.usage.costAccountingStatus === 'partial' ? 'parcial' : data.usage.costAccountingStatus === 'unknown' ? 'desconocido' : 'sin intentos'}.
+            </p>
+            <dl className="grid grid-cols-2 gap-2 text-sm">
+              <dt>Intentos registrados</dt><dd>{String(data.usage.attempts)}</dd>
+              <dt>Tokens de entrada</dt><dd>{data.usage.inputTokens === null ? `Desconocidos en ${data.usage.unknownInputTokenAttempts} intentos` : String(data.usage.inputTokens)}</dd>
+              <dt>Tokens de salida</dt><dd>{data.usage.outputTokens === null ? `Desconocidos en ${data.usage.unknownOutputTokenAttempts} intentos` : String(data.usage.outputTokens)}</dd>
+              <dt>Costos no disponibles</dt><dd>{String(data.usage.unknownCostAttempts)}</dd>
+              <dt>Costo conocido acumulado</dt><dd>{data.usage.costAccountingStatus === 'no_attempts' ? 'Sin intentos registrados' : data.usage.costAccountingStatus === 'unknown' ? 'Desconocido' : String(data.usage.knownCost)}</dd>
+            </dl>
+            <p className="text-xs text-slate-500">La política de presupuesto se define por separado. Los costos desconocidos no se estiman ni se convierten en cero.</p>
+          </> : <p className="text-sm">Sin resumen de uso disponible.</p>}
+        </div>
         <div className="space-y-3 rounded-xl border bg-white p-5 shadow-sm"><h2 className="font-semibold">Auditoría y sincronización</h2><p className="text-sm text-slate-600">La exportación local prepara un JSON descargable. La sincronización usa contenido de configuración privado y solo se ejecuta al elegir Publicar o Importar; no hay consultas automáticas.</p><div className="space-y-2">{data.syncEvents.map((event, index) => <div key={`${String(event.operationId)}-${String(event.status)}-${index}`} className="rounded bg-slate-50 p-2 text-xs"><p>{String(event.destination)} · {String(event.action)} · {String(event.status)} · {event.pinnedCommit ? `commit ${String(event.pinnedCommit)}` : 'sin commit fijado'}</p>{event.status === 'failed' && event.destination === 'langsmith' && ['prompt_publish', 'retry'].includes(String(event.action)) && selectedIsShared && selected?.status === 'frozen' && data.platformAdmin && isAdmin && event.contentHash === selected.contentHash && <button className="mt-2 rounded border px-2 py-1" onClick={() => void run(() => retrySharedAiPrompt({ releaseId: selected.id, parentOperationId: String(event.operationId) }), 'Reintento registrado con referencia al intento anterior.')}>Reintentar</button>}</div>)}</div></div>
       </section>
 

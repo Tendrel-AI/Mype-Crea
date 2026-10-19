@@ -151,6 +151,8 @@ export const up = (pgm) => {
       FOREIGN KEY (tenant_id, ai_release_id) REFERENCES ai_releases(tenant_id, id) ON DELETE RESTRICT;
     ALTER TABLE conversations ADD CONSTRAINT conversations_tenant_id_user_release_unique
       UNIQUE (tenant_id,id,user_id,ai_release_id);
+    ALTER TABLE conversations ADD CONSTRAINT conversations_tenant_id_user_unique
+      UNIQUE (tenant_id,id,user_id);
 
     ALTER TABLE messages ADD COLUMN ai_turn_id uuid;
 
@@ -529,6 +531,7 @@ export const down = (pgm) => {
 
     ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_ai_release_fk;
     ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_tenant_id_user_release_unique;
+    ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_tenant_id_user_unique;
     ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_configuration_state_check;
     ALTER TABLE conversations DROP COLUMN IF EXISTS configuration_state;
     ALTER TABLE conversations DROP COLUMN IF EXISTS ai_release_id;

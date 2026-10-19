@@ -144,6 +144,8 @@ export interface UsageSummary {
   readonly unknownOutputTokenAttempts: number;
   readonly knownCost: number;
   readonly unknownCostAttempts: number;
+  readonly costAccountingStatus: 'no_attempts' | 'complete' | 'partial' | 'unknown';
+  readonly budgetStatus: 'unconfigured';
 }
 
 // ---------------------------------------------------------------------------

@@ -120,3 +120,62 @@ export async function loadConversationAction(input: {
     };
   }
 }
+
+export type ConversationTraceExportResult =
+  | { readonly ok: true; readonly content: string }
+  | { readonly ok: false; readonly code: 'conversation_unavailable'; readonly message: string };
+
+/** Export the caller's own persisted conversation and turn evidence. */
+export async function exportConversationTraceAction(input: {
+  readonly conversationId: string;
+}): Promise<ConversationTraceExportResult> {
+  if (!isUuid(input.conversationId)) {
+    return { ok: false, code: 'conversation_unavailable', message: 'No encontramos esta conversación.' };
+  }
+  try {
+    const identity = await resolveIdentity();
+    const conversationId = input.conversationId as ConversationId;
+    const repository = repos(identity.tenant, identity.user);
+    const registry = buildDefaultRegistry();
+    const pin = await repository.conversations.readPinnedConversation(conversationId, registry.getFieldSchemas());
+    if (!pin) {
+      return { ok: false, code: 'conversation_unavailable', message: 'No encontramos esta conversación.' };
+    }
+
+    const [turns, messages, deliverables, release] = await Promise.all([
+      repository.aiTurns.listTurns(conversationId),
+      repository.messages.listByConversation(conversationId),
+      repository.deliverables.listByConversation(conversationId),
+      repository.aiConfig.getPinnedRelease(conversationId),
+    ]);
+    const turnEvidence = await Promise.all(turns.map(async (turn) => {
+      const [attempts, notices] = await Promise.all([
+        repository.aiTurns.listAttempts({ turnId: turn.id }),
+        repository.aiTurns.listNotices(turn.id),
+      ]);
+      return { turn, attempts, notices };
+    }));
+
+    return {
+      ok: true,
+      content: JSON.stringify({
+        conversation: {
+          id: conversationId,
+          configurationState: pin.state,
+          releaseId: pin.releaseId,
+          releaseContentHash: release?.contentHash ?? null,
+        },
+        turns: turnEvidence,
+        messages,
+        deliverables,
+        exportedAt: new Date().toISOString(),
+      }, null, 2),
+    };
+  } catch {
+    return { ok: false, code: 'conversation_unavailable', message: 'No pudimos exportar esta conversación. Inténtalo de nuevo.' };
+  }
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}

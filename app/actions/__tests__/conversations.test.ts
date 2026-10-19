@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => {
   const identity = { tenant: { id: 'tenant-1' }, user: { id: 'user-1' } };
   const pinned = { state: 'pinned', snapshot: { conversationId: 'new-id' }, releaseId: 'release-1' };
   const ensurePinnedConversation = vi.fn(async () => pinned);
-  const readPinnedConversation = vi.fn(async () => pinned);
+  const readPinnedConversation = vi.fn(async (): Promise<typeof pinned | undefined> => pinned);
   const listTurns = vi.fn(async (): Promise<Array<{
     id: string;
     requestId: string;
@@ -18,22 +18,28 @@ const mocks = vi.hoisted(() => {
     responseContent: '¡Vamos!', stage: 'responded', failureCategory: null, createdAt: '2026-01-01T00:00:00.000Z',
   }]);
   const listNotices = vi.fn(async () => [{ code: 'approved_fallback_used', content: 'Seguimos con una alternativa.' }]);
+  const listAttempts = vi.fn(async () => [{ id: 'attempt-1', provider: 'openrouter', model: 'model-a' }]);
   const listByConversation = vi.fn(async (): Promise<Array<{
     kind: string;
     contentUrl: string | null;
     contentInline: Record<string, unknown> | null;
   }>> => []);
+  const listMessages = vi.fn(async () => [{ id: 'message-1', role: 'user', content: 'Quiero un logo' }]);
+  const getPinnedRelease = vi.fn(async () => ({ id: 'release-1', contentHash: 'hash-1' }));
   const startConversation = vi.fn(async () => undefined);
   const repos = vi.fn(() => ({
     conversations: { ensurePinnedConversation, readPinnedConversation },
+    messages: { listByConversation: listMessages },
     deliverables: { listByConversation },
-    aiTurns: { listTurns, listNotices },
+    aiConfig: { getPinnedRelease },
+    aiTurns: { listTurns, listNotices, listAttempts },
   }));
   const getOrchestrator = vi.fn(() => ({ startConversation }));
   const getFieldSchemas = vi.fn(() => []);
   return {
     identity, pinned, ensurePinnedConversation, readPinnedConversation,
-    listTurns, listNotices, listByConversation, startConversation, repos, getOrchestrator, getFieldSchemas,
+    listTurns, listNotices, listAttempts, listByConversation, listMessages, getPinnedRelease,
+    startConversation, repos, getOrchestrator, getFieldSchemas,
   };
 });
 
@@ -44,7 +50,7 @@ vi.mock('../../../src/core/orchestrator/bootstrap-registry', () => ({
   buildDefaultRegistry: () => ({ getFieldSchemas: mocks.getFieldSchemas }),
 }));
 
-import { createConversationAction, loadConversationAction } from '../conversations';
+import { createConversationAction, exportConversationTraceAction, loadConversationAction } from '../conversations';
 
 describe('conversation actions', () => {
   beforeEach(() => {
@@ -114,5 +120,28 @@ describe('conversation actions', () => {
     const result = await loadConversationAction({ conversationId: 'old-id' });
     expect(result).toMatchObject({ ok: false, code: 'legacy_unversioned' });
     expect(mocks.listTurns).not.toHaveBeenCalled();
+  });
+
+  it('exports only the authenticated owner’s persisted conversation evidence', async () => {
+    const conversationId = '11111111-1111-4111-8111-111111111111';
+    const result = await exportConversationTraceAction({ conversationId });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(JSON.parse(result.content)).toMatchObject({
+      conversation: { id: conversationId, configurationState: 'pinned', releaseId: 'release-1', releaseContentHash: 'hash-1' },
+      turns: [{ turn: { id: 'turn-1' }, attempts: [{ id: 'attempt-1' }], notices: [{ code: 'approved_fallback_used' }] }],
+      messages: [{ id: 'message-1' }],
+    });
+    expect(mocks.repos).toHaveBeenCalledWith(mocks.identity.tenant, mocks.identity.user);
+    expect(mocks.readPinnedConversation).toHaveBeenCalledWith(conversationId, []);
+    expect(mocks.listAttempts).toHaveBeenCalledWith({ turnId: 'turn-1' });
+  });
+
+  it('does not read or export another owner’s conversation', async () => {
+    mocks.readPinnedConversation.mockResolvedValueOnce(undefined);
+    const result = await exportConversationTraceAction({ conversationId: '11111111-1111-4111-8111-111111111111' });
+    expect(result).toMatchObject({ ok: false, code: 'conversation_unavailable' });
+    expect(mocks.listTurns).not.toHaveBeenCalled();
+    expect(mocks.listAttempts).not.toHaveBeenCalled();
   });
 });

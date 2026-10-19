@@ -16,6 +16,7 @@ import type { JsonValue, Purpose, ProviderId } from '../services/ai-config/manif
 import type { AiConfigManifestV1 } from '../services/ai-config/manifest';
 
 import type { RepositoryActor } from './ai-config';
+import { summarizeUsage } from './usage-summary';
 
 interface TurnDbRow {
   readonly id: UUID;
@@ -109,6 +110,7 @@ function mapNotice(row: NoticeDbRow): AiTurnNotice {
   return { ...row, createdAt: new Date(row.createdAt).toISOString() };
 }
 async function queryUsage(tx: TxClient, tenantId: UUID, input: {
+  userId?: UUID;
   from?: string;
   to?: string
 }): Promise<UsageSummary> {
@@ -137,22 +139,22 @@ async function queryUsage(tx: TxClient, tenantId: UUID, input: {
         count(*) FILTER(WHERE cost_amount IS NULL)::int unknown_cost_attempts
         FROM ai_turn_attempts
         WHERE tenant_id=$1
-AND ($2::timestamptz IS NULL OR started_at >= $2)
-AND ($3::timestamptz IS NULL OR started_at < $3)`,
-    [tenantId, input.from ?? null, input.to ?? null],
+          AND ($2::uuid IS NULL OR user_id=$2)
+          AND ($3::timestamptz IS NULL OR started_at >= $3)
+          AND ($4::timestamptz IS NULL OR started_at < $4)`,
+    [tenantId, input.userId ?? null, input.from ?? null, input.to ?? null],
   );
 
   const row = result.rows[0];
-
-  return {
+  return summarizeUsage({
     attempts: row.attempts,
-    inputTokens: row.unknown_input ? null : row.input_tokens,
-    outputTokens: row.unknown_output ? null : row.output_tokens,
-    unknownInputTokenAttempts: row.unknown_input,
-    unknownOutputTokenAttempts: row.unknown_output,
-    knownCost: Number(row.known_cost),
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    unknownInputAttempts: row.unknown_input,
+    unknownOutputAttempts: row.unknown_output,
+    knownCost: row.known_cost,
     unknownCostAttempts: row.unknown_cost_attempts,
-  };
+  });
 
 }
 async function deleteTurnContent(tx: TxClient, turnId: UUID): Promise<boolean> {
@@ -834,40 +836,7 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
       to?: string
     } = {}): Promise<UsageSummary> {
       return withTenantTransaction(tenant, user, async (tx) => {
-        const result = await tx.query<UsageSummary & {
-          input_tokens: number | null;
-          output_tokens: number | null;
-          unknown_input: number;
-          unknown_output: number;
-          known_cost: string;
-          unknown_cost_attempts: number
-        }>(
-          `SELECT count(*)::int attempts,
-        sum(input_tokens)::int input_tokens,
-        sum(output_tokens)::int output_tokens,
-        count(*) FILTER(WHERE input_tokens IS NULL)::int unknown_input,
-        count(*) FILTER(WHERE output_tokens IS NULL)::int unknown_output,
-        coalesce(sum(cost_amount),0)::text known_cost,
-        count(*) FILTER(WHERE cost_amount IS NULL)::int unknown_cost_attempts
-        FROM ai_turn_attempts
-        WHERE tenant_id=$1 AND user_id=$2
-AND ($3::timestamptz IS NULL OR started_at >= $3)
-AND ($4::timestamptz IS NULL OR started_at < $4)`,
-          [tenant.id, user.id, input.from ?? null, input.to ?? null],
-        );
-
-        const row = result.rows[0];
-
-        return {
-          attempts: row.attempts,
-          inputTokens: row.unknown_input ? null : row.input_tokens,
-          outputTokens: row.unknown_output ? null : row.output_tokens,
-          unknownInputTokenAttempts: row.unknown_input,
-          unknownOutputTokenAttempts: row.unknown_output,
-          knownCost: Number(row.known_cost),
-          unknownCostAttempts: row.unknown_cost_attempts,
-        };
-
+        return queryUsage(tx, tenant.id, { ...input, userId: user.id });
       });
 
     },
