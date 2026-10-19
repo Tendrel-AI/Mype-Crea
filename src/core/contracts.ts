@@ -30,7 +30,7 @@
  *      The core MUST NOT branch on it.
  *
  * See also:
- *   - .claude/skills/mypes-architecture/SKILL.md  (architectural constitution)
+ *   - docs/agents/architecture.md  (architectural constitution)
  *   - docs/adr/                                    (architectural decisions)
  */
 

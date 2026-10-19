@@ -1,7 +1,7 @@
 /**
  * deliverables repository.
  *
- * Per claude/skills/database/SKILL.md:
+ * Per docs/agents/database.md:
  *   - deliverables RLS is tenant + user (admin bypasses user check). Methods
  *     here run inside `withTenantTransaction(tenant, user, ...)` so both
  *     GUCs are set before INSERT.

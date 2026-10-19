@@ -3,7 +3,7 @@
  * `agent_states` JSONB column (the persisted form of the orchestrator's
  * ConversationSnapshot.agentStates).
  *
- * Per claude/skills/database/SKILL.md: every method runs inside an explicit
+ * Per docs/agents/database.md: every method runs inside an explicit
  * transaction with the tenant + user GUCs set. There is no overload that
  * skips the tenant. Application code never imports this file directly —
  * it goes through `repos(tenant, user)` (see ./index.ts).

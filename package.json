@@ -13,7 +13,10 @@
     "migrate:down": "dotenv -e .env.local -- node-pg-migrate down",
     "migrate:redo": "dotenv -e .env.local -- node-pg-migrate redo",
     "test": "vitest run",
-    "test:integration": "dotenv -e .env.local -- vitest run"
+    "test:integration": "dotenv -e .env.local -- vitest run",
+    "eval": "dotenv -e .env.local -- vitest run -c vitest.eval.config.ts",
+    "eval:extractor": "dotenv -e .env.local -- vitest run -c vitest.eval.config.ts evals/extractor.eval.ts",
+    "eval:responder": "dotenv -e .env.local -- vitest run -c vitest.eval.config.ts evals/responder.eval.ts"
   },
   "dependencies": {
     "@fal-ai/client": "^1.9.5",
@@ -23,6 +26,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "ioredis": "^5.10.1",
+    "langsmith": "^0.10.8",
     "lucide-react": "^0.553.0",
     "motion": "^12.23.24",
     "next": "^16.2.3",

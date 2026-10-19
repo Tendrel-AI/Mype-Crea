@@ -1,7 +1,7 @@
 /**
  * Repository factory. The only legal way for application code to touch the DB.
  *
- * Per claude/skills/database/SKILL.md, every repository method captures the
+ * Per docs/agents/database.md, every repository method captures the
  * tenant (and user, when needed) via this closure — there is no parameter-less
  * overload, no admin escape hatch on this factory. Tenant-admin operations
  * use a separately-named factory that explicitly logs access.

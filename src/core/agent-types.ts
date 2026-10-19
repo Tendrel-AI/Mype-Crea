@@ -15,7 +15,7 @@
  *
  * See also:
  *   - contracts.ts   (FieldDelta, PlannerDecision — the OTHER side of the core)
- *   - .claude/skills/mypes-architecture/SKILL.md  (agent rules 6–8)
+ *   - docs/agents/architecture.md  (agent rules 6–8)
  */
 
 import type { AgentId, TaskId, UUID, ISOTimestamp } from './contracts';

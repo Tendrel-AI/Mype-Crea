@@ -19,7 +19,7 @@
  *   - contracts.ts                (OrchestratorCore interface)
  *   - merge.ts / planner.ts       (the two stages wired below)
  *   - local-adapter.ts            (the IAgentTransport implementation)
- *   - .claude/skills/mypes-architecture/SKILL.md  (rules 1, 2: modality-blind core)
+ *   - docs/agents/architecture.md  (rules 1, 2: modality-blind core)
  */
 
 import { EventEmitter } from 'node:events';

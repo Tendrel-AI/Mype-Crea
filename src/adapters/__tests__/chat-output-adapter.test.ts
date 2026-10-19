@@ -76,7 +76,7 @@ describe('ChatOutputAdapter', () => {
   });
 
   it('renders request_fields with both field names in one ask, no leaked user values', async () => {
-    setProvider(provider = makeResponderProvider('¿Cómo se llama tu negocio y qué estilo buscás?'));
+    setProvider(provider = makeResponderProvider('¿Cómo se llama tu negocio y qué estilo buscas?'));
     const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
     const decisions: ReadonlyArray<PlannerDecision> = [
@@ -210,7 +210,7 @@ describe('ChatOutputAdapter', () => {
 
   it('bundles announce_dispatch with request_fields and instructs a single bridged reply', async () => {
     setProvider(
-      provider = makeResponderProvider('Ya estoy generando tu logo. Para el slogan, ¿qué tono buscás?'));
+      provider = makeResponderProvider('Ya estoy generando tu logo. Para el slogan, ¿qué tono buscas?'));
     const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
     const decisions: ReadonlyArray<PlannerDecision> = [
@@ -222,7 +222,7 @@ describe('ChatOutputAdapter', () => {
       {
         kind: 'request_fields',
         agentId: 'tagline-agent',
-        fields: [{ fieldName: 'tone', promptHint: '¿Qué tono buscás?' }],
+        fields: [{ fieldName: 'tone', promptHint: '¿Qué tono buscas?' }],
       },
     ];
     await adapter.render({

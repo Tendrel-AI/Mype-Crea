@@ -1,7 +1,7 @@
 /**
  * agent_tasks repository.
  *
- * Per claude/skills/database/SKILL.md:
+ * Per docs/agents/database.md:
  *   - agent_tasks RLS is tenant-only (no user axis); we still enforce ownership
  *     through conversation join at the application layer when relevant.
  *   - JSONB invariant: every UUID embedded in requirements_snapshot or error

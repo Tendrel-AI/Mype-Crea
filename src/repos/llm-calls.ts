@@ -1,7 +1,7 @@
 /**
  * llm_calls repository — append-only billing/audit log for every LLM call.
  *
- * Per claude/skills/database/SKILL.md:
+ * Per docs/agents/database.md:
  *   - llm_calls RLS is tenant-scoped only; user_id may be NULL for unattributed calls.
  *   - Every method runs in withTenantTransaction with the GUCs set.
  *   - There is no findById exposed here — analytics belongs in a separate admin repo.

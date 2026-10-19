@@ -41,7 +41,7 @@ export interface IConversationStore {
 /**
  * In-memory ConversationStore. Phase 1 only — Phase B replaces this with a
  * Postgres-backed implementation that uses the repository pattern from
- * `claude/skills/database/SKILL.md` (withTransaction + set_config GUCs).
+ * `docs/agents/database.md` (withTransaction + set_config GUCs).
  */
 export class InMemoryConversationStore implements IConversationStore {
   private readonly snapshots = new Map<ConversationId, ConversationSnapshot>();

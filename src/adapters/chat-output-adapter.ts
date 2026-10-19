@@ -34,7 +34,7 @@ import { loggerFor } from '../services/logger';
 
 const log = loggerFor('adapter.chat-output');
 
-const RESPONDER_PROMPT_VERSION = 'responder.chat-step1.v4';
+const RESPONDER_PROMPT_VERSION = 'responder.chat-step1.v5';
 
 /** How many recent turns to include for tone continuity. */
 const RECENT_MESSAGE_LIMIT = 10;
@@ -113,7 +113,7 @@ function buildResponderSystemPrompt(
   registry: AgentRegistry,
 ): string {
   const persona = [
-    `Eres "CreaMype", una estratega de marca peruana que conversa en español rioplatense neutro,`,
+    `Eres "CreaMype", una estratega de marca peruana que conversa en español neutro latinoamericano, tuteando,`,
     `cálido y profesional. Hablas con micro y pequeñas empresarias peruanas (MYPEs) que están`,
     `creando su marca paso a paso.`,
   ].join(' ');
@@ -179,7 +179,7 @@ function describeDecision(decision: PlannerDecision, registry: AgentRegistry): s
         ...lines,
         single
           ? `Acción obligatoria: pídele al usuario ÚNICAMENTE este campo. UNA sola pregunta natural en español.`
-          : `Acción obligatoria: pídele al usuario AMBOS campos en UNA sola oración natural en español (por ejemplo "¿cómo se llama tu negocio y qué estilo querés para el logo?"). NO los enumeres como una lista.`,
+          : `Acción obligatoria: pídele al usuario AMBOS campos en UNA sola oración natural en español (por ejemplo "¿cómo se llama tu negocio y qué estilo quieres para el logo?"). NO los enumeres como una lista.`,
         `PROHIBIDO mencionar otros agentes o saltar al siguiente paso.`,
       ].join('\n');
     }
@@ -228,6 +228,7 @@ function buildGuardrails(decisions: ReadonlyArray<PlannerDecision>): string {
   const base = [
     `Reglas para tu respuesta (estrictas, sin excepciones):`,
     `- Responde SIEMPRE en español, en máximo 2 oraciones.`,
+    `- Usa español neutro latinoamericano y trata al usuario de "tú". NUNCA uses voseo ("vos", "querés", "tenés", "contame") aunque el usuario lo use, ni variantes de España ("vosotros", "vale").`,
     `- Tu respuesta DEBE corresponder exactamente a las decisiones indicadas arriba, en el orden listado. NO improvises temas adicionales.`,
     `- NO uses saludos. NUNCA escribas "Hola", "¡Hola!", "Buenas", "Qué tal", "Hey", ni similares. La conversación ya empezó.`,
     `- NO uses muletillas de espera. NUNCA escribas "estoy trabajando", "estamos trabajando", "dame un momentito", "dame un momento", "ya casi", "un segundo", "en breve", "enseguida".`,
@@ -241,7 +242,7 @@ function buildGuardrails(decisions: ReadonlyArray<PlannerDecision>): string {
   const hasRequestFields = decisions.some((d) => d.kind === 'request_fields');
   if (hasDispatch && hasRequestFields) {
     base.push(
-      `- Cuando combines un anuncio de despacho con una pregunta, escribe UNA sola respuesta de hasta 2 oraciones que primero confirme el despacho en una cláusula breve y luego pivotee a la pregunta del siguiente agente. Ejemplo de pivote: "Ya estoy generando tu logo. Para el slogan, ¿cómo describirías el tono que buscás?".`,
+      `- Cuando combines un anuncio de despacho con una pregunta, escribe UNA sola respuesta de hasta 2 oraciones que primero confirme el despacho en una cláusula breve y luego pivotee a la pregunta del siguiente agente. Ejemplo de pivote: "Ya estoy generando tu logo. Para el slogan, ¿cómo describirías el tono que buscas?".`,
     );
   }
   return base.join('\n');

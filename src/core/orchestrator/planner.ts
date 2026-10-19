@@ -36,7 +36,7 @@
  * `announce_dispatch` and `announce_completion` decisions are NOT produced
  * here. The orchestrator core queues them on dispatch / settlement and
  * splices them onto the front of this plan inside `getNextDecision` so the
- * Responder can render "ya empezó X" + "y para Y, contame…" in a single
+ * Responder can render "ya empezó X" + "y para Y, cuéntame…" in a single
  * turn. The planner stays pure: same snapshot → same plan.
  *
  * Tiebreakers are deterministic and lexicographic — by `agentId` first
@@ -57,7 +57,7 @@
  *                     planner reads)
  *   - orchestrator-core.ts (queues `announce_dispatch` /
  *                     `announce_completion` and composes the final plan)
- *   - .claude/skills/mypes-architecture/SKILL.md
+ *   - docs/agents/architecture.md
  */
 
 import {

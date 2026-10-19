@@ -13,7 +13,7 @@
  *
  * Mirrors the singleton shape of src/services/llm/index.ts.
  *
- * See claude/skills/mypes-architecture/SKILL.md §2.5, §2.10.
+ * See docs/agents/architecture.md §2.5, §2.10.
  */
 import Redis, { type Redis as RedisClient } from 'ioredis';
 import { loggerFor } from '../logger';

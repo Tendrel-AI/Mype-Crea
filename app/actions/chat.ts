@@ -23,7 +23,7 @@ export interface ChatActionResult {
  * The Responder produces Spanish prose only; it never emits tool calls and
  * never generates names, images, or HTML. Deliverables are produced by
  * sub-agents dispatched by the orchestrator core (see
- * claude/skills/mypes-architecture/SKILL.md §2.1, §2.3).
+ * docs/agents/architecture.md §2.1, §2.3).
  */
 export async function chatAction(params: {
   conversationId: string;

@@ -22,7 +22,7 @@
  * See also:
  *   - agent-types.ts      (IAgentTransport contract)
  *   - agent-registry.ts   (source of handlers this adapter resolves)
- *   - .claude/skills/mypes-architecture/SKILL.md  (rule 7: agents only via transport)
+ *   - docs/agents/architecture.md  (rule 7: agents only via transport)
  */
 
 import type {

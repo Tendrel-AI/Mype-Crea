@@ -7,6 +7,7 @@
  * call anywhere in app code.
  */
 import OpenAI from 'openai';
+import { wrapOpenAI } from 'langsmith/wrappers';
 import type { ILLMProvider, ModelPurpose, ResolvedModel } from './types';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
@@ -25,10 +26,11 @@ export class OpenRouterProvider implements ILLMProvider {
   private readonly client: OpenAI;
 
   constructor(apiKey: string) {
-    this.client = new OpenAI({
+    const client = new OpenAI({
       apiKey,
       baseURL: OPENROUTER_BASE_URL,
     });
+    this.client = isLangSmithTracingEnabled() ? wrapOpenAI(client) : client;
   }
 
   resolve(purpose: ModelPurpose): ResolvedModel {
@@ -38,4 +40,14 @@ export class OpenRouterProvider implements ILLMProvider {
       purpose,
     };
   }
+}
+
+/**
+ * LangSmith tracing is dev/eval only (decision 2026-10-04, architecture.md
+ * "Evaluation & tracing"): prompts carry tenant business data, so the client
+ * is never wrapped in production even if LANGSMITH_TRACING leaks into the
+ * production env. `llm_calls` stays the audit source of truth either way.
+ */
+function isLangSmithTracingEnabled(): boolean {
+  return process.env.LANGSMITH_TRACING === 'true' && process.env.NODE_ENV !== 'production';
 }
