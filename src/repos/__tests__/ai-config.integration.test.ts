@@ -66,7 +66,6 @@ SUITE('AI configuration and durable turns (integration)', () => {
   let baseline: AiConfigManifestV1;
   let sharedReleaseId: string;
   let sharedHash: string;
-  let oldPlatformAllowlist: string | undefined;
   const tenantIds: UUID[] = [];
   const sharedActors: string[] = [];
 
@@ -116,14 +115,12 @@ SUITE('AI configuration and durable turns (integration)', () => {
       throw new Error('DATABASE_URL must use the fixture owner, not app_user.');
     }
 
-    oldPlatformAllowlist = process.env.PLATFORM_ADMIN_WORKOS_USER_IDS;
     platformUser = { id: tenantId(), workosUserId: workosId(), role: 'member' };
     const a = createTenantFixture();
     const b = createTenantFixture();
     tenants = [a, b];
     tenantIds.push(a.id, b.id);
     sharedActors.push(platformUser.workosUserId);
-    process.env.PLATFORM_ADMIN_WORKOS_USER_IDS = platformUser.workosUserId;
 
     for (const tenant of tenants) {
       await owner.query(
@@ -143,6 +140,10 @@ SUITE('AI configuration and durable turns (integration)', () => {
       `INSERT INTO users(id,tenant_id,workos_user_id,email,role,status)
        VALUES($1,$2,$3,$4,'member','active')`,
       [platformUser.id, tenants[0].id, platformUser.workosUserId, `${platformUser.workosUserId}@example.invalid`],
+    );
+    await owner.query(
+      `INSERT INTO platform_superadmins(workos_user_id, granted_by_workos_user_id, grant_source)
+       VALUES($1, $1, 'authorized')`, [platformUser.workosUserId],
     );
     const appRole = await getPool().query<{ current_user: string }>('SELECT current_user');
     if (appRole.rows[0]?.current_user !== 'app_user') {
@@ -173,14 +174,13 @@ SUITE('AI configuration and durable turns (integration)', () => {
   }
 
   afterAll(async () => {
-    if (oldPlatformAllowlist === undefined) delete process.env.PLATFORM_ADMIN_WORKOS_USER_IDS;
-    else process.env.PLATFORM_ADMIN_WORKOS_USER_IDS = oldPlatformAllowlist;
     if (owner && tenantIds.length) {
       await owner.query('BEGIN');
       try {
         // Test-only teardown bypasses append-only/immutability triggers on this connection only.
         // IDs are the random tenant/user fixtures created by this suite; no pilot rows are touched.
         await owner.query(`SET LOCAL session_replication_role = 'replica'`);
+        if (sharedActors.length) await owner.query(`DELETE FROM platform_superadmins WHERE workos_user_id = ANY($1::text[])`, [sharedActors]);
         await owner.query(`DELETE FROM ai_turn_events WHERE tenant_id = ANY($1::uuid[])`, [tenantIds]);
         await owner.query(`DELETE FROM messages WHERE tenant_id = ANY($1::uuid[])`, [tenantIds]);
         await owner.query(`DELETE FROM ai_turn_notices WHERE tenant_id = ANY($1::uuid[])`, [tenantIds]);
@@ -302,13 +302,12 @@ SUITE('AI configuration and durable turns (integration)', () => {
       manifest: forbidden,
     })).rejects.toThrow(/override|allowed|permitted/i);
 
-    const priorAllowlist = process.env.PLATFORM_ADMIN_WORKOS_USER_IDS;
-    process.env.PLATFORM_ADMIN_WORKOS_USER_IDS = '';
+    await owner.query(`UPDATE platform_superadmins SET revoked_at=now(), revoked_by_workos_user_id=$1 WHERE workos_user_id=$1`, [platformUser.workosUserId]);
     try {
-      await expect(platformRepo.createSharedDraft({ name: `${TEST_PREFIX}not-allowlisted`, manifest: baseline, allowedOverridePaths: [] }))
+      await expect(platformRepo.createSharedDraft({ name: `${TEST_PREFIX}revoked-platform-actor`, manifest: baseline, allowedOverridePaths: [] }))
         .rejects.toThrow(/permisos/i);
     } finally {
-      process.env.PLATFORM_ADMIN_WORKOS_USER_IDS = priorAllowlist;
+      await owner.query(`UPDATE platform_superadmins SET revoked_at=NULL, revoked_by_workos_user_id=NULL WHERE workos_user_id=$1`, [platformUser.workosUserId]);
     }
   });
 

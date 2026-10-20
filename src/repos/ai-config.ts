@@ -79,14 +79,16 @@ export function aiConfigRepo(tenant: Tenant, user: User, actor?: RepositoryActor
   });
 
   const asPlatformAdmin = async<T>(fn: (tx: TxClient) => Promise<T>) => withTenantTransaction(tenant, user, async tx => {
-    const allowed = new Set((process.env.PLATFORM_ADMIN_WORKOS_USER_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean));
-    if (!actor?.platformAdmin || !/^user_[A-Za-z0-9]+$/.test(actorId) || !allowed.has(actorId)) throw new Error('No tienes permisos para administrar la configuración compartida.');
+    if (!actor?.platformAdmin || !/^user_[A-Za-z0-9]+$/.test(actorId)) throw new Error('No tienes permisos para administrar la configuración compartida.');
+    const role = await tx.query(`SELECT 1 FROM platform_superadmins WHERE workos_user_id=$1 AND revoked_at IS NULL`, [actorId]);
+    if (!role.rows.length) throw new Error('No tienes permisos para administrar la configuración compartida.');
     const ok = await tx.query(`SELECT 1
         FROM users
         WHERE tenant_id=$1 AND id=$2 AND workos_user_id=$3 AND status='active'`, [tenant.id, user.id, actorId]);
     if (!ok.rows.length) throw new Error('No tienes permisos para administrar la configuración compartida.');
     await tx.query(`SELECT set_config('app.is_platform_admin','true',
         true)`);
+    await tx.query(`SELECT set_config('app.platform_actor_workos_user_id',$1,true)`, [actorId]);
     return fn(tx);
   });
 

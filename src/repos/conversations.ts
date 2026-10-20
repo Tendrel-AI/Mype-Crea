@@ -18,6 +18,7 @@ import type {
   TaskId,
   UUID,
 } from '../core/contracts';
+import { randomUUID } from 'node:crypto';
 import type { AiConversationPin } from './models';
 import type { AgentFieldSchema } from '../core/orchestrator/in-memory-store';
 import {
@@ -46,6 +47,81 @@ function buildEmptyAgentStates(schemas: ReadonlyArray<AgentFieldSchema>): AgentS
     };
   }
   return states;
+}
+
+/** Resolve a platform assignment first, materializing shared behavior as a tenant release. */
+async function resolveNewConversationRelease(tx: TxClient, tenant: Tenant, user: User): Promise<string | undefined> {
+  const assignment = await tx.query<{ readonly shared_release_id: string | null }>(
+    `SELECT v.shared_release_id
+       FROM platform_module_assignments a
+       JOIN platform_module_versions v
+         ON v.module_id = a.module_id AND v.version = a.version
+      WHERE a.module_id = 'ai' AND a.organization_id = $1
+      LIMIT 1`,
+    [tenant.id],
+  );
+  let config = assignment.rows[0];
+  // Existing tenant activation remains an explicit tenant choice until a platform rollout
+  // writes an organization assignment. A global default serves new/unconfigured organizations.
+  if (!config) {
+    const activation = await tx.query<{ readonly release_id: string }>(
+      `SELECT a.release_id
+         FROM ai_release_activations a
+         JOIN ai_releases r ON r.tenant_id = a.tenant_id AND r.id = a.release_id
+        WHERE a.tenant_id = $1 AND r.status = 'frozen'
+        FOR SHARE OF a, r`,
+      [tenant.id],
+    );
+    if (activation.rows[0]) return activation.rows[0].release_id;
+    const defaultConfig = await tx.query<{ readonly shared_release_id: string | null }>(
+      `SELECT v.shared_release_id
+         FROM platform_module_defaults d
+         JOIN platform_module_versions v ON v.module_id = d.module_id AND v.version = d.version
+        WHERE d.module_id = 'ai'
+        LIMIT 1`,
+    );
+    config = defaultConfig.rows[0];
+  }
+  if (config?.shared_release_id) {
+    const shared = await tx.query<{
+      readonly id: string;
+      readonly name: string;
+      readonly manifest: unknown;
+      readonly canonical_content: string;
+      readonly content_hash: string;
+      readonly allowed_override_paths: string[];
+    }>(
+      `SELECT id, name, manifest, canonical_content, content_hash, allowed_override_paths
+         FROM ai_shared_releases
+        WHERE id = $1 AND status = 'frozen'
+        FOR SHARE`,
+      [config.shared_release_id],
+    );
+    const release = shared.rows[0];
+    if (!release) throw new Error('La versión compartida de IA ya no está disponible.');
+    const id = randomUUID();
+    await tx.query(
+      `INSERT INTO ai_releases
+         (tenant_id, id, name, status, draft_version, manifest, canonical_content,
+          content_hash, base_shared_release_id, is_platform_materialization,
+          allowed_override_paths, created_by, updated_by)
+       VALUES ($1, $2, $3, 'frozen', 1, $4::jsonb, $5, $6, $7, true, $8, $9, $9)
+       ON CONFLICT DO NOTHING`,
+      [tenant.id, id, release.name, JSON.stringify(release.manifest), release.canonical_content,
+        release.content_hash, release.id, release.allowed_override_paths, user.id],
+    );
+    const materialized = await tx.query<{ readonly id: string }>(
+      `SELECT id FROM ai_releases
+        WHERE tenant_id = $1 AND base_shared_release_id = $2 AND content_hash = $3
+          AND is_platform_materialization = true
+        ORDER BY created_at ASC LIMIT 1 FOR SHARE`,
+      [tenant.id, release.id, release.content_hash],
+    );
+    if (!materialized.rows[0]) throw new Error('No se pudo preparar la versión de IA para esta organización.');
+    return materialized.rows[0].id;
+  }
+
+  return undefined;
 }
 
 /**
@@ -111,46 +187,52 @@ export function conversationsRepo(tenant: Tenant, user: User) {
       readonly schemas: ReadonlyArray<AgentFieldSchema>;
     }): Promise<AiConversationPin> {
       return withTenantTransaction(tenant, user, async (tx) => {
-        await tx.query(
-          `INSERT INTO conversations
-             (id, tenant_id, user_id, ai_release_id, configuration_state)
-           SELECT $1, $2, $3, a.release_id, 'pinned'
-             FROM ai_release_activations a
-             JOIN ai_releases r
-               ON r.tenant_id = a.tenant_id
-              AND r.id = a.release_id
-            WHERE a.tenant_id = $2
-              AND r.status = 'frozen'
-            FOR SHARE OF a, r
-           ON CONFLICT (id) DO NOTHING`,
-          [input.conversationId, tenant.id, user.id],
-        );
-
-        const row = await tx.query<{
+        let pinned = await tx.query<{
           configuration_state: 'pinned' | 'legacy_unversioned';
           ai_release_id: UUID | null;
         }>(
           `SELECT configuration_state, ai_release_id
              FROM conversations
-            WHERE id = $1
+            WHERE id = $1 AND tenant_id = $2 AND user_id = $3
             LIMIT 1`,
-          [input.conversationId],
+          [input.conversationId, tenant.id, user.id],
         );
-        if (!row.rows[0]) {
+        if (!pinned.rows[0]) {
+          const resolvedReleaseId = await resolveNewConversationRelease(tx, tenant, user);
+          await tx.query(
+            `INSERT INTO conversations
+               (id, tenant_id, user_id, ai_release_id, configuration_state)
+             SELECT $1, $2, $3, $4, 'pinned'
+              WHERE $4::uuid IS NOT NULL
+             ON CONFLICT (id) DO NOTHING`,
+            [input.conversationId, tenant.id, user.id, resolvedReleaseId ?? null],
+          );
+          pinned = await tx.query<{
+            configuration_state: 'pinned' | 'legacy_unversioned';
+            ai_release_id: UUID | null;
+          }>(
+            `SELECT configuration_state, ai_release_id
+               FROM conversations
+              WHERE id = $1 AND tenant_id = $2 AND user_id = $3
+              LIMIT 1`,
+            [input.conversationId, tenant.id, user.id],
+          );
+        }
+        if (!pinned.rows[0]) {
           throw new Error('No hay una configuración activa para iniciar una conversación nueva.');
         }
 
         const snapshot = await loadSnapshot(tx, input.conversationId, input.schemas);
         if (!snapshot) throw new Error(`Conversation row not visible: ${input.conversationId}`);
-        const state = row.rows[0].configuration_state;
-        const releaseId = row.rows[0].ai_release_id;
-        if (state === 'pinned' && !releaseId) {
+        const state = pinned.rows[0].configuration_state;
+        const pinnedReleaseId = pinned.rows[0].ai_release_id;
+        if (state === 'pinned' && !pinnedReleaseId) {
           throw new Error(`Pinned conversation has no release: ${input.conversationId}`);
         }
         return {
           conversationId: input.conversationId,
           state,
-          releaseId,
+          releaseId: pinnedReleaseId,
           snapshot,
         };
       });
