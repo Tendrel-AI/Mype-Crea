@@ -1,28 +1,22 @@
 import { getSignInUrl, getSignUpUrl, withAuth } from '@workos-inc/authkit-nextjs';
+import { redirect } from 'next/navigation';
 import { Sparkles } from 'lucide-react';
-
-function singleConfiguredOrganization(): string | undefined {
-  try {
-    const parsed: unknown = JSON.parse(process.env.WORKOS_ORGANIZATION_TENANTS ?? '');
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
-    const entries = Object.entries(parsed);
-    if (entries.some(([id, tenantId]) =>
-      !/^org_[A-Za-z0-9]+$/.test(id) ||
-      typeof tenantId !== 'string' ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(tenantId),
-    )) return undefined;
-    const organizations = entries.map(([id]) => id);
-    return organizations.length === 1 ? organizations[0] : undefined;
-  } catch {
-    return undefined;
-  }
-}
+import { requireGlobalAdmin, requireGlobalMfa } from '../../src/auth/resolve-identity';
 
 export default async function LoginPage() {
   const { user } = await withAuth();
-  const organizationId = singleConfiguredOrganization();
-  const signInUrl = await getSignInUrl(organizationId ? { organizationId } : undefined);
-  const signUpUrl = await getSignUpUrl(organizationId ? { organizationId } : undefined);
+  if (user) {
+    let global = false;
+    try { await requireGlobalAdmin(); global = true; } catch { /* Continue to tenant app for non-global users. */ }
+    if (global) {
+      let verified = false;
+      try { await requireGlobalMfa(); verified = true; } catch { /* Step-up proof is required for the console. */ }
+      redirect(verified ? '/platform' : '/platform/mfa');
+    }
+    redirect('/');
+  }
+  const signInUrl = await getSignInUrl();
+  const signUpUrl = await getSignUpUrl();
 
   return (
     <div className="flex h-screen items-center justify-center bg-neutral-50 text-neutral-900 font-sans">
@@ -35,11 +29,6 @@ export default async function LoginPage() {
           Inicia sesión para crear tu marca, generar logos, etiquetas y páginas web con Inteligencia Artificial.
         </p>
         <div className="flex flex-col gap-3">
-          {user ? (
-            <>
-              <p>holas</p>
-            </>
-          ) : (<></>)};
           <a
             href={signInUrl}
             className="w-full px-6 py-4 bg-orange-600 hover:bg-orange-500 text-white rounded-xl font-medium transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-orange-500/25"

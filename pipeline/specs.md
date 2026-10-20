@@ -1,3 +1,12 @@
+# Active assignment: KAN-71
+
+Follow `pipeline/kan-71-specs.md` and the KAN-71 Jira issue. The KAN-69/KAN-70
+material below is historical context only and must not constrain this assignment.
+Implementation is delegated to parallel `coder` subagents in the KAN-71 worktree;
+the primary agent plans, reviews, verifies and merges without editing application code.
+
+---
+
 # KAN-69 implementation specification
 
 ## Active assignment: KAN-70

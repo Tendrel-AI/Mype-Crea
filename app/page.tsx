@@ -2,6 +2,7 @@ import { withAuth } from '@workos-inc/authkit-nextjs';
 import { redirect } from 'next/navigation';
 import CreaMype from '../components/CreaMype';
 import { createConversationAction, loadConversationAction } from './actions/conversations';
+import { requireGlobalAdmin, requireGlobalMfa } from '../src/auth/resolve-identity';
 
 export default async function Home({
   searchParams,
@@ -10,6 +11,13 @@ export default async function Home({
 }) {
   const { user } = await withAuth();
   if (!user) return null;
+  let isGlobalAdmin = false;
+  try { await requireGlobalAdmin(); isGlobalAdmin = true; } catch { /* Tenant access is checked by its server actions. */ }
+  if (isGlobalAdmin) {
+    let hasRecentMfa = false;
+    try { await requireGlobalMfa(); hasRecentMfa = true; } catch { /* Route global users through step-up. */ }
+    redirect(hasRecentMfa ? '/platform' : '/platform/mfa');
+  }
 
   const requestedId = (await searchParams)?.conversationId;
   if (requestedId) {

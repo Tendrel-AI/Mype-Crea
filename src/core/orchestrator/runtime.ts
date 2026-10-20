@@ -33,6 +33,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { repos, systemRepos } from '../../repos';
+import { globalRepos } from '../../repos/global';
 import { getConversationOwnerUserId } from '../../repos/conversations';
 import { LocalAdapter } from '../../transport/local-adapter';
 import { channelForAgent, RedisQueueAdapter } from '../../transport/redis-queue-adapter';
@@ -113,18 +114,8 @@ function buildTransport(
 }
 
 async function reconcileConfiguredTenantEvents(): Promise<void> {
-  const raw = process.env.WORKOS_ORGANIZATION_TENANTS;
-  if (!raw) return;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    log.error('orchestrator.runtime.tenant_map_invalid_for_event_reconcile');
-    return;
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
-  const tenantIds = [...new Set(Object.values(parsed))]
-    .filter((value): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
+  const organizations = await globalRepos().organizations.list();
+  const tenantIds = organizations.filter((organization) => organization.status === 'active').map((organization) => organization.tenantId);
   const publisher = getRedisPublisher();
   await Promise.all(tenantIds.map(async (tenantId) => {
     try {

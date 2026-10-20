@@ -1,6 +1,6 @@
 'use server';
 
-import { resolveIdentity, type ResolvedIdentity } from '../../src/auth/resolve-identity';
+import { requireGlobalMfa, resolveIdentity, type ResolvedIdentity } from '../../src/auth/resolve-identity';
 import { repos } from '../../src/repos';
 import { AiAdminService } from '../../src/services/ai-config/admin-service';
 import { AiConfigService } from '../../src/services/ai-config/service';
@@ -34,6 +34,7 @@ function promptSyncService(identity: ResolvedIdentity): AiPromptSyncService {
 async function action<T>(work: (identity: ResolvedIdentity) => Promise<T>): Promise<AiAdminActionResult<T>> {
   try {
     const identity = await resolveIdentity();
+    if (identity.platformAdmin) await requireGlobalMfa();
     const data = await work(identity);
     return { ok: true, data: JSON.parse(JSON.stringify(data)) as T };
   } catch {
