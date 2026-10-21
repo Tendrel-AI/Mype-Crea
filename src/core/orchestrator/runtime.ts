@@ -26,10 +26,9 @@
  * conversationTenants map, and notifier deps. Without this, a chatAction
  * publish would never reach an SSE subscriber set up in a different bundle.
  *
- * TODO(arch §2.5): the in-memory `conversationTenants` map inside the core
- * does not survive process restarts, so an in-flight task settling after a
- * restart drops silently. The proper fix is the architecture's sweeper +
- * persisted PlannerDecision rows, neither of which exists yet.
+ * Due pending Redis tasks are republished after startup and on a periodic
+ * scan. An `in_progress` task is never replayed automatically because an
+ * external image request may already have completed.
  */
 import { randomUUID } from 'node:crypto';
 import { repos, systemRepos } from '../../repos';
@@ -50,6 +49,7 @@ import {
 } from './notifiers';
 import { loggerFor } from '../../services/logger';
 import { buildRuntime, type OnTaskSettled, type Runtime } from './runtime-config';
+import { republishPendingDispatches, startPeriodicRecovery } from './periodic-recovery';
 import type { ChatInputAdapter } from '../../adapters/chat-input-adapter';
 import type { ChatOutputAdapter } from '../../adapters/chat-output-adapter';
 import type { OrchestratorCoreImpl } from './orchestrator-core';
@@ -63,8 +63,16 @@ const REDIS_DISPATCH_AGENTS: ReadonlySet<AgentId> = new Set([
 // Cached on globalThis so that multiple Next.js server bundles observe the
 // same Runtime instance.
 const RUNTIME_SLOT = Symbol.for('mypes.orchestrator.runtime');
+const RECOVERY_STOP_SLOT = Symbol.for('mypes.orchestrator.pending_recovery_stop');
 type RuntimeHolder = { [RUNTIME_SLOT]?: Runtime };
 const runtimeHolder = globalThis as unknown as RuntimeHolder;
+type RecoveryHolder = { [RECOVERY_STOP_SLOT]?: () => void };
+const recoveryHolder = globalThis as unknown as RecoveryHolder;
+
+// Conservative, reversible local baseline. Production sizing and ownership
+// remain open pending the pilot topology decision.
+const PENDING_RECOVERY_INTERVAL_MS = 60_000;
+const PENDING_RECOVERY_BATCH_SIZE = 100;
 
 function buildTransport(
   registry: ReturnType<typeof buildDefaultRegistry>,
@@ -98,7 +106,15 @@ function buildTransport(
       repos({ id: tenantId }, { id: userId }).aiTurns,
     onTaskSettled,
     lifecycleNotifier: defaultLifecycleNotifier,
-  }).then(() => reconcileConfiguredTenantEvents()).catch((err) =>
+  }).then(() => {
+    if (!recoveryHolder[RECOVERY_STOP_SLOT]) {
+      recoveryHolder[RECOVERY_STOP_SLOT] = startPeriodicRecovery({
+        intervalMs: PENDING_RECOVERY_INTERVAL_MS,
+        recover: reconcileConfiguredTenantEvents,
+        onError: (err) => log.error({ err }, 'orchestrator.runtime.periodic_recovery_failed'),
+      });
+    }
+  }).catch((err) =>
     log.error({ err }, 'orchestrator.runtime.logo_worker_boot_failed'),
   );
 
@@ -122,19 +138,21 @@ async function reconcileConfiguredTenantEvents(): Promise<void> {
       const tenantRepositories = systemRepos({ id: tenantId as UUID });
       await tenantRepositories.aiEvents?.reconcileSettledTasks({ limit: 500 });
       if (!publisher) return;
-      const pending = await tenantRepositories.agentTasks.listPendingDispatches({
+      const republished = await republishPendingDispatches({
+        tenantId: tenantId as UUID,
         agentId: 'logo-agent',
-        limit: 500,
+        batchSize: PENDING_RECOVERY_BATCH_SIZE,
+        listPending: (input) => tenantRepositories.agentTasks.listPendingDispatches(input),
+        publish: (task, taskTenantId) => publisher.publish(
+          channelForAgent(task.agentId as AgentId),
+          JSON.stringify({ taskId: task.id, tenantId: taskTenantId, agentId: task.agentId }),
+        ),
       });
-      await Promise.all(pending.map(async (task) => {
-        await publisher.publish(channelForAgent(task.agentId as AgentId), JSON.stringify({
-          taskId: task.id,
-          tenantId,
-          agentId: task.agentId,
-        }));
-      }));
+      if (republished > 0) {
+        log.info({ tenantId, republished, limit: PENDING_RECOVERY_BATCH_SIZE }, 'orchestrator.runtime.pending_tasks_republished');
+      }
     } catch (err) {
-      log.error({ tenantId, err }, 'orchestrator.runtime.startup_reconcile_failed');
+      log.error({ tenantId, err }, 'orchestrator.runtime.tenant_reconcile_failed');
     }
   }));
 }
@@ -177,4 +195,6 @@ export function getChatOutputAdapter(): ChatOutputAdapter {
 /** Test hook: drop the cached runtime so the next getter rebuilds. */
 export function resetOrchestratorRuntime(): void {
   delete runtimeHolder[RUNTIME_SLOT];
+  recoveryHolder[RECOVERY_STOP_SLOT]?.();
+  delete recoveryHolder[RECOVERY_STOP_SLOT];
 }

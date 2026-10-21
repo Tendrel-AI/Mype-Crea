@@ -117,6 +117,31 @@ SUITE('agent_tasks repository (integration)', () => {
     expect(winners[0]!.attempts).toBe(1);
   });
 
+  it('lists only due pending dispatches for the requested agent within the limit', async () => {
+    const conversationId = await newConversation();
+    const sys = systemRepos({ id: tenantId });
+    const insert = (agentId: string, scheduledFor?: string) => sys.agentTasks.insertRoot({
+      conversationId,
+      agentId,
+      agentCardVersion: '1.0.0',
+      idempotencyKey: randomUUID(),
+      requirementsSnapshot: {},
+      scheduledFor,
+    });
+
+    await Promise.all([
+      insert('logo-agent'),
+      insert('logo-agent'),
+      insert('other-agent'),
+      insert('logo-agent', new Date(Date.now() + 60_000).toISOString()),
+    ]);
+
+    const rows = await sys.agentTasks.listPendingDispatches({ agentId: 'logo-agent', limit: 2 });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.agentId === 'logo-agent' && row.status === 'pending')).toBe(true);
+    expect(rows.every((row) => Date.parse(row.scheduledFor) <= Date.now())).toBe(true);
+  });
+
   it('rejects JSONB writes that embed a UUID not visible under the current tenant', async () => {
     const conversationId = await newConversation();
     const sys = systemRepos({ id: tenantId });
