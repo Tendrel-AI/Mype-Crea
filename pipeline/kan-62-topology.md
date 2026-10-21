@@ -1,20 +1,21 @@
 # KAN-62 / KAN-15: pilot topology and operating path
 
-Status: repository and local-development record. The owner reports an existing
-Railway app, PostgreSQL, and Redis for the pilot. Cloud resources have not yet
-been inspected or changed, and no deployment or health acceptance is claimed.
-The pilot configuration still needs reconciliation with the thesis requirements.
+Status: repository and local-development record. The owner selected the
+`Tendrel_AI / mype-crea` Railway project. Its service inventory and active
+deployments were inspected read-only on 2026-10-20. No cloud resources were
+changed, and no deployment or health acceptance is claimed. The pilot
+configuration still needs reconciliation with the thesis requirements.
 
 ## Inventory: verified facts
 
 | Area | Verified in repository | Not verified here |
 |---|---|---|
-| App | Next.js 16; `next.config.ts` builds `output: 'standalone'`; `npm start` runs the standalone server. | Owner-reported Railway app: runtime instance count, persistent runtime, public URL, deployment state. |
-| Database | PostgreSQL; migrations through `node-pg-migrate`; app uses `APP_DATABASE_URL`; migration/admin tooling uses `DATABASE_URL`; runtime role must be `app_user` without `BYPASSRLS`. | Owner-reported Railway PostgreSQL: current backups, encryption settings, network allowlists, audit logs, live schema/version. |
-| Queue and notifications | Redis Pub/Sub is optional for chat; with `REDIS_URL`, the durable logo worker boots within the Next.js process. | Owner-reported Railway Redis: persistence, TLS, credentials, network policies, or monitoring. |
-| Assets | Logo output is persisted through current deliverable/repository code when the durable path is active. | Private object storage and signed asset URLs; these belong to KAN-52 and are not implemented by this topology change. |
+| App | Next.js 16; `next.config.ts` builds `output: 'standalone'`; `npm start` runs the standalone server. Railway development `mype-dev` has a RUNNING instance; production has no active app deployment. | Runtime config, public URL, and health. |
+| Database | PostgreSQL; migrations through `node-pg-migrate`; app uses `APP_DATABASE_URL`; migration/admin tooling uses `DATABASE_URL`; runtime role must be `app_user` without `BYPASSRLS`. Railway Postgres has RUNNING instances in development and production. | Backups, encryption settings, network allowlists, audit logs, live schema/version. |
+| Queue and notifications | Redis Pub/Sub is optional for chat; with `REDIS_URL`, the durable logo worker boots within the Next.js process. | No Redis service is listed in the approved Railway project; its location and configuration remain open. |
+| Assets | Logo output is persisted through current deliverable/repository code when the durable path is active. Railway lists a `mype-crea-assets` bucket. | App integration, private object storage policy, and signed asset URLs; these belong to KAN-52. |
 | Local services | `compose.yaml` now describes loopback-only PostgreSQL 16 and Redis 7 with named volumes and health checks. | Whether previously documented local containers/volumes or `.env.local` values are present or healthy. Docker API access was denied in this inspection. |
-| GitHub | The repository has a GitHub Actions CI workflow for `developer` PRs/pushes, documented as lint, typecheck, unit tests, build, and isolated PostgreSQL migration checks. | Branch protection/required checks, repository Actions settings, secrets, deployment environments, or GitHub API state. The API was unreachable during inspection. |
+| GitHub | PR #4's hosted CI run passed lint, typecheck, unit tests, build, and isolated PostgreSQL migration checks. | Branch protection/required checks, deployment environments, and secret settings. |
 
 The code does not currently expose a public app health/readiness endpoint. The
 local Compose health checks prove only that PostgreSQL and Redis answer their
@@ -95,7 +96,7 @@ The following must be agreed before provisioning or calling KAN-15 complete:
   semantics (KAN-18).
 
 The current README and stack docs previously mentioned Railway and AI Studio /
-Cloud Run as context. The owner has now identified existing Railway services,
-but their live settings remain unverified. See
+Cloud Run as context. The owner has now identified the Railway project; its
+service inventory is verified, while live settings remain unverified. See
 [KAN-62](https://matyaslopz.atlassian.net/browse/KAN-62) and
 [KAN-15](https://matyaslopz.atlassian.net/browse/KAN-15).
