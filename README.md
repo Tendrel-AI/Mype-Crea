@@ -1,46 +1,59 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# CreaMype
 
-# Run and deploy your AI Studio app
+CreaMype is an AI-assisted brand creation and product launch wizard for Peruvian
+micro and small businesses. The live pilot scope is one institutional tenant and
+the `logo-agent`.
 
-This contains everything you need to run your app locally.
+## Local development
 
-View your app in AI Studio: https://ai.studio/apps/edc460b0-60ec-4ba7-887a-d754e4d869a5
+Prerequisites: Node.js 20+, npm, and Docker Compose.
 
-`LLM_PROVIDER` selects the deployment-wide provider for text-model calls and defaults to `openrouter`. Set it to `anthropic` to use Haiku 5.5 for extraction and the evaluation judge, and Sonnet 5.5 for responses. You can override each extractor and responder model with `OPENROUTER_EXTRACTOR_MODEL`, `OPENROUTER_RESPONDER_MODEL`, `ANTHROPIC_EXTRACTOR_MODEL`, and `ANTHROPIC_RESPONDER_MODEL`; the defaults are shown in `.env.example`. OpenRouter values use `provider/model` slugs, and Anthropic values use direct `claude-...` model IDs. Overrides must support the request features used for their task. Set `EVAL_JUDGE_MODEL` separately to override the judge. Restart the deployment after changing provider or model settings. Image generation continues to use `FAL_KEY` independently.
+1. Install dependencies: `npm ci`.
+2. Copy `.env.example` to `.env.local`; fill the WorkOS, selected LLM provider, and
+   fal.ai credentials needed for the flows you will use. Keep `.env.local` private.
+3. Start local PostgreSQL and Redis: `npm run services:up`.
+4. Apply database migrations: `npm run migrate:up`.
+5. Check the runtime database role and RLS posture:
+   `node --env-file=.env.local scripts/db-smoke.mjs`.
+6. Start Next.js: `npm run dev`.
 
-## Run Locally
+The Compose services bind to loopback only. PostgreSQL data persists in its
+Compose named volume; `npm run services:down` stops containers without deleting
+that volume. To start them again, use `npm run services:up`.
 
-**Prerequisites:**  Node.js
+The app requires `APP_DATABASE_URL` and connects as `app_user`; `DATABASE_URL`
+is reserved for migrations and administrative scripts. The initial migration
+creates `app_user` with a development-only bootstrap password, shown in
+`.env.example`. Rotate that password before using any non-local database and set
+the matching `APP_DATABASE_URL`. Never use the local Compose credentials outside
+your machine.
 
+Without Redis, the app uses in-process notifiers and `LocalAdapter`, which does
+not persist logo deliverables for display. With Redis, the durable logo worker
+starts in the Next.js process; there is no separate worker command today.
 
-1. Install dependencies:
-   `npm install`
-2. Copy `.env.example` to `.env.local`. Set `LLM_PROVIDER` to `openrouter` or `anthropic`, then set only the matching provider key (`OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY`).
-3. Run the app:
-   `npm run dev`
+## Build and production run
 
-## Continuous integration (KAN-14)
+`npm run build` produces `.next/standalone`; `npm start` runs its server. The
+repository does not currently define a production hosting provider, deployment
+workflow, public health endpoint, or asset object-storage adapter. Do not treat
+these commands as evidence of a deployed pilot. See
+[`pipeline/kan-62-topology.md`](pipeline/kan-62-topology.md) for the inventory,
+proposed local defaults, open production decisions, and safe operating sequence.
 
-GitHub Actions runs on pull requests targeting `developer` and pushes to `developer`.
-The initial checks are a clean `npm ci` install, ESLint, TypeScript, unit tests,
-and a production build. The workflow also starts an isolated PostgreSQL service,
-applies the migrations, and verifies that the application connection uses
-`app_user` without `BYPASSRLS`. It never reads `.env.local`, production credentials,
-or service secrets.
+## CI
 
-The initial unit test command excludes `*.integration.test.ts` and the real-model
-eval suite. KAN-17 will add the two-tenant integration suite to the isolated CI
-database and make it a required check. Real LLM and image calls and LangSmith
-trace uploads remain manual; no paid credentials are provided to CI.
+GitHub Actions is configured for pull requests targeting `developer` and pushes
+to `developer`. It runs lint, TypeScript, unit tests, a production build, and
+migration checks against an isolated PostgreSQL service. The workflow does not
+read `.env.local` or use paid provider credentials. Repository branch protection
+and required check settings must be confirmed separately.
 
-To block merges on failure, a repository administrator must protect `developer`
-and require the five CI job checks: `Lint`, `TypeScript`, `Unit tests`,
-`Database migrations`, and `Production build`. The workflow reports failures
-even before branch protection is enabled.
+## Focused checks
 
-The CI decision and follow-on work are tracked in
-[KAN-61](https://matyaslopz.atlassian.net/browse/KAN-61),
-[KAN-14](https://matyaslopz.atlassian.net/browse/KAN-14), and
-[KAN-17](https://matyaslopz.atlassian.net/browse/KAN-17).
+Run a focused unit check with `npx vitest run <path-to-test>`. Avoid `npm test`
+unless you intend to run the full suite, including database integration tests.
+`npm run test:integration` loads `.env.local` and may modify the database named
+there; use it only with an approved test database. The `npm run eval*` commands
+call real LLM providers and may incur costs. Do not run either against pilot
+services as a routine check.
