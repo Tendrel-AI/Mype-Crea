@@ -133,6 +133,7 @@ async function loadSnapshot(
   tx: TxClient,
   conversationId: ConversationId,
   schemas: ReadonlyArray<AgentFieldSchema>,
+  lockForUpdate = false,
 ): Promise<ConversationSnapshot | undefined> {
   const res = await tx.query<{
     tenant_id: string;
@@ -142,7 +143,8 @@ async function loadSnapshot(
     `SELECT tenant_id, agent_states, started_at
        FROM conversations
       WHERE id = $1
-      LIMIT 1`,
+      LIMIT 1
+      ${lockForUpdate ? 'FOR UPDATE' : ''}`,
     [conversationId],
   );
   if (res.rows.length === 0) return undefined;
@@ -307,7 +309,10 @@ export function conversationsRepo(tenant: Tenant, user: User) {
       schemas: ReadonlyArray<AgentFieldSchema>,
     ): Promise<void> {
       await withTenantTransaction(tenant, user, async (tx) => {
-        const snap = await loadSnapshot(tx, conversationId, schemas);
+        // Serialize read-modify-write mutations on the owner-visible row. Under
+        // READ COMMITTED, a waiter sees the preceding transaction's committed
+        // JSONB before applying its own mutation.
+        const snap = await loadSnapshot(tx, conversationId, schemas, true);
         if (!snap) throw new Error(`Unknown conversation: ${conversationId}`);
         const current = snap.agentStates[agentId];
         if (!current) throw new Error(`Unknown agent in snapshot: ${agentId}`);
@@ -328,7 +333,7 @@ export function conversationsRepo(tenant: Tenant, user: User) {
       schemas: ReadonlyArray<AgentFieldSchema>,
     ): Promise<void> {
       await withTenantTransaction(tenant, user, async (tx) => {
-        const snap = await loadSnapshot(tx, conversationId, schemas);
+        const snap = await loadSnapshot(tx, conversationId, schemas, true);
         if (!snap) throw new Error(`Unknown conversation: ${conversationId}`);
         const current = snap.agentStates[agentId];
         if (!current) throw new Error(`Unknown agent in snapshot: ${agentId}`);
@@ -348,7 +353,7 @@ export function conversationsRepo(tenant: Tenant, user: User) {
       schemas: ReadonlyArray<AgentFieldSchema>,
     ): Promise<void> {
       await withTenantTransaction(tenant, user, async (tx) => {
-        const snap = await loadSnapshot(tx, conversationId, schemas);
+        const snap = await loadSnapshot(tx, conversationId, schemas, true);
         if (!snap) throw new Error(`Unknown conversation: ${conversationId}`);
         const current = snap.agentStates[agentId];
         if (!current) throw new Error(`Unknown agent in snapshot: ${agentId}`);

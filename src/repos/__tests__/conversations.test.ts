@@ -34,3 +34,40 @@ describe('conversationsRepo.ensurePinnedConversation', () => {
     expect(mocked.query.mock.calls.some(([sql]) => String(sql).includes('platform_module_assignments'))).toBe(false);
   });
 });
+
+describe('conversationsRepo concurrent state mutations', () => {
+  beforeEach(() => {
+    mocked.query.mockReset();
+  });
+
+  it('locks the owner-visible conversation row before each read-modify-write', async () => {
+    mocked.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT tenant_id, agent_states, started_at')) {
+        return {
+          rows: [{
+            tenant_id: 'tenant-a',
+            agent_states: {
+              logo: {
+                requiredFields: { business_name: { status: 'empty' } },
+                optionalFields: {},
+                iterationCount: 0,
+              },
+            },
+            started_at: new Date('2026-01-01T00:00:00.000Z'),
+          }],
+        };
+      }
+      if (sql.includes('UPDATE conversations')) return { rowCount: 1, rows: [] };
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+
+    const repo = conversationsRepo({ id: 'tenant-a' }, { id: 'user-a' });
+    await repo.updateFieldSlot('conversation-a', 'logo', 'business_name', true, {
+      status: 'filled', value: 'Tienda Sol', confidence: 1,
+    }, []);
+
+    const readSql = String(mocked.query.mock.calls[0][0]);
+    expect(readSql).toMatch(/FROM conversations[\s\S]*LIMIT 1\s+FOR UPDATE/i);
+    expect(mocked.query.mock.calls[1][0]).toContain('UPDATE conversations');
+  });
+});
