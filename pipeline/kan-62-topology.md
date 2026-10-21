@@ -2,8 +2,10 @@
 
 Status: repository and local-development record. The owner selected the
 `Tendrel_AI / mype-crea` Railway project. Its service inventory and active
-deployments were inspected read-only on 2026-10-20. No cloud resources were
-changed, and no deployment or health acceptance is claimed. The pilot
+deployments were inspected on 2026-10-20. With owner approval, Redis was then
+added in development and `mype-dev` received a `REDIS_URL` reference without
+an app redeploy. No production resources were changed, and no app deployment
+or health acceptance is claimed. The pilot
 configuration still needs reconciliation with the thesis requirements.
 
 ## Inventory: verified facts
@@ -12,7 +14,7 @@ configuration still needs reconciliation with the thesis requirements.
 |---|---|---|
 | App | Next.js 16; `next.config.ts` builds `output: 'standalone'`; `npm start` runs the standalone server. Railway development `mype-dev` has a RUNNING instance; production has no active app deployment. | Runtime config, public URL, and health. |
 | Database | PostgreSQL; migrations through `node-pg-migrate`; app uses `APP_DATABASE_URL`; migration/admin tooling uses `DATABASE_URL`; runtime role must be `app_user` without `BYPASSRLS`. Railway Postgres has RUNNING instances in development and production. | Backups, encryption settings, network allowlists, audit logs, live schema/version. |
-| Queue and notifications | Redis Pub/Sub is optional for chat; with `REDIS_URL`, the durable logo worker boots within the Next.js process. | No Redis service is listed in the approved Railway project; its location and configuration remain open. |
+| Queue and notifications | Redis Pub/Sub is optional for chat; with `REDIS_URL`, the durable logo worker boots within the Next.js process. A Redis instance is RUNNING in development, and the `mype-dev` `REDIS_URL` reference resolves. | Redis is not deployed in production; the app has not been restarted with the new reference. |
 | Assets | Logo output is persisted through current deliverable/repository code when the durable path is active. Railway lists a `mype-crea-assets` bucket. | App integration, private object storage policy, and signed asset URLs; these belong to KAN-52. |
 | Local services | `compose.yaml` now describes loopback-only PostgreSQL 16 and Redis 7 with named volumes and health checks. | Whether previously documented local containers/volumes or `.env.local` values are present or healthy. Docker API access was denied in this inspection. |
 | GitHub | PR #4's hosted CI run passed lint, typecheck, unit tests, build, and isolated PostgreSQL migration checks. | Branch protection/required checks, deployment environments, and secret settings. |
@@ -27,13 +29,16 @@ RLS posture. Neither proves end-to-end login, LLM, image, or pilot health.
 The approved `Tendrel_AI / mype-crea` project has development and production
 environments. Development `mype-dev` is running commit `2564f06` from
 `developer`; production has Postgres running but no active app. The project has
-the `mype-crea-assets` bucket and no Redis service. Development app variable
+the `mype-crea-assets` bucket. Redis was subsequently added in development.
+Development app variable
 names include bucket settings but no `APP_DATABASE_URL`, `REDIS_URL`, WorkOS, or
-`FAL_KEY`; the production app has only Railway-injected variable names. No
-secret values were recorded.
+`FAL_KEY`; the production app has only Railway-injected variable names. A
+`shared.APP_DATABASE_URL` reference was staged without redeploy, but it
+currently resolves to an empty value. No secret values were recorded.
 
-Proposed topology: keep the existing Railway Postgres and asset bucket; add a
-Redis service in each environment; run one persistent Next.js app instance per
+Proposed topology: keep the existing Railway Postgres and asset bucket; use the
+new Redis service in development and add it in production after review; run one
+persistent Next.js app instance per
 environment with its embedded logo worker; and give PR previews isolated data
 services and secrets. Use `app_user` for `APP_DATABASE_URL` and an admin role
 only for reviewed migrations. Promote reviewed source through `developer` to
@@ -42,9 +47,9 @@ failure, verify app/worker/DB health, and use a reviewed forward fix or restore
 procedure for database failures. This is a proposal, not an implemented or
 approved production configuration.
 
-Before changing Railway, the owner must confirm this topology against the
-thesis constraints, the source and ownership of missing runtime secrets, and
-the isolated PR-preview policy. KAN-52 owns bucket integration and KAN-53 owns
+Before further Railway changes, confirm the source and ownership of missing
+runtime secrets, the isolated PR-preview policy, and production deployment
+details. KAN-52 owns bucket integration and KAN-53 owns
 backup/restore targets and exercises.
 
 ## Proposed reversible local default
