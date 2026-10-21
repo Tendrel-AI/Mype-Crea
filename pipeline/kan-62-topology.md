@@ -22,6 +22,31 @@ local Compose health checks prove only that PostgreSQL and Redis answer their
 own probes; `scripts/db-smoke.mjs` checks application DB connectivity, role, and
 RLS posture. Neither proves end-to-end login, LLM, image, or pilot health.
 
+## Railway pilot decision for owner review
+
+The approved `Tendrel_AI / mype-crea` project has development and production
+environments. Development `mype-dev` is running commit `2564f06` from
+`developer`; production has Postgres running but no active app. The project has
+the `mype-crea-assets` bucket and no Redis service. Development app variable
+names include bucket settings but no `APP_DATABASE_URL`, `REDIS_URL`, WorkOS, or
+`FAL_KEY`; the production app has only Railway-injected variable names. No
+secret values were recorded.
+
+Proposed topology: keep the existing Railway Postgres and asset bucket; add a
+Redis service in each environment; run one persistent Next.js app instance per
+environment with its embedded logo worker; and give PR previews isolated data
+services and secrets. Use `app_user` for `APP_DATABASE_URL` and an admin role
+only for reviewed migrations. Promote reviewed source through `developer` to
+`main` before production deployment. Back up before migrations, stop rollout on
+failure, verify app/worker/DB health, and use a reviewed forward fix or restore
+procedure for database failures. This is a proposal, not an implemented or
+approved production configuration.
+
+Before changing Railway, the owner must confirm this topology against the
+thesis constraints, the source and ownership of missing runtime secrets, and
+the isolated PR-preview policy. KAN-52 owns bucket integration and KAN-53 owns
+backup/restore targets and exercises.
+
 ## Proposed reversible local default
 
 ```text
