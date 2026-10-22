@@ -11,7 +11,9 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { closePool, getPool } from '../../db/pool';
 import { withTenantTransaction } from '../../db/with-transaction';
+import { withGlobalTransaction } from '../../db/global-transaction';
 import { repos } from '..';
+import { assertActivePlatformActor } from '../global-audit';
 import { createBaselineDraft } from '../../services/ai-config/baseline';
 import { AiConfigService } from '../../services/ai-config/service';
 import { canonicalizeManifestJson, freezeManifest, type AiConfigManifestV1, type JsonValue } from '../../services/ai-config/manifest';
@@ -414,6 +416,9 @@ SUITE('AI configuration and durable turns (integration)', () => {
     )).rejects.toThrow();
     await ownerRepo.aiTurns.finishAttempt({ attemptId, turnId: claim.turn.id, ownerToken: claim.ownerToken, outcome: 'succeeded', usage: { promptTokens: 3, completionTokens: 4 }, cost: null });
 
+    // Follow the stage machine enforced by app.guard_turn_transition before completing.
+    const extracted = await ownerRepo.aiTurns.checkpointTurn({ turnId: claim.turn.id, ownerToken: claim.ownerToken, expectedVersion: claim.turn.version, stage: 'extracted', payload: { delta: { fields: {} } } });
+    await ownerRepo.aiTurns.checkpointTurn({ turnId: claim.turn.id, ownerToken: claim.ownerToken, expectedVersion: extracted.version, stage: 'effects_committed', payload: { decisions: [] } });
     await ownerRepo.aiTurns.completeTurn({ turnId: claim.turn.id, ownerToken: claim.ownerToken, responseContent: 'respuesta privada' });
     expect(await adminRepo.adminDeleteTraceContent(claim.turn.id)).toBe(true);
     const scrubbed = await ownerRepo.aiTurns.getTurn(claim.turn.id);
@@ -437,6 +442,21 @@ SUITE('AI configuration and durable turns (integration)', () => {
     const acquired = parallel.find((result) => result.kind === 'acquired');
     if (!acquired || acquired.kind !== 'acquired') return;
     expect(await repo.claimTurn({ conversationId: conversation, requestId, inputContent: 'otro mensaje' })).toMatchObject({ kind: 'conflict' });
+    // A different request while this turn is open reports the open turn instead of a unique violation.
+    expect(await repo.claimTurn({ conversationId: conversation, requestId: randomUUID() as UUID, inputContent: 'mensaje paralelo' }))
+      .toMatchObject({ kind: 'in_progress', turn: { id: acquired.turn.id } });
+    // Repeat the duplicate-request race on fresh conversations: exactly one claimant, never an error.
+    for (let round = 0; round < 5; round += 1) {
+      const raceConversation = await newPinnedConversation(tenant, tenant.admin);
+      const raceRequest = randomUUID() as UUID;
+      const raced = await Promise.all([
+        repo.claimTurn({ conversationId: raceConversation, requestId: raceRequest, inputContent: 'carrera repetida' }),
+        repo.claimTurn({ conversationId: raceConversation, requestId: raceRequest, inputContent: 'carrera repetida' }),
+        repo.claimTurn({ conversationId: raceConversation, requestId: randomUUID() as UUID, inputContent: 'otra solicitud' }),
+      ]);
+      expect(raced.filter((result) => result.kind === 'acquired')).toHaveLength(1);
+      expect(raced.every((result) => ['acquired', 'in_progress'].includes(result.kind))).toBe(true);
+    }
 
     await repo.checkpointTurn({ turnId: acquired.turn.id, ownerToken: acquired.ownerToken, expectedVersion: acquired.turn.version, stage: 'extracted', payload: { delta: { fields: {} } } });
     await owner.query(`UPDATE ai_turns SET lease_expires_at=now()-interval '1 second' WHERE id=$1`, [acquired.turn.id]);
@@ -480,6 +500,8 @@ SUITE('AI configuration and durable turns (integration)', () => {
     const tenant = tenants[0];
     const conversation = await newPinnedConversation(tenant, tenant.admin);
     const repo = repository(asIdentity(tenant, tenant.admin)).aiTurns;
+    // Earlier cases in this suite record attempts for the same user, so usage is asserted as a delta.
+    const usageBefore = await repo.getUsage();
     const claim = await repo.claimTurn({ conversationId: conversation, requestId: randomUUID() as UUID, inputContent: 'guardar trazas' });
     expect(claim.kind).toBe('acquired');
     if (claim.kind !== 'acquired') return;
@@ -492,15 +514,26 @@ SUITE('AI configuration and durable turns (integration)', () => {
     await repo.finishAttempt({ attemptId: attempt1, turnId: claim.turn.id, ownerToken: claim.ownerToken, outcome: 'failed', failureCategory: 'provider_unavailable', usage: { promptTokens: null, completionTokens: null }, cost: null });
     const attempt2 = await repo.startAttempt({ turnId: claim.turn.id, ownerToken: claim.ownerToken, purpose: 'extractor', primaryProfileId, effectiveProfileId: fallbackProfileId, provider: fallbackProfile.provider, model: 'fake/two' });
     await repo.finishAttempt({ attemptId: attempt2, turnId: claim.turn.id, ownerToken: claim.ownerToken, outcome: 'succeeded', responseContent: 'respuesta sintética', usage: { promptTokens: 5, completionTokens: 7, totalTokens: 12 }, cost: null });
-    await expect(repo.startAttempt({ turnId: claim.turn.id, ownerToken: claim.ownerToken, purpose: 'extractor', primaryProfileId, effectiveProfileId: 'third', provider: 'openrouter', model: 'fake/three' })).rejects.toThrow(/máximo|attempt/i);
+    // A third attempt is rejected by the two-attempt limit even when it names a configured profile.
+    const thirdProfileId = baseline.fallback.extractor.fallbackProfileIds[1] ?? fallbackProfileId;
+    const thirdProfile = baseline.models.find((profile) => profile.id === thirdProfileId)!;
+    await expect(repo.startAttempt({ turnId: claim.turn.id, ownerToken: claim.ownerToken, purpose: 'extractor', primaryProfileId, effectiveProfileId: thirdProfileId, provider: thirdProfile.provider, model: 'fake/three' }))
+      .rejects.toThrow(/excede la secuencia de respaldo/i);
 
     const attempts = await repo.listAttempts({ turnId: claim.turn.id, purpose: 'extractor' });
     expect(attempts.map((attempt) => attempt.attemptNumber)).toEqual([1, 2]);
     expect(attempts[0]).toMatchObject({ status: 'failed', requestContent: 'prompt synthetic', inputTokens: null, outputTokens: null, costAmount: null });
     expect(attempts[1]).toMatchObject({ status: 'succeeded', inputTokens: 5, outputTokens: 7, costAmount: null });
-    expect(await repo.getUsage()).toMatchObject({ attempts: 2, unknownCostAttempts: 2, knownCost: 0 });
+    const usageAfter = await repo.getUsage();
+    expect(usageAfter.attempts - usageBefore.attempts).toBe(2);
+    expect(usageAfter.unknownCostAttempts - usageBefore.unknownCostAttempts).toBe(2);
+    expect(usageAfter.knownCost).toBe(usageBefore.knownCost);
+    expect(usageAfter.unknownInputTokenAttempts - usageBefore.unknownInputTokenAttempts).toBe(1);
+    expect(usageAfter.costAccountingStatus).toBe('unknown');
 
     await repo.ensureUserMessage({ turnId: claim.turn.id, ownerToken: claim.ownerToken, conversationId: conversation, content: 'guardar trazas' });
+    const extracted = await repo.checkpointTurn({ turnId: claim.turn.id, ownerToken: claim.ownerToken, expectedVersion: claim.turn.version, stage: 'extracted', payload: { delta: { fields: {} } } });
+    await repo.checkpointTurn({ turnId: claim.turn.id, ownerToken: claim.ownerToken, expectedVersion: extracted.version, stage: 'effects_committed', payload: { decisions: [] } });
     const completed = await repo.completeTurn({ turnId: claim.turn.id, ownerToken: claim.ownerToken, responseContent: 'respuesta durable' });
     expect(completed.turn.stage).toBe('responded');
     const messages = await withTenantTransaction({ id: tenant.id }, { id: tenant.admin.id }, (tx) =>
@@ -543,7 +576,116 @@ SUITE('AI configuration and durable turns (integration)', () => {
     expect(await scoped.aiTurns.deleteTraceContent(turn.turn.id)).toBe(true);
     const deleted = await scoped.aiTurns.getTurn(turn.turn.id);
     expect(deleted).toMatchObject({ requestId: turn.turn.requestId, inputContent: null, responseContent: null, payload: {} });
-    expect(await scoped.aiTurns.claimTurn({ conversationId: conversation, requestId: turn.turn.requestId, inputContent: 'retención sintética' })).toMatchObject({ kind: 'conflict' });
-    expect((await scoped.aiTurns.peekEvents({ conversationId: conversation })).find((event) => event.eventId === `${task.id}:announce_completion`)?.payload.artifacts).toBeUndefined();
+    // Scrubbing keeps the request ID, input hash and stage, so a duplicate of the same request
+    // stays completed without replaying the turn or restoring content; changed input still conflicts.
+    expect(await scoped.aiTurns.claimTurn({ conversationId: conversation, requestId: turn.turn.requestId, inputContent: 'retención sintética' }))
+      .toMatchObject({ kind: 'completed', turn: { id: turn.turn.id, stage: 'responded', inputContent: null, responseContent: null } });
+    expect(await scoped.aiTurns.claimTurn({ conversationId: conversation, requestId: turn.turn.requestId, inputContent: 'otro contenido' }))
+      .toMatchObject({ kind: 'conflict' });
+    // The task outbox event is not linked to the scrubbed turn, so its artifact survives.
+    expect((await scoped.aiTurns.peekEvents({ conversationId: conversation })).find((event) => event.eventId === `${task.id}:announce_completion`)?.payload.artifacts)
+      .toEqual([expect.objectContaining({ kind: 'image', url: 'https://example.invalid/synthetic.png' })]);
+  });
+
+  it('locks shared releases only through the narrow helper without widening tenant or platform privileges', async () => {
+    const [tenantA, tenantB] = tenants;
+    const lockSql = `SELECT app.lock_frozen_shared_release($1) AS frozen`;
+    const lockAs = (tenant: FixtureTenant, user: FixtureUser, id: string) =>
+      withTenantTransaction({ id: tenant.id }, { id: user.id }, async (tx) =>
+        (await tx.query<{ frozen: boolean }>(lockSql, [id])).rows[0]?.frozen);
+
+    // Catalog posture: SECURITY DEFINER, fixed search_path, row security off, app_user only.
+    const fn = await owner.query<{ prosecdef: boolean; proconfig: string[]; app_exec: boolean; public_exec: boolean }>(
+      `SELECT p.prosecdef, p.proconfig,
+              has_function_privilege('app_user', p.oid, 'EXECUTE') AS app_exec,
+              has_function_privilege('public', p.oid, 'EXECUTE') AS public_exec
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'app' AND p.proname = 'lock_frozen_shared_release'`,
+    );
+    expect(fn.rows).toHaveLength(1);
+    expect(fn.rows[0]).toMatchObject({ prosecdef: true, app_exec: true, public_exec: false });
+    expect(fn.rows[0]!.proconfig).toEqual(expect.arrayContaining(['search_path=pg_catalog, public, app, pg_temp', 'row_security=off']));
+
+    // Tenant B still serves the initial shared clone from suite setup.
+    const activationB = await repository(asIdentity(tenantB, tenantB.admin)).aiConfig.getActivation();
+    const activeB = await repository(asIdentity(tenantB, tenantB.admin)).aiConfig.getRelease(activationB!.releaseId);
+    expect(activeB?.baseSharedReleaseId).toBe(sharedReleaseId);
+    const unrelated = await makeSharedRelease(baseline, `${TEST_PREFIX}unrelated-shared`);
+
+    // A tenant admin may lock any frozen shared release (admins can already read the catalog)
+    // but still cannot update or row-lock shared releases directly.
+    expect(await lockAs(tenantB, tenantB.admin, unrelated.id)).toBe(true);
+    await withTenantTransaction({ id: tenantB.id }, { id: tenantB.admin.id }, async (tx) => {
+      const update = await tx.query(`UPDATE ai_shared_releases SET name = name || '-tenant-admin' WHERE id = $1`, [unrelated.id]);
+      expect(update.rowCount).toBe(0);
+      const directLock = await tx.query(`SELECT id FROM ai_shared_releases WHERE id = $1 FOR SHARE`, [unrelated.id]);
+      expect(directLock.rowCount).toBe(0);
+    });
+
+    // An ordinary member gets true only for the shared base of the tenant's active release
+    // (the conversation-pin path), false for anything else, and cannot read or update rows.
+    expect(await lockAs(tenantB, tenantB.member, sharedReleaseId)).toBe(true);
+    expect(await lockAs(tenantB, tenantB.member, unrelated.id)).toBe(false);
+    await withTenantTransaction({ id: tenantB.id }, { id: tenantB.member.id }, async (tx) => {
+      const read = await tx.query(`SELECT id FROM ai_shared_releases WHERE id = ANY($1::uuid[])`, [[unrelated.id, sharedReleaseId]]);
+      expect(read.rowCount).toBe(0);
+      const update = await tx.query(`UPDATE ai_shared_releases SET name = name || '-member' WHERE id = $1`, [sharedReleaseId]);
+      expect(update.rowCount).toBe(0);
+    });
+    expect(await newPinnedConversation(tenantB, tenantB.member)).toBeTruthy();
+
+    // Ordinary members cannot activate, through the repository or with raw SQL.
+    const memberConfig = repository(asIdentity(tenantB, tenantB.member)).aiConfig;
+    await expect(memberConfig.activate({ releaseId: activeB!.id, expectedActivationVersion: activationB!.version }))
+      .rejects.toThrow(/permisos/i);
+    await expect(withTenantTransaction({ id: tenantB.id }, { id: tenantB.member.id }, (tx) =>
+      tx.query(`UPDATE ai_release_activations SET version = version + 1, updated_by = $2 WHERE tenant_id = $1`, [tenantB.id, tenantB.member.id]),
+    )).rejects.toThrow();
+
+    // Forged cross-tenant context: tenant A's member bound to tenant B reads and writes nothing.
+    expect(await lockAs(tenantB, tenantA.member, sharedReleaseId)).toBe(false);
+    await withTenantTransaction({ id: tenantB.id }, { id: tenantA.member.id }, async (tx) => {
+      expect((await tx.query(`SELECT id FROM ai_releases WHERE tenant_id = $1`, [tenantB.id])).rowCount).toBe(0);
+      expect((await tx.query(`UPDATE ai_release_activations SET updated_at = now() WHERE tenant_id = $1`, [tenantB.id])).rowCount).toBe(0);
+    });
+    await expect(withTenantTransaction({ id: tenantB.id }, { id: tenantA.member.id }, (tx) =>
+      tx.query(`INSERT INTO ai_config_audit_events(tenant_id, actor_user_id, action) VALUES ($1, $2, 'forged')`, [tenantB.id, tenantA.member.id]),
+    )).rejects.toThrow(/row-level security/i);
+
+    // A validated platform actor sees no tenant content in the global context.
+    const platformView = await withGlobalTransaction(async (tx) => {
+      await assertActivePlatformActor(tx, platformUser.workosUserId);
+      return tx.query<{ conversations: number; releases: number; turns: number; users: number }>(
+        `SELECT (SELECT count(*) FROM conversations)::int AS conversations,
+                (SELECT count(*) FROM ai_releases)::int AS releases,
+                (SELECT count(*) FROM ai_turns)::int AS turns,
+                (SELECT count(*) FROM users)::int AS users`,
+      );
+    });
+    expect(platformView.rows[0]).toEqual({ conversations: 0, releases: 0, turns: 0, users: 0 });
+
+    // Retirement waits behind the helper's row lock and proceeds once that transaction commits.
+    const platformConfig = repository(asIdentity(tenantA, platformUser, true)).aiConfig;
+    let retirement: Promise<unknown> | undefined;
+    let settled = false;
+    await withTenantTransaction({ id: tenantB.id }, { id: tenantB.admin.id }, async (tx) => {
+      expect((await tx.query<{ frozen: boolean }>(lockSql, [unrelated.id])).rows[0]?.frozen).toBe(true);
+      retirement = platformConfig.retireSharedRelease({ releaseId: unrelated.id, expectedVersion: unrelated.draftVersion })
+        .finally(() => { settled = true; });
+      let waiting = 0;
+      for (let attempt = 0; attempt < 200 && waiting === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        const blocked = await owner.query<{ waiting: number }>(
+          `SELECT count(*)::int AS waiting FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock'
+              AND query ILIKE '%UPDATE ai_shared_releases%'`,
+        );
+        waiting = blocked.rows[0]?.waiting ?? 0;
+      }
+      expect(waiting).toBe(1);
+      expect(settled).toBe(false);
+    });
+    await expect(retirement).resolves.toMatchObject({ id: unrelated.id, status: 'retired' });
+    expect(await lockAs(tenantB, tenantB.admin, unrelated.id)).toBe(false);
   });
 });
