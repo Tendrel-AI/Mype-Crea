@@ -6,6 +6,8 @@ Captured from the repository at KAN-72 baseline. This is a parity reference for 
 
 `package.json` declares Next.js `^16.2.3`, React `^19.2.1`, and React DOM `^19.2.1`. `package-lock.json` resolves Next.js `16.2.3`, React `19.2.4`, and React DOM `19.2.4`.
 
+After KAN-73: `package.json` declares React and React DOM `^19.3.1` and `@types/react`/`@types/react-dom` `^19.3.0`; the lockfile resolves React `19.3.1`, React DOM `19.3.1`, and both type packages `19.3.0` (the npm `latest` tags as of 2026-10-21). Next.js stays at `16.2.3`; its peer range (`react`/`react-dom` `^19.0.0`) accepts 19.3.1, so no Next.js change was needed. `npm ci` and `npm ls` report no peer conflicts.
+
 The UI uses the Next.js App Router, React client components, Tailwind CSS 4, `motion` (`motion/react`), lucide-react icons, and React Markdown. `next.config.ts` enables React strict mode, transpiles `motion`, and sets standalone output.
 
 ## Routes and page props
@@ -55,7 +57,7 @@ The component derives displayed progress from local `assets`: logo maps to step 
 
 ## Exact HTML iframe preview behavior
 
-The landing preview is implemented twice inline in `components/CreaMype.tsx`: once in the 400 px dashboard card and once in the full-screen landing tab. Both build the same `srcDoc` string:
+At the baseline, the landing preview was implemented twice inline in `components/CreaMype.tsx`: once in the 400 px dashboard card and once in the full-screen landing tab. Since KAN-75 both placements use `components/crea-mype/landing-src-doc.ts`. Both build the same `srcDoc` string:
 
 1. HTML5 doctype, UTF-8 meta, viewport meta.
 2. Loads Tailwind from `https://cdn.tailwindcss.com` and Google Fonts Inter (300–700) plus Space Grotesk (500, 700).
@@ -91,9 +93,38 @@ Use a development session with a registered tenant, active WorkOS membership, pi
 
 No screenshots were captured. The repository's documented local run requires WorkOS, database configuration, pinned tenant AI setup, and Redis for durable artifact display; no service-free static storybook/fixture harness exists. The current environment therefore cannot establish an authenticated screenshot baseline without those external services/credentials. The checks above are the reproducible reference; capture screenshots later in an authorized synthetic tenant session at a narrow viewport and desktop viewport.
 
+## Migration deviations (KAN-74, KAN-75, KAN-76)
+
+The component split was compared path by path with the pre-migration component
+(`git show 67eed9f:components/CreaMype.tsx`): step derivation, sidebar, restart modal, export,
+send/retry/uncertain handling, `task_processing`/`artifact` SSE handling, logo hydration from
+deliverables, dashboard pending/processing states, and both landing previews. State, server
+actions, and SSE wiring stay in the `CreaMype` container; the extracted components receive
+props/callbacks and keep the same markup, Tailwind classes, and Spanish copy. The only
+observable differences are these deliberate ones:
+
+1. **`srcDoc` indentation.** The iframe document is built once in
+   `components/crea-mype/landing-src-doc.ts` for both placements. The two old inline templates
+   differed from each other and from the new one only in leading whitespace per line (before the
+   doctype, between tags, and before the interpolated landing HTML). Whitespace before the doctype
+   and between head/body elements is ignored by the HTML parser, so the rendered result is the
+   same. `parity.test.tsx` compares the new output against a verbatim copy of the old template
+   after trimming each line.
+2. **Optional typed landing content.** `CreaMype` accepts an optional `landingPageContent` prop
+   (validated on render by `src/landing-page/contract.ts`). `app/page.tsx` does not pass it and no
+   producer exists, so pilot behavior is unchanged. When supplied, it takes precedence over the
+   legacy HTML string, counts as "landing page present" for step 5, and renders as React; if it
+   fails validation, the preview area shows "No se pudo mostrar esta página web." instead of an
+   iframe. Legacy HTML strings always parse as legacy and keep the iframe path above.
+3. **Restart clears typed content.** "Sí, crear nuevo" resets assets to empty, which also drops
+   any typed content supplied at mount, same as the other asset fields.
+
 ## Source map
 
-- Wizard and iframe: `components/CreaMype.tsx`
+- Wizard state, server actions, and SSE wiring: `components/CreaMype.tsx` (container)
+- Wizard presentation: `components/crea-mype/` (`Sidebar`, `ChatPanel`, `Dashboard`, `RestartModal`, `LandingPreview`)
+- Landing preview: `components/crea-mype/LandingPageRenderer.tsx` → `LandingHtmlPreviewFrame.tsx` (iframe) using `landing-src-doc.ts` (single `srcDoc` builder); typed contract in `src/landing-page/contract.ts`
+- Automated parity checks: `components/crea-mype/__tests__/parity.test.tsx`
 - Server entry/props/auth routing: `app/page.tsx`, `proxy.ts`, `src/auth/resolve-identity.ts`
 - Login/layout/global CSS: `app/login/page.tsx`, `app/layout.tsx`, `app/globals.css`
 - Chat and conversation actions: `app/actions/chat.ts`, `app/actions/conversations.ts`
