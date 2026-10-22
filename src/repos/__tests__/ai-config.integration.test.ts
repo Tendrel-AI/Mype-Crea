@@ -70,6 +70,7 @@ SUITE('AI configuration and durable turns (integration)', () => {
   let sharedHash: string;
   const tenantIds: UUID[] = [];
   const sharedActors: string[] = [];
+  const moduleVersions: number[] = [];
 
   async function newPinnedConversation(tenant: FixtureTenant, user: FixtureUser): Promise<ConversationId> {
     const id = randomUUID() as ConversationId;
@@ -183,6 +184,11 @@ SUITE('AI configuration and durable turns (integration)', () => {
         // IDs are the random tenant/user fixtures created by this suite; no pilot rows are touched.
         await owner.query(`SET LOCAL session_replication_role = 'replica'`);
         if (sharedActors.length) await owner.query(`DELETE FROM platform_superadmins WHERE workos_user_id = ANY($1::text[])`, [sharedActors]);
+        await owner.query(`DELETE FROM platform_module_assignments WHERE organization_id = ANY($1::uuid[])`, [tenantIds]);
+        if (moduleVersions.length) {
+          await owner.query(`DELETE FROM platform_module_defaults WHERE module_id = 'ai' AND version = ANY($1::int[])`, [moduleVersions]);
+          await owner.query(`DELETE FROM platform_module_versions WHERE module_id = 'ai' AND version = ANY($1::int[])`, [moduleVersions]);
+        }
         await owner.query(`DELETE FROM ai_turn_events WHERE tenant_id = ANY($1::uuid[])`, [tenantIds]);
         await owner.query(`DELETE FROM messages WHERE tenant_id = ANY($1::uuid[])`, [tenantIds]);
         await owner.query(`DELETE FROM ai_turn_notices WHERE tenant_id = ANY($1::uuid[])`, [tenantIds]);
@@ -687,5 +693,192 @@ SUITE('AI configuration and durable turns (integration)', () => {
     });
     await expect(retirement).resolves.toMatchObject({ id: unrelated.id, status: 'retired' });
     expect(await lockAs(tenantB, tenantB.admin, unrelated.id)).toBe(false);
+  });
+
+  it('pins new member conversations to the platform default or module assignment without widening tenant privileges (KAN-77)', async () => {
+    // Tenant C has no local activation, so the global AI default applies to it.
+    const tenantC = createTenantFixture();
+    tenantIds.push(tenantC.id);
+    await owner.query(
+      `INSERT INTO tenants(id,kind,name,plan,workos_org_id) VALUES($1,'institutional',$2,'test',$3)`,
+      [tenantC.id, `${TEST_PREFIX}${tenantC.id}`, tenantC.organizationId],
+    );
+    for (const user of [tenantC.admin, tenantC.member]) {
+      await owner.query(
+        `INSERT INTO users(id,tenant_id,workos_user_id,email,role,status) VALUES($1,$2,$3,$4,$5,'active')`,
+        [user.id, tenantC.id, user.workosUserId, `${user.workosUserId}@example.invalid`, user.role],
+      );
+    }
+    const defaultVariant = copyManifest(baseline);
+    (defaultVariant.planner.thresholds as Record<string, JsonValue>)['kan77Default'] = 1;
+    const assignedVariant = copyManifest(baseline);
+    (assignedVariant.planner.thresholds as Record<string, JsonValue>)['kan77Assigned'] = 2;
+    const defaultShared = await makeSharedRelease(defaultVariant, `${TEST_PREFIX}kan77-default`);
+    const assignedShared = await makeSharedRelease(assignedVariant, `${TEST_PREFIX}kan77-assigned`);
+    const unrelatedShared = await makeSharedRelease(baseline, `${TEST_PREFIX}kan77-unrelated`);
+
+    // Synthetic platform configuration rows (fixture owner); every assertion below runs as app_user.
+    const addModuleVersion = async (sharedId: string) => {
+      const row = await owner.query<{ version: number }>(
+        `INSERT INTO platform_module_versions(module_id, version, config, shared_release_id, created_by_workos_user_id)
+         SELECT 'ai', COALESCE(max(version), 0) + 1, jsonb_build_object('sharedReleaseId', $1::text), $1::uuid, $2
+           FROM platform_module_versions WHERE module_id = 'ai'
+         RETURNING version`,
+        [sharedId, platformUser.workosUserId],
+      );
+      moduleVersions.push(row.rows[0]!.version);
+      return row.rows[0]!.version;
+    };
+    const defaultVersion = await addModuleVersion(defaultShared.id);
+    const assignedVersion = await addModuleVersion(assignedShared.id);
+    const previousDefault = await owner.query<{ version: number; updated_by_workos_user_id: string }>(
+      `SELECT version, updated_by_workos_user_id FROM platform_module_defaults WHERE module_id = 'ai'`,
+    );
+    await owner.query(
+      `INSERT INTO platform_module_defaults(module_id, version, updated_by_workos_user_id) VALUES ('ai', $1, $2)
+       ON CONFLICT (module_id) DO UPDATE SET version = EXCLUDED.version, updated_by_workos_user_id = EXCLUDED.updated_by_workos_user_id`,
+      [defaultVersion, platformUser.workosUserId],
+    );
+
+    const pinOf = async (tenant: FixtureTenant, user: FixtureUser, conversation: ConversationId) =>
+      (await repository(asIdentity(tenant, user)).conversations.readPinnedConversation(conversation, []))?.releaseId;
+    const releaseOf = async (releaseId: string) =>
+      owner.query<{ tenant_id: string; base_shared_release_id: string | null; content_hash: string;
+        status: string; is_platform_materialization: boolean; created_by: string }>(
+        `SELECT tenant_id, base_shared_release_id, content_hash, status, is_platform_materialization, created_by
+           FROM ai_releases WHERE id = $1`, [releaseId]);
+
+    try {
+      // 1. Global default, ordinary member, no local activation.
+      const memberDefault = await newPinnedConversation(tenantC, tenantC.member);
+      const defaultReleaseId = (await pinOf(tenantC, tenantC.member, memberDefault))!;
+      expect((await releaseOf(defaultReleaseId)).rows[0]).toMatchObject({
+        tenant_id: tenantC.id, base_shared_release_id: defaultShared.id, content_hash: defaultShared.contentHash,
+        status: 'frozen', is_platform_materialization: true, created_by: tenantC.member.id,
+      });
+      // The admin's next conversation reuses the same tenant-local materialization.
+      const adminDefault = await newPinnedConversation(tenantC, tenantC.admin);
+      expect(await pinOf(tenantC, tenantC.admin, adminDefault)).toBe(defaultReleaseId);
+      expect((await owner.query(`SELECT count(*)::int AS n FROM ai_releases WHERE tenant_id = $1`, [tenantC.id])).rows[0]).toEqual({ n: 1 });
+      // Concurrent first conversations still share one materialization.
+      await Promise.all([newPinnedConversation(tenantC, tenantC.member), newPinnedConversation(tenantC, tenantC.admin)]);
+      expect((await owner.query(`SELECT count(*)::int AS n FROM ai_releases WHERE tenant_id = $1`, [tenantC.id])).rows[0]).toEqual({ n: 1 });
+
+      // Members still cannot create or activate releases directly, nor read other shared releases.
+      await withTenantTransaction({ id: tenantC.id }, { id: tenantC.member.id }, async (tx) => {
+        expect((await tx.query(`SELECT id FROM ai_shared_releases WHERE id = $1`, [unrelatedShared.id])).rowCount).toBe(0);
+      });
+      await expect(withTenantTransaction({ id: tenantC.id }, { id: tenantC.member.id }, (tx) =>
+        tx.query(
+          `INSERT INTO ai_releases(tenant_id, name, status, manifest, canonical_content, content_hash,
+             base_shared_release_id, is_platform_materialization, created_by, updated_by)
+           SELECT tenant_id, name || '-forged', status, manifest, canonical_content, content_hash,
+             $2, false, $3, $3 FROM ai_releases WHERE id = $1`,
+          [defaultReleaseId, unrelatedShared.id, tenantC.member.id]),
+      )).rejects.toThrow(/row-level security/i);
+      await expect(withTenantTransaction({ id: tenantC.id }, { id: tenantC.member.id }, (tx) =>
+        tx.query(`INSERT INTO ai_release_activations(tenant_id, release_id, version, updated_by) VALUES ($1, $2, 1, $3)`,
+          [tenantC.id, defaultReleaseId, tenantC.member.id]),
+      )).rejects.toThrow();
+      await expect(repository(asIdentity(tenantC, tenantC.member)).aiConfig
+        .activate({ releaseId: defaultReleaseId, expectedActivationVersion: 0 })).rejects.toThrow(/permisos/i);
+
+      // New privileged helpers: SECURITY DEFINER, fixed config, executable by app_user only.
+      const helpers = await owner.query<{ proname: string; prosecdef: boolean; proconfig: string[] | null; app_exec: boolean; public_exec: boolean }>(
+        `SELECT p.proname, p.prosecdef, p.proconfig,
+                has_function_privilege('app_user', p.oid, 'EXECUTE') AS app_exec,
+                has_function_privilege('public', p.oid, 'EXECUTE') AS public_exec
+           FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'app' AND p.proname IN
+            ('materialize_platform_ai_release', 'lock_effective_platform_ai_release', 'effective_platform_ai_shared_release')
+          ORDER BY p.proname`,
+      );
+      expect(helpers.rows.map((row) => row.proname)).toEqual([
+        'effective_platform_ai_shared_release', 'lock_effective_platform_ai_release', 'materialize_platform_ai_release',
+      ]);
+      for (const helper of helpers.rows) {
+        expect(helper.public_exec).toBe(false);
+        expect(helper.prosecdef).toBe(helper.proname !== 'effective_platform_ai_shared_release');
+        // The internal resolver is reachable only from inside the definer helpers.
+        expect(helper.app_exec).toBe(helper.proname !== 'effective_platform_ai_shared_release');
+        if (helper.prosecdef) {
+          expect(helper.proconfig).toEqual(expect.arrayContaining(['search_path=pg_catalog, public, app, pg_temp', 'row_security=off']));
+        }
+      }
+      await expect(withTenantTransaction({ id: tenantC.id }, { id: tenantC.member.id }, (tx) =>
+        tx.query(`SELECT app.effective_platform_ai_shared_release($1)`, [tenantC.id]),
+      )).rejects.toThrow(/permission denied/i);
+
+      // Helpers refuse anything but the tenant's effective platform release, and forged contexts.
+      const helperAs = (tenant: FixtureTenant, user: FixtureUser, fn: string, id: string) =>
+        withTenantTransaction({ id: tenant.id }, { id: user.id }, async (tx) =>
+          (await tx.query<{ value: unknown }>(`SELECT app.${fn}($1) AS value`, [id])).rows[0]?.value);
+      expect(await helperAs(tenantC, tenantC.member, 'materialize_platform_ai_release', unrelatedShared.id)).toBeNull();
+      expect(await helperAs(tenantC, tenantC.member, 'lock_effective_platform_ai_release', unrelatedShared.id)).toBe(false);
+      expect(await helperAs(tenantC, tenantC.member, 'lock_effective_platform_ai_release', defaultShared.id)).toBe(true);
+      expect(await helperAs(tenantC, tenants[0].member, 'materialize_platform_ai_release', defaultShared.id)).toBeNull();
+      expect(await helperAs(tenantC, tenants[0].member, 'lock_effective_platform_ai_release', defaultShared.id)).toBe(false);
+      // Tenants with a local activation do not take the default; the helper refuses it there.
+      expect(await helperAs(tenants[1], tenants[1].member, 'materialize_platform_ai_release', defaultShared.id)).toBeNull();
+      expect((await owner.query(`SELECT count(*)::int AS n FROM ai_releases WHERE tenant_id = ANY($1::uuid[]) AND base_shared_release_id = $2`,
+        [[tenants[0].id, tenants[1].id], defaultShared.id])).rows[0]).toEqual({ n: 0 });
+
+      // Cross-tenant: another tenant's member cannot read or pin to tenant C's release.
+      await withTenantTransaction({ id: tenants[0].id }, { id: tenants[0].member.id }, async (tx) => {
+        expect((await tx.query(`SELECT id FROM ai_releases WHERE id = $1`, [defaultReleaseId])).rowCount).toBe(0);
+        expect((await tx.query(`SELECT id FROM conversations WHERE id = $1`, [memberDefault])).rowCount).toBe(0);
+      });
+      await expect(withTenantTransaction({ id: tenants[0].id }, { id: tenants[0].member.id }, (tx) =>
+        tx.query(`INSERT INTO conversations(id, tenant_id, user_id, ai_release_id, configuration_state) VALUES ($1, $2, $3, $4, 'pinned')`,
+          [randomUUID(), tenants[0].id, tenants[0].member.id, defaultReleaseId]),
+      )).rejects.toThrow();
+
+      // 2. A local activation outranks the global default.
+      const local = await makeTenantRelease(tenantC);
+      await repository(asIdentity(tenantC, tenantC.admin)).aiConfig.activate({ releaseId: local.id, expectedActivationVersion: 0 });
+      const memberLocal = await newPinnedConversation(tenantC, tenantC.member);
+      expect(await pinOf(tenantC, tenantC.member, memberLocal)).toBe(local.id);
+      // The default materialization is no longer effective, so a direct pin to it is rejected.
+      await expect(withTenantTransaction({ id: tenantC.id }, { id: tenantC.member.id }, (tx) =>
+        tx.query(`INSERT INTO conversations(id, tenant_id, user_id, ai_release_id, configuration_state) VALUES ($1, $2, $3, $4, 'pinned')`,
+          [randomUUID(), tenantC.id, tenantC.member.id, defaultReleaseId]),
+      )).rejects.toThrow(/frozen active tenant release/);
+
+      // 3. A module assignment outranks the local activation.
+      await owner.query(
+        `INSERT INTO platform_module_assignments(module_id, organization_id, version, updated_by_workos_user_id) VALUES ('ai', $1, $2, $3)`,
+        [tenantC.id, assignedVersion, platformUser.workosUserId],
+      );
+      const memberAssigned = await newPinnedConversation(tenantC, tenantC.member);
+      const assignedReleaseId = (await pinOf(tenantC, tenantC.member, memberAssigned))!;
+      expect(assignedReleaseId).not.toBe(local.id);
+      expect((await releaseOf(assignedReleaseId)).rows[0]).toMatchObject({
+        tenant_id: tenantC.id, base_shared_release_id: assignedShared.id, content_hash: assignedShared.contentHash,
+        status: 'frozen', is_platform_materialization: true,
+      });
+      // Existing pins never move.
+      expect(await pinOf(tenantC, tenantC.member, memberDefault)).toBe(defaultReleaseId);
+      expect(await pinOf(tenantC, tenantC.member, memberLocal)).toBe(local.id);
+      expect((await repository(asIdentity(tenantC, tenantC.member)).aiConfig.getActivation())?.releaseId).toBe(local.id);
+
+      // 4. A retired effective shared release cannot be materialized or pinned.
+      await repository(asIdentity(tenants[0], platformUser, true)).aiConfig
+        .retireSharedRelease({ releaseId: assignedShared.id, expectedVersion: assignedShared.draftVersion });
+      await expect(repository(asIdentity(tenantC, tenantC.member)).conversations.ensurePinnedConversation({
+        conversationId: randomUUID() as ConversationId, schemas: [],
+      })).rejects.toThrow(/ya no está disponible/);
+      await expect(withTenantTransaction({ id: tenantC.id }, { id: tenantC.member.id }, (tx) =>
+        tx.query(`INSERT INTO conversations(id, tenant_id, user_id, ai_release_id, configuration_state) VALUES ($1, $2, $3, $4, 'pinned')`,
+          [randomUUID(), tenantC.id, tenantC.member.id, assignedReleaseId]),
+      )).rejects.toThrow();
+    } finally {
+      await owner.query(`DELETE FROM platform_module_assignments WHERE organization_id = $1`, [tenantC.id]);
+      if (previousDefault.rows[0]) {
+        await owner.query(`UPDATE platform_module_defaults SET version = $1, updated_by_workos_user_id = $2 WHERE module_id = 'ai'`,
+          [previousDefault.rows[0].version, previousDefault.rows[0].updated_by_workos_user_id]);
+      } else {
+        await owner.query(`DELETE FROM platform_module_defaults WHERE module_id = 'ai'`);
+      }
+    }
   });
 });
