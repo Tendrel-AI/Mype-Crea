@@ -5,10 +5,16 @@ import {
   OrchestratorCoreImpl,
 } from '../orchestrator/orchestrator-core';
 import { InProcessArtifactNotifier } from '../orchestrator/artifact-notifier';
-import { InMemoryConversationStore } from '../orchestrator/in-memory-store';
+import {
+  InMemoryConversationStore,
+  type IConversationStore,
+} from '../orchestrator/in-memory-store';
 import { LocalAdapter } from '../../transport/local-adapter';
 import { newTaskId } from '../ids';
-import { CONFIDENCE_THRESHOLDS, type PlannerDecision } from '../contracts';
+import {
+  CONFIDENCE_THRESHOLDS,
+  type PlannerDecision,
+} from '../contracts';
 import { buildDelta, buildSingleAgentFixtureRegistry } from './_fixtures';
 import type { A2AMessage, IAgentTransport, TaskState } from '../agent-types';
 
@@ -16,14 +22,34 @@ function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function buildHarness() {
+/**
+ * Wraps a store so every call yields to the event loop several times before
+ * touching state, like a real database round trip. Settlement through the
+ * core then spans many macrotasks, which is what the Postgres store does.
+ */
+function withSimulatedIo(store: IConversationStore, ticks = 5): IConversationStore {
+  const io = async () => {
+    for (let i = 0; i < ticks; i += 1) await flushMicrotasks();
+  };
+  return {
+    getOrCreate: async (...args) => { await io(); return store.getOrCreate(...args); },
+    get: async (...args) => { await io(); return store.get(...args); },
+    updateFieldSlot: async (...args) => { await io(); return store.updateFieldSlot(...args); },
+    recordDispatch: async (...args) => { await io(); return store.recordDispatch(...args); },
+    clearDispatch: async (...args) => { await io(); return store.clearDispatch(...args); },
+  };
+}
+
+function buildHarness(options: { readonly simulatedIo?: boolean } = {}) {
   const { registry, agentId } = buildSingleAgentFixtureRegistry();
-  const store = new InMemoryConversationStore(registry.getFieldSchemas());
+  const memoryStore = new InMemoryConversationStore(registry.getFieldSchemas());
+  const store = options.simulatedIo ? withSimulatedIo(memoryStore) : memoryStore;
 
   let coreRef: OrchestratorCoreImpl | null = null;
-  const transport = new LocalAdapter(registry, (taskId, state) => {
-    void coreRef?.onTaskSettled(taskId, state);
-  });
+  // Return the settlement promise so LocalAdapter.waitForSettlement covers it.
+  const transport = new LocalAdapter(registry, (taskId, state) =>
+    coreRef?.onTaskSettled(taskId, state),
+  );
 
   const notifier = new InProcessDecisionNotifier();
   const core = new OrchestratorCoreImpl({
@@ -78,7 +104,7 @@ function readyDelta(conversationId: string, agentId: string, source: string) {
 
 describe('orchestrator smoke (agent-agnostic)', () => {
   it('drives a fixture agent end-to-end via FieldDelta -> dispatch -> announce_completion', async () => {
-    const { core, notifier, agentId } = buildHarness();
+    const { core, notifier, agentId, transport } = buildHarness();
     const conversationId = randomUUID();
     const tenantId = randomUUID();
 
@@ -142,13 +168,13 @@ describe('orchestrator smoke (agent-agnostic)', () => {
       }),
     );
 
-    await flushMicrotasks();
-
     const dispatchAnnouncement = observed.find((d) => d.kind === 'announce_dispatch');
     expect(dispatchAnnouncement).toMatchObject({
       kind: 'announce_dispatch',
       agentId,
     });
+    if (dispatchAnnouncement?.kind !== 'announce_dispatch') throw new Error('expected dispatch');
+    await transport.waitForSettlement(dispatchAnnouncement.taskId);
 
     const completion = observed.find((d) => d.kind === 'announce_completion');
     expect(completion).toBeDefined();
@@ -459,4 +485,50 @@ describe('orchestrator smoke (agent-agnostic)', () => {
       publishedArtifacts: [expect.objectContaining({ conversationId, agentId, taskId, artifacts })],
     });
   });
+  it('waitForSettlement is a barrier for the core settlement when the store does I/O (KAN-78)', async () => {
+    const { core, notifier, agentId, transport } = buildHarness({ simulatedIo: true });
+    const conversationId = randomUUID();
+    const observed: PlannerDecision[] = [];
+    const subscription = notifier.subscribe(conversationId, (d) => observed.push(d));
+    await core.startConversation(conversationId, randomUUID(), randomUUID());
+
+    await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
+    const dispatch = observed.find((d) => d.kind === 'announce_dispatch');
+    if (dispatch?.kind !== 'announce_dispatch') throw new Error('expected dispatch');
+
+    // The pre-KAN-78 test waited one macrotask. With store I/O the core is
+    // still settling at that point, so that wait was never a barrier.
+    await flushMicrotasks();
+    expect(observed.some((d) => d.kind === 'announce_completion')).toBe(false);
+
+    const settled = await transport.waitForSettlement(dispatch.taskId);
+    expect(settled.status).toBe('completed');
+    expect(observed.filter((d) => d.kind === 'announce_completion')).toContainEqual(
+      expect.objectContaining({ kind: 'announce_completion', agentId, taskId: dispatch.taskId }),
+    );
+    const snapshot = await core.getSnapshot(conversationId);
+    expect(snapshot.agentStates[agentId].lastDispatchedTaskId).toBeUndefined();
+    subscription.dispose();
+  });
+
+  it('contains a failing settlement hook instead of leaving a floating rejection', async () => {
+    const { registry, agentId } = buildSingleAgentFixtureRegistry();
+    const transport = new LocalAdapter(registry, async () => {
+      throw new Error('settlement store unavailable');
+    });
+    const taskId = newTaskId();
+    await transport.dispatch({
+      taskId,
+      tenantId: randomUUID(),
+      agentId,
+      agentCardVersion: '0.0.1',
+      requirements: { business_name: 'Sazón Andino' },
+      createdAt: new Date().toISOString(),
+    });
+
+    await expect(transport.waitForSettlement(taskId)).resolves.toMatchObject({ status: 'completed' });
+    await expect(transport.getResult(taskId)).resolves.toMatchObject({ status: 'completed' });
+    await expect(transport.waitForSettlement(newTaskId())).rejects.toThrow(/never dispatched/);
+  });
 });
+
