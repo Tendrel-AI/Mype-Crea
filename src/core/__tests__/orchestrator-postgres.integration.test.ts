@@ -171,6 +171,22 @@ SUITE('orchestrator + Postgres store (integration)', () => {
       taskId: dispatchAnnouncement.taskId,
     });
 
+    // KAN-55: the controller's turn read sees each announcement once, and an
+    // acknowledged plan is not announced again by the next turn.
+    const announcementsOf = (plan: ReadonlyArray<PlannerDecision>) =>
+      plan.flatMap((d) =>
+        d.kind === 'announce_dispatch' || d.kind === 'announce_completion'
+          ? [`${d.kind}:${d.taskId}`]
+          : [],
+      );
+    const turnPlan = await core.peekNextDecision(conversationId);
+    expect(announcementsOf(turnPlan)).toEqual([
+      `announce_dispatch:${dispatchAnnouncement.taskId}`,
+      `announce_completion:${dispatchAnnouncement.taskId}`,
+    ]);
+    await core.acknowledgeDecisions(conversationId, turnPlan);
+    expect(announcementsOf(await core.peekNextDecision(conversationId))).toEqual([]);
+
     const snapshot = await core.getSnapshot(conversationId);
     expect(snapshot.tenantId).toBe(tenantId);
     expect(snapshot.agentStates[agentId].requiredFields.business_name.status).toBe('filled');
