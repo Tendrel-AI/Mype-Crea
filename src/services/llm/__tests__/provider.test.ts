@@ -359,6 +359,74 @@ describe('Anthropic Messages translation', () => {
     })).rejects.toThrow(/does not support function tool fields: strict/);
   });
 
+  it('never sends an OpenRouter slug to Anthropic or a Claude ID to OpenRouter', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const anthropic = new AnthropicProvider('secret').resolve('responder').client;
+    await expect(anthropic.chat.completions.create({
+      model: 'google/gemini-2.5-pro',
+      messages: [{ role: 'user', content: 'x' }],
+    })).rejects.toThrow('Anthropic provider requires a direct claude-* model ID.');
+    await expect(anthropic.chat.completions.create({
+      model: 'anthropic/claude-sonnet-5',
+      messages: [{ role: 'user', content: 'x' }],
+    })).rejects.toThrow(/direct claude-\* model ID/);
+    const openRouter = new OpenRouterProvider('secret').resolve('responder').client;
+    await expect(openRouter.chat.completions.create({
+      model: 'claude-sonnet-5-5',
+      messages: [{ role: 'user', content: 'x' }],
+    })).rejects.toThrow('OpenRouter provider requires a provider/model slug.');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('disables Haiku thinking for text replies but keeps its default for tool requests', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return anthropicTextResponse();
+    }));
+    const client = new AnthropicProvider('secret').resolve('extractor').client;
+    await client.chat.completions.create({
+      model: 'claude-haiku-5-5', messages: [{ role: 'user', content: 'x' }], max_tokens: 10,
+    });
+    await client.chat.completions.create({
+      model: 'claude-haiku-5-5', messages: [{ role: 'user', content: 'x' }], max_tokens: 10,
+      tools: [{ type: 'function', function: { name: 'f', parameters: { type: 'object' } } }],
+      tool_choice: { type: 'function', function: { name: 'f' } },
+    });
+    expect(bodies[0].thinking).toEqual({ type: 'disabled' });
+    expect(bodies[1]).not.toHaveProperty('thinking');
+  });
+
+  it('ignores thinking blocks and normalizes every tool_use block into a function call', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      id: 'msg_thinking',
+      model: 'claude-haiku-5-5',
+      stop_reason: 'tool_use',
+      content: [
+        { type: 'thinking', thinking: '', signature: 'sig' },
+        { type: 'text', text: 'Listo.' },
+        { type: 'tool_use', id: 't1', name: 'submit', input: { nombre: 'Café Ñandú', ok: true } },
+        { type: 'tool_use', id: 't2', name: 'submit', input: {} },
+      ],
+      usage: { input_tokens: 3, output_tokens: 7 },
+    }), { status: 200 })));
+    const result = await new AnthropicProvider('secret').resolve('extractor').client.chat.completions.create({
+      model: 'claude-haiku-5-5',
+      messages: [{ role: 'user', content: 'x' }],
+      tools: [{ type: 'function', function: { name: 'submit', parameters: { type: 'object' } } }],
+      tool_choice: 'auto',
+    });
+    const [choice] = result.choices;
+    expect(choice.message.content).toBe('Listo.');
+    expect(choice.finish_reason).toBe('tool_calls');
+    expect(choice.message.tool_calls?.map((call) => JSON.parse(call.function.arguments))).toEqual([
+      { nombre: 'Café Ñandú', ok: true },
+      {},
+    ]);
+    expect(result.usage).toEqual({ prompt_tokens: 3, completion_tokens: 7, total_tokens: 10 });
+  });
+
   it('adds a final user turn for empty or assistant-ending histories and rejects Sonnet forced tools', async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
