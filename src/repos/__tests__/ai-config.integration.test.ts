@@ -397,13 +397,15 @@ SUITE('AI configuration and durable turns (integration)', () => {
     await expect(withTenantTransaction({ id: tenant.id }, { id: tenant.admin.id }, (tx) =>
       tx.query(`UPDATE ai_turns SET input_hash=$3 WHERE tenant_id=$1 AND id=$2`, [tenant.id, claim.turn.id, 'a'.repeat(64)]),
     )).rejects.toThrow();
+    const primaryExtractorProfileId = baseline.fallback.extractor.primaryProfileId;
+    const primaryExtractorProfile = baseline.models.find((profile) => profile.id === primaryExtractorProfileId)!;
     const attemptId = await ownerRepo.aiTurns.startAttempt({
       turnId: claim.turn.id,
       ownerToken: claim.ownerToken,
       purpose: 'extractor',
-      primaryProfileId: 'primary',
-      effectiveProfileId: 'primary',
-      provider: 'openrouter',
+      primaryProfileId: primaryExtractorProfileId,
+      effectiveProfileId: primaryExtractorProfileId,
+      provider: primaryExtractorProfile.provider,
       model: 'fake/test',
     });
     await ownerRepo.aiTurns.attachAttemptRequest({ attemptId, turnId: claim.turn.id, ownerToken: claim.ownerToken, requestContent: 'prompt privado' });
@@ -460,13 +462,18 @@ SUITE('AI configuration and durable turns (integration)', () => {
     await owner.query(`UPDATE ai_turns SET lease_expires_at=now()-interval '1 second' WHERE id=$1`, [claim.turn.id]);
     expect(await repo.claimTurn({ conversationId: conversation, requestId, inputContent: 'efecto incierto' })).toMatchObject({ kind: 'uncertain', turn: { stage: 'uncertain' } });
 
+    // The prior uncertain turn intentionally remains recoverable and open. Use a second
+    // synthetic conversation to exercise provider-attempt recovery independently.
+    const providerConversation = await newPinnedConversation(tenant, tenant.admin);
     const providerRequest = randomUUID() as UUID;
-    const providerClaim = await repo.claimTurn({ conversationId: conversation, requestId: providerRequest, inputContent: 'intento incierto' });
+    const providerClaim = await repo.claimTurn({ conversationId: providerConversation, requestId: providerRequest, inputContent: 'intento incierto' });
     expect(providerClaim.kind).toBe('acquired');
     if (providerClaim.kind !== 'acquired') return;
-    await repo.startAttempt({ turnId: providerClaim.turn.id, ownerToken: providerClaim.ownerToken, purpose: 'extractor', primaryProfileId: 'openrouter-extractor', effectiveProfileId: 'openrouter-extractor', provider: 'openrouter', model: 'fake/test' });
+    const providerPrimaryProfileId = baseline.fallback.extractor.primaryProfileId;
+    const providerPrimary = baseline.models.find((profile) => profile.id === providerPrimaryProfileId)!;
+    await repo.startAttempt({ turnId: providerClaim.turn.id, ownerToken: providerClaim.ownerToken, purpose: 'extractor', primaryProfileId: providerPrimaryProfileId, effectiveProfileId: providerPrimaryProfileId, provider: providerPrimary.provider, model: 'fake/test' });
     await owner.query(`UPDATE ai_turns SET lease_expires_at=now()-interval '1 second' WHERE id=$1`, [providerClaim.turn.id]);
-    expect(await repo.claimTurn({ conversationId: conversation, requestId: providerRequest, inputContent: 'intento incierto' })).toMatchObject({ kind: 'uncertain' });
+    expect(await repo.claimTurn({ conversationId: providerConversation, requestId: providerRequest, inputContent: 'intento incierto' })).toMatchObject({ kind: 'uncertain' });
   });
 
   it('records ordered attempt limits, nullable usage/cost, request traces, and atomic response messages', async () => {
@@ -476,12 +483,16 @@ SUITE('AI configuration and durable turns (integration)', () => {
     const claim = await repo.claimTurn({ conversationId: conversation, requestId: randomUUID() as UUID, inputContent: 'guardar trazas' });
     expect(claim.kind).toBe('acquired');
     if (claim.kind !== 'acquired') return;
-    const attempt1 = await repo.startAttempt({ turnId: claim.turn.id, ownerToken: claim.ownerToken, purpose: 'extractor', primaryProfileId: 'primary', effectiveProfileId: 'primary', provider: 'openrouter', model: 'fake/one' });
+    const primaryProfileId = baseline.fallback.extractor.primaryProfileId;
+    const fallbackProfileId = baseline.fallback.extractor.fallbackProfileIds[0];
+    const primaryProfile = baseline.models.find((profile) => profile.id === primaryProfileId)!;
+    const fallbackProfile = baseline.models.find((profile) => profile.id === fallbackProfileId)!;
+    const attempt1 = await repo.startAttempt({ turnId: claim.turn.id, ownerToken: claim.ownerToken, purpose: 'extractor', primaryProfileId, effectiveProfileId: primaryProfileId, provider: primaryProfile.provider, model: 'fake/one' });
     await repo.attachAttemptRequest({ attemptId: attempt1, turnId: claim.turn.id, ownerToken: claim.ownerToken, requestContent: 'prompt synthetic' });
     await repo.finishAttempt({ attemptId: attempt1, turnId: claim.turn.id, ownerToken: claim.ownerToken, outcome: 'failed', failureCategory: 'provider_unavailable', usage: { promptTokens: null, completionTokens: null }, cost: null });
-    const attempt2 = await repo.startAttempt({ turnId: claim.turn.id, ownerToken: claim.ownerToken, purpose: 'extractor', primaryProfileId: 'primary', effectiveProfileId: 'fallback', provider: 'anthropic', model: 'fake/two' });
+    const attempt2 = await repo.startAttempt({ turnId: claim.turn.id, ownerToken: claim.ownerToken, purpose: 'extractor', primaryProfileId, effectiveProfileId: fallbackProfileId, provider: fallbackProfile.provider, model: 'fake/two' });
     await repo.finishAttempt({ attemptId: attempt2, turnId: claim.turn.id, ownerToken: claim.ownerToken, outcome: 'succeeded', responseContent: 'respuesta sintética', usage: { promptTokens: 5, completionTokens: 7, totalTokens: 12 }, cost: null });
-    await expect(repo.startAttempt({ turnId: claim.turn.id, ownerToken: claim.ownerToken, purpose: 'extractor', primaryProfileId: 'primary', effectiveProfileId: 'third', provider: 'openrouter', model: 'fake/three' })).rejects.toThrow(/máximo|attempt/i);
+    await expect(repo.startAttempt({ turnId: claim.turn.id, ownerToken: claim.ownerToken, purpose: 'extractor', primaryProfileId, effectiveProfileId: 'third', provider: 'openrouter', model: 'fake/three' })).rejects.toThrow(/máximo|attempt/i);
 
     const attempts = await repo.listAttempts({ turnId: claim.turn.id, purpose: 'extractor' });
     expect(attempts.map((attempt) => attempt.attemptNumber)).toEqual([1, 2]);
@@ -525,6 +536,9 @@ SUITE('AI configuration and durable turns (integration)', () => {
     if (turn.kind !== 'acquired') return;
     await scoped.aiTurns.ensureUserMessage({ turnId: turn.turn.id, ownerToken: turn.ownerToken, conversationId: conversation, content: 'retención sintética' });
     await scoped.aiTurns.checkpointTurn({ turnId: turn.turn.id, ownerToken: turn.ownerToken, expectedVersion: turn.turn.version, stage: 'extracted', payload: { delta: { fields: {} } } });
+    const extracted = await scoped.aiTurns.getTurn(turn.turn.id);
+    expect(extracted).toBeDefined();
+    await scoped.aiTurns.checkpointTurn({ turnId: turn.turn.id, ownerToken: turn.ownerToken, expectedVersion: extracted!.version, stage: 'effects_committed', payload: { decisions: [] } });
     await scoped.aiTurns.completeTurn({ turnId: turn.turn.id, ownerToken: turn.ownerToken, responseContent: 'respuesta de prueba' });
     expect(await scoped.aiTurns.deleteTraceContent(turn.turn.id)).toBe(true);
     const deleted = await scoped.aiTurns.getTurn(turn.turn.id);

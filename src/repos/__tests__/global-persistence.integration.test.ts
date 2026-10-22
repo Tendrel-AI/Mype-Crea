@@ -10,12 +10,14 @@ import { closePool, getPool } from '../../db/pool';
 import { withGlobalTransaction } from '../../db/global-transaction';
 import { withTenantTransaction } from '../../db/with-transaction';
 import { globalRepos } from '../global';
+import { assertActivePlatformActor } from '../global-audit';
 
 const RUN_INTEGRATION = Boolean(process.env.APP_DATABASE_URL && process.env.DATABASE_URL);
 const SUITE = RUN_INTEGRATION ? describe : describe.skip;
 
 SUITE('KAN-71 global persistence (integration)', () => {
   let owner: pg.Client;
+  let ownerConnected = false;
   const workosUserId = `user_${randomUUID().replaceAll('-', '')}`;
   const operationKey = `kan71-${randomUUID()}`;
   let tenantId: string | undefined;
@@ -28,6 +30,7 @@ SUITE('KAN-71 global persistence (integration)', () => {
     }
     owner = new pg.Client({ connectionString: ownerUrl });
     await owner.connect();
+    ownerConnected = true;
     const ownerRole = await owner.query<{ current_user: string }>('SELECT current_user');
     if (ownerRole.rows[0]?.current_user === 'app_user') throw new Error('DATABASE_URL must not use app_user.');
     const appRole = await getPool().query<{ current_user: string }>('SELECT current_user');
@@ -39,7 +42,10 @@ SUITE('KAN-71 global persistence (integration)', () => {
   });
 
   afterAll(async () => {
-    if (owner) {
+    // beforeAll may fail while PostgreSQL is unavailable. In that case there is
+    // no usable client to clean up, and querying it here would mask the original
+    // connection error with a second cleanup failure.
+    if (ownerConnected) {
       await owner.query('BEGIN');
       try {
         await owner.query('SET LOCAL session_replication_role = replica');
@@ -111,16 +117,23 @@ SUITE('KAN-71 global persistence (integration)', () => {
     const monthStart = new Date();
     monthStart.setUTCDate(1);
     const month = monthStart.toISOString().slice(0, 10);
-    const result = await withGlobalTransaction((tx) =>
+    await expect(withGlobalTransaction((tx) =>
       tx.query(`SELECT * FROM app.platform_monthly_metrics($1::date)`, [month]),
+    )).rejects.toThrow('active platform actor context is required');
+
+    const result = await withGlobalTransaction((tx) =>
+      assertActivePlatformActor(tx, workosUserId).then(() =>
+        tx.query(`SELECT * FROM app.platform_monthly_metrics($1::date)`, [month]),
+      ),
     );
     expect(result.fields.map((field) => field.name)).toEqual([
       'period_start', 'organization_id', 'organization_name', 'active_users',
       'new_conversations', 'provider_model_usage', 'estimated_cost', 'errors', 'active_versions',
     ]);
     expect(result.rows.some((row) => row.organization_id === null)).toBe(true);
-    await expect(withGlobalTransaction((tx) =>
-      tx.query(`SELECT * FROM app.platform_monthly_metrics($1::date)`, ['2020-01-02']),
-    )).rejects.toThrow('first day of a calendar month');
+    await expect(withGlobalTransaction(async (tx) => {
+      await assertActivePlatformActor(tx, workosUserId);
+      return tx.query(`SELECT * FROM app.platform_monthly_metrics($1::date)`, ['2020-01-02']);
+    })).rejects.toThrow('first day of a calendar month');
   });
 });
