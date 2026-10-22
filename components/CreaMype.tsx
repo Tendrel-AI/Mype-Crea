@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
-import { motion, AnimatePresence } from 'motion/react';
-import { Send, Loader2, Sparkles, Image as ImageIcon, LayoutTemplate, Megaphone, CheckCircle2, LogOut, Menu, Globe, PlusCircle, Download } from 'lucide-react';
-import { signOutAction } from '../app/actions/auth';
+import { Sidebar } from './crea-mype/Sidebar';
+import { type BrandAssets, type Message, type Step } from './crea-mype/types';
+import { RestartModal } from './crea-mype/RestartModal';
+import { ChatPanel } from './crea-mype/ChatPanel';
+import { Dashboard } from './crea-mype/Dashboard';
+import { LandingPreview } from './crea-mype/LandingPreview';
 import { chatAction } from '../app/actions/chat';
 import { createConversationAction, exportConversationTraceAction, loadConversationAction } from '../app/actions/conversations';
 
@@ -25,29 +27,9 @@ interface CreaMypeProps {
     contentUrl: string | null;
     contentInline: Record<string, unknown> | null;
   }>;
+  /** Optional validated-on-render typed v1 landing-page envelope. No live producer exists yet. */
+  landingPageContent?: unknown;
   initialError?: string;
-}
-
-type Step = 1 | 2 | 3 | 4 | 5 | 6;
-
-interface BrandAssets {
-  name: string;
-  profile: string;
-  logoUrl: string;
-  labelUrl: string;
-  landingPage: string;
-  marketingPlan: string;
-}
-
-interface Message {
-  id: string;
-  role: 'user' | 'model';
-  text: string;
-  isImage?: boolean;
-  imageUrl?: string;
-  imageAssetKey?: 'logoUrl' | 'labelUrl';
-  isSystem?: boolean;
-  isNotice?: boolean;
 }
 
 const WELCOME_MESSAGE: Message = {
@@ -66,13 +48,14 @@ const EMPTY_ASSETS: BrandAssets = {
   marketingPlan: '',
 };
 
-export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialError }: CreaMypeProps) {
+export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], landingPageContent, initialError }: CreaMypeProps) {
   const [activeTab, setActiveTab] = useState<'create' | 'gallery' | 'landing'>('create');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   const [assets, setAssets] = useState<BrandAssets>(() => ({
     ...EMPTY_ASSETS,
     logoUrl: initialDeliverables.find((item) => item.kind === 'logo' && item.contentUrl)?.contentUrl ?? '',
+    typedLandingPage: landingPageContent,
   }));
   const [messages, setMessages] = useState<Message[]>(() => initialTurns.length
     ? initialTurns.flatMap((turn) => [
@@ -111,7 +94,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   // has no step concept — this is a UI affordance only.
   const step: Step = assets.marketingPlan
     ? 6
-    : assets.landingPage
+    : assets.typedLandingPage || assets.landingPage
       ? 5
       : assets.labelUrl
         ? 4
@@ -296,556 +279,23 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
-  const steps = [
-    { num: 1, title: 'Nombre', icon: Sparkles },
-    { num: 2, title: 'Logo', icon: ImageIcon },
-    { num: 3, title: 'Etiqueta', icon: ImageIcon },
-    { num: 4, title: 'Web', icon: LayoutTemplate },
-    { num: 5, title: 'Marketing', icon: Megaphone },
-  ];
 
   return (
     <div className="flex h-screen bg-neutral-50 text-neutral-900 overflow-hidden font-sans">
 
-      {/* Sidebar */}
-      <motion.div
-        animate={{ width: isSidebarOpen ? 260 : 64 }}
-        className="h-full bg-white border-r border-neutral-200 flex flex-col flex-shrink-0 z-20 transition-all duration-300 overflow-hidden"
-      >
-        <div className="p-4 flex items-center justify-between border-b border-neutral-100">
-          <AnimatePresence>
-            {isSidebarOpen && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="flex items-center gap-2 font-bold text-lg text-orange-600 truncate"
-              >
-                {assets.logoUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={assets.logoUrl} alt="Logo" className="w-6 h-6 rounded-md object-cover" />
-                ) : processingAgents.has('logo-agent') ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : (
-                  <Sparkles className="w-5 h-5" />
-                )}
-                <span>CreaMype</span>
-              </motion.div>
-            )}
-          </AnimatePresence>
-          <button
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="p-1.5 rounded-lg hover:bg-neutral-100 text-neutral-500 transition-colors flex-shrink-0"
-          >
-            <Menu className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="flex-1 py-4 flex flex-col gap-2 px-3">
-          <button
-            onClick={() => setActiveTab('create')}
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${activeTab === 'create' ? 'bg-orange-50 text-orange-600' : 'hover:bg-neutral-100 text-neutral-600'}`}
-            title="Crea tu producto"
-          >
-            <PlusCircle className="w-5 h-5 flex-shrink-0" />
-            <span className={`font-medium whitespace-nowrap transition-opacity ${isSidebarOpen ? 'opacity-100' : 'opacity-0 hidden'}`}>
-              Crea tu producto
-            </span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('landing')}
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${activeTab === 'landing' ? 'bg-orange-50 text-orange-600' : 'hover:bg-neutral-100 text-neutral-600'}`}
-            title="Visualizar página web"
-          >
-            <Globe className="w-5 h-5 flex-shrink-0" />
-            <span className={`font-medium whitespace-nowrap transition-opacity ${isSidebarOpen ? 'opacity-100' : 'opacity-0 hidden'}`}>
-              Página Web
-            </span>
-          </button>
-        </div>
-
-        <div className="p-3 border-t border-neutral-100">
-          {isSidebarOpen && (
-            <div className="px-3 py-2 text-xs text-neutral-500 truncate" title={userEmail}>
-              <div className="font-medium text-neutral-700 truncate">{userName}</div>
-              <div className="truncate">{userEmail}</div>
-            </div>
-          )}
-          <form action={signOutAction}>
-            <button
-              type="submit"
-              className="flex items-center gap-3 px-3 py-2.5 w-full rounded-xl hover:bg-neutral-100 text-neutral-500 transition-colors"
-              title="Cerrar sesión"
-            >
-              <span className={`font-medium whitespace-nowrap transition-opacity ${isSidebarOpen ? 'opacity-100' : 'opacity-0 hidden'}`}>
-                Cerrar sesión
-              </span>
-            </button>
-          </form>
-
-        </div>
-      </motion.div>
-
+      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} isSidebarOpen={isSidebarOpen} setIsSidebarOpen={setIsSidebarOpen} assets={assets} processingAgents={processingAgents} userEmail={userEmail} userName={userName} />
       {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden relative">
 
-      {/* Restart Modal */}
-      <AnimatePresence>
-        {showRestartModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-2xl p-6 max-w-sm w-full mx-4 shadow-xl border border-neutral-200"
-            >
-              <h3 className="text-lg font-bold text-neutral-900 mb-2">¿Crear nuevo producto?</h3>
-              <p className="text-neutral-600 text-sm mb-6">
-                Esto iniciará un nuevo proceso de creación y descartará el producto actual.
-              </p>
-              <div className="flex justify-end gap-3">
-                <button
-                  onClick={() => setShowRestartModal(false)}
-                  className="px-4 py-2 text-sm font-medium text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 rounded-lg transition-colors"
-                >
-                  Cancelar
-                </button>
-                <button
-                  onClick={handleRestart}
-                  className="px-4 py-2 text-sm font-medium text-white bg-orange-600 hover:bg-orange-700 rounded-lg transition-colors"
-                >
-                  Sí, crear nuevo
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
+      <RestartModal showRestartModal={showRestartModal} setShowRestartModal={setShowRestartModal} handleRestart={handleRestart} />
       {activeTab === 'create' && (
         <>
-          {/* Left Panel: Chat Interface */}
-      <div className="w-full md:w-1/2 lg:w-5/12 flex flex-col border-r border-neutral-200 bg-white/50 relative z-10">
-        <div className="p-4 border-b border-neutral-200 bg-white flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-500 overflow-hidden">
-              {assets.logoUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={assets.logoUrl} alt="Logo" className="w-full h-full object-cover" />
-              ) : processingAgents.has('logo-agent') ? (
-                <Loader2 size={18} className="animate-spin" />
-              ) : (
-                <Sparkles size={18} />
-              )}
-            </div>
-            <h1 className="font-semibold text-lg tracking-tight">CreaMype</h1>
-          </div>
-          <div className="flex items-center gap-4">
-            {conversationId && <button
-              type="button"
-              onClick={() => void handleExportConversation()}
-              className="text-xs font-medium px-2.5 py-1 rounded-full bg-neutral-100 text-neutral-600 hover:bg-neutral-200 transition-colors flex items-center gap-1"
-              title="Descargar la conversación y sus registros"
-            ><Download className="w-3 h-3" />Exportar</button>}
-            <div className="text-xs font-medium px-2.5 py-1 rounded-full bg-neutral-100 text-neutral-600">
-              Paso {Math.min(step, 5)} de 5
-            </div>
-            <button
-              onClick={() => setShowRestartModal(true)}
-              className="text-xs font-medium px-2.5 py-1 rounded-full bg-orange-50 text-orange-600 hover:bg-orange-100 transition-colors flex items-center gap-1"
-              title="Crear un nuevo producto"
-            >
-              <PlusCircle className="w-3 h-3" />
-              Nuevo
-            </button>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
-          <AnimatePresence initial={false}>
-            {messages.map((msg) => (
-              <motion.div
-                key={msg.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}
-              >
-                <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-3 ${
-                    msg.isNotice
-                      ? 'bg-amber-50 text-amber-900 border border-amber-200 rounded-tl-sm'
-                      : msg.role === 'user'
-                      ? 'bg-orange-600 text-white rounded-tr-sm'
-                      : 'bg-white text-neutral-800 rounded-tl-sm border border-neutral-200 shadow-sm'
-                  }`}
-                >
-                  {msg.isSystem && (
-                    <div className="flex items-center gap-2 mb-2 text-orange-500 font-medium text-sm">
-                      {assets.logoUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={assets.logoUrl} alt="Logo" className="w-4 h-4 rounded-full object-cover" />
-                      ) : (
-                        <Sparkles size={14} />
-                      )}
-                      <span>CreaMype</span>
-                    </div>
-                  )}
-
-                  {msg.text && (
-                    <div className="prose prose-sm max-w-none prose-p:leading-relaxed prose-pre:bg-neutral-100 prose-pre:border prose-pre:border-neutral-200">
-                      <ReactMarkdown>{msg.text}</ReactMarkdown>
-                    </div>
-                  )}
-
-                  {msg.isImage && (msg.imageUrl || msg.imageAssetKey) && (
-                    <div className="mt-3 rounded-lg overflow-hidden border border-neutral-200 bg-neutral-100">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={msg.imageAssetKey ? assets[msg.imageAssetKey] : msg.imageUrl} alt="Generated asset" className="w-full h-auto object-cover" />
-                    </div>
-                  )}
-                </div>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-
-          {isLoading && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-start">
-              <div className="bg-white border border-neutral-200 text-neutral-700 shadow-sm rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-3 text-sm">
-                <Loader2 size={16} className="animate-spin text-orange-500" />
-                <span>Pensando...</span>
-              </div>
-            </motion.div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-
-        <div className="p-4 bg-white border-t border-neutral-200">
-          {conversationError && (
-            <div role="status" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              {conversationError}
-            </div>
-          )}
-          {retryTurn && (
-            <div className="mb-3 rounded-lg border border-orange-200 bg-orange-50 p-3 text-sm text-orange-900">
-              <p>Hay un turno anterior sin respuesta. Al continuar, se usará el mismo identificador para evitar duplicar la solicitud.</p>
-              <button
-                type="button"
-                onClick={() => void submitTurn(retryTurn.userMessage, retryTurn.requestId)}
-                disabled={isLoading}
-                className="mt-2 rounded-lg border border-orange-300 px-3 py-2 font-medium hover:bg-orange-100 disabled:opacity-50"
-              >
-                Continuar este turno
-              </button>
-            </div>
-          )}
-          {needsNewConversation && (
-            <p role="status" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-              No pudimos confirmar el resultado del turno anterior. No vuelvas a enviar ese mensaje; inicia un producto nuevo para continuar.
-            </p>
-          )}
-          <div className="relative flex items-end gap-2">
-            <textarea
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Escribe tu mensaje aquí..."
-              className="w-full bg-neutral-50 border border-neutral-200 text-neutral-900 rounded-xl px-4 py-3 pr-12 focus:outline-none focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 resize-none min-h-[52px] max-h-32"
-              rows={1}
-              disabled={isLoading || Boolean(retryTurn) || needsNewConversation}
-            />
-            <button
-              onClick={handleSend}
-              disabled={!inputText.trim() || isLoading || Boolean(retryTurn) || needsNewConversation}
-              className="absolute right-2 bottom-2 p-2 bg-orange-600 hover:bg-orange-500 disabled:bg-neutral-200 disabled:text-neutral-400 text-white rounded-lg transition-colors flex-shrink-0"
-            >
-              <Send size={18} />
-            </button>
-          </div>
-          <p className="text-center text-[10px] text-neutral-500 mt-2">
-            La IA puede cometer errores. Verifica la información importante.
-          </p>
-        </div>
-      </div>
-
-      {/* Right Panel: Brand Dashboard */}
-      <div className="hidden md:flex flex-1 flex-col bg-neutral-50 overflow-y-auto">
-        <div className="p-8 max-w-4xl mx-auto w-full space-y-10">
-
-          {/* Progress Tracker — clickable; scrolls the right panel to the matching section. */}
-          <div className="flex items-center justify-between relative">
-            <div className="absolute left-0 top-1/2 -translate-y-1/2 w-full h-0.5 bg-neutral-200 -z-10"></div>
-            {steps.map((s) => {
-              const isActive = step === s.num;
-              const isCompleted = step > s.num;
-              const Icon = s.icon;
-              return (
-                <button
-                  key={s.num}
-                  type="button"
-                  onClick={() => {
-                    const el = document.getElementById(`brand-step-${s.num}`);
-                    el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                  }}
-                  className="flex flex-col items-center gap-2 bg-neutral-50 px-2 cursor-pointer group focus:outline-none"
-                  title={`Ir a: ${s.title}`}
-                >
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center border-2 transition-colors group-hover:border-orange-400 ${
-                    isCompleted ? 'bg-orange-600 border-orange-600 text-white' :
-                    isActive ? 'bg-white border-orange-500 text-orange-500' :
-                    'bg-white border-neutral-200 text-neutral-400 group-hover:text-orange-500'
-                  }`}>
-                    {isCompleted ? <CheckCircle2 size={18} /> : <Icon size={18} />}
-                  </div>
-                  <span className={`text-xs font-medium group-hover:text-orange-600 ${isActive || isCompleted ? 'text-neutral-900' : 'text-neutral-500'}`}>
-                    {s.title}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Dashboard Content */}
-          <div className="space-y-8">
-
-            {/* Step 1: Brand Identity */}
-            <motion.div
-              id="brand-step-1"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 scroll-mt-4"
-            >
-              <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <Sparkles size={16} /> Identidad de Marca
-              </h2>
-              {assets.name ? (
-                <div>
-                  <h3 className="text-4xl font-bold tracking-tight text-neutral-900 mb-2">{assets.name}</h3>
-                  <p className="text-neutral-600 text-sm leading-relaxed">{assets.profile}</p>
-                </div>
-              ) : (
-                <div className="h-24 flex items-center justify-center text-neutral-500 border border-dashed border-neutral-300 rounded-xl">
-                  Esperando definición de marca...
-                </div>
-              )}
-            </motion.div>
-
-            {/* Step 2 & 3: Visual Assets */}
-            <div id="brand-step-2" className="grid grid-cols-2 gap-6 scroll-mt-4">
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 flex flex-col"
-              >
-                <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
-                  <ImageIcon size={16} /> Logo
-                </h2>
-                <div className="flex-1 flex items-center justify-center bg-neutral-50 rounded-xl border border-neutral-200 overflow-hidden aspect-square relative">
-                  {assets.logoUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={assets.logoUrl} alt="Logo" className="w-full h-full object-cover" />
-                  ) : processingAgents.has('logo-agent') ? (
-                    <div className="flex flex-col items-center gap-2 text-orange-500">
-                      <Loader2 size={28} className="animate-spin" />
-                      <span className="text-xs text-neutral-500">Generando logo...</span>
-                    </div>
-                  ) : (
-                    <span className="text-neutral-500 text-sm">Pendiente</span>
-                  )}
-                </div>
-              </motion.div>
-
-              <motion.div
-                id="brand-step-3"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 flex flex-col scroll-mt-4"
-              >
-                <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
-                  <ImageIcon size={16} /> Etiqueta
-                </h2>
-                <div className="flex-1 flex items-center justify-center bg-neutral-50 rounded-xl border border-neutral-200 overflow-hidden aspect-square relative">
-                  {assets.labelUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={assets.labelUrl} alt="Label" className="w-full h-full object-cover" />
-                  ) : processingAgents.has('label-agent') ? (
-                    <div className="flex flex-col items-center gap-2 text-orange-500">
-                      <Loader2 size={28} className="animate-spin" />
-                      <span className="text-xs text-neutral-500">Generando etiqueta...</span>
-                    </div>
-                  ) : (
-                    <span className="text-neutral-500 text-sm">Pendiente</span>
-                  )}
-                </div>
-              </motion.div>
-            </div>
-
-            {/* Step 4: Landing Page */}
-            <motion.div
-              id="brand-step-4"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 scroll-mt-4"
-            >
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider flex items-center gap-2">
-                  <LayoutTemplate size={16} /> Landing Page
-                </h2>
-                {assets.landingPage && (
-                  <button
-                    onClick={() => setActiveTab('landing')}
-                    className="text-xs font-medium text-orange-600 hover:text-orange-700 flex items-center gap-1 bg-orange-50 px-3 py-1.5 rounded-lg transition-colors"
-                  >
-                    <Globe size={14} />
-                    Ver en pantalla completa
-                  </button>
-                )}
-              </div>
-              <div className="bg-white rounded-xl overflow-hidden border border-neutral-200 h-[400px] relative">
-                {assets.landingPage ? (
-                  <iframe
-                    srcDoc={`
-                      <!DOCTYPE html>
-                      <html>
-                        <head>
-                          <meta charset="UTF-8">
-                          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                          <script src="https://cdn.tailwindcss.com"></script>
-                          <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-                          <script>
-                            tailwind.config = {
-                              theme: {
-                                extend: {
-                                  fontFamily: {
-                                    sans: ['Inter', 'sans-serif'],
-                                    display: ['Space Grotesk', 'sans-serif'],
-                                  }
-                                }
-                              }
-                            }
-                          </script>
-                          <style>
-                            body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
-                            h1, h2, h3, h4, h5, h6 { font-family: 'Space Grotesk', sans-serif; letter-spacing: -0.02em; }
-                          </style>
-                        </head>
-                        <body class="bg-neutral-50 text-neutral-900">
-                          ${assets.landingPage.replace(/LOGO_URL_PLACEHOLDER/g, assets.logoUrl || '').replace(/LABEL_URL_PLACEHOLDER/g, assets.labelUrl || '')}
-                        </body>
-                      </html>
-                    `}
-                    className="w-full h-full border-0"
-                    title="Landing Page Preview"
-                    sandbox="allow-scripts"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-neutral-500 bg-neutral-50">
-                    Pendiente
-                  </div>
-                )}
-              </div>
-            </motion.div>
-
-            {/* Step 5: Marketing Plan */}
-            <motion.div
-              id="brand-step-5"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 scroll-mt-4"
-            >
-              <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <Megaphone size={16} /> Plan de Marketing
-              </h2>
-              {assets.marketingPlan ? (
-                <div className="prose prose-sm max-w-none bg-neutral-50 p-6 rounded-xl border border-neutral-200">
-                  <ReactMarkdown>{assets.marketingPlan}</ReactMarkdown>
-                </div>
-              ) : (
-                <div className="h-32 flex items-center justify-center text-neutral-500 border border-dashed border-neutral-300 rounded-xl">
-                  Pendiente
-                </div>
-              )}
-            </motion.div>
-
-          </div>
-        </div>
-      </div>
+          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} setShowRestartModal={setShowRestartModal} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} />
+          <Dashboard assets={assets} processingAgents={processingAgents} step={step} setActiveTab={setActiveTab} />
       </>
       )}
 
-      {activeTab === 'landing' && (
-        <div className="flex-1 overflow-y-auto bg-white">
-          {assets.landingPage ? (
-            <div className="max-w-5xl mx-auto p-8 h-full flex flex-col">
-              <div className="flex items-center justify-between mb-8 pb-4 border-b border-neutral-100 flex-shrink-0">
-                <h2 className="text-2xl font-bold text-neutral-900 flex items-center gap-3">
-                  <Globe className="w-6 h-6 text-orange-500" />
-                  Vista previa de tu Landing Page
-                </h2>
-                <button
-                  onClick={() => setActiveTab('create')}
-                  className="px-4 py-2 text-sm font-medium text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 rounded-lg transition-colors"
-                >
-                  Volver al editor
-                </button>
-              </div>
-              <div className="flex-1 bg-neutral-100 rounded-2xl overflow-hidden border border-neutral-200">
-                <iframe
-                  srcDoc={`
-                    <!DOCTYPE html>
-                    <html>
-                      <head>
-                        <meta charset="UTF-8">
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                        <script src="https://cdn.tailwindcss.com"></script>
-                        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-                        <script>
-                          tailwind.config = {
-                            theme: {
-                              extend: {
-                                fontFamily: {
-                                  sans: ['Inter', 'sans-serif'],
-                                  display: ['Space Grotesk', 'sans-serif'],
-                                }
-                              }
-                            }
-                          }
-                        </script>
-                        <style>
-                          body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
-                          h1, h2, h3, h4, h5, h6 { font-family: 'Space Grotesk', sans-serif; letter-spacing: -0.02em; }
-                        </style>
-                      </head>
-                      <body class="bg-neutral-50 text-neutral-900">
-                        ${assets.landingPage.replace(/LOGO_URL_PLACEHOLDER/g, assets.logoUrl || '').replace(/LABEL_URL_PLACEHOLDER/g, assets.labelUrl || '')}
-                      </body>
-                    </html>
-                  `}
-                  className="w-full h-full border-0"
-                  title="Landing Page Full Preview"
-                  sandbox="allow-scripts"
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="h-full flex flex-col items-center justify-center p-8 text-center">
-              <div className="w-20 h-20 bg-orange-50 rounded-full flex items-center justify-center mb-6">
-                <Globe className="w-10 h-10 text-orange-500" />
-              </div>
-              <h2 className="text-2xl font-bold text-neutral-900 mb-3">Aún no hay página web</h2>
-              <p className="text-neutral-500 max-w-md mb-8">
-                Completa los pasos en el creador de productos para generar tu landing page con inteligencia artificial.
-              </p>
-              <button
-                onClick={() => setActiveTab('create')}
-                className="px-6 py-3 bg-orange-600 hover:bg-orange-500 text-white rounded-xl font-medium transition-colors"
-              >
-                Ir al creador
-              </button>
-            </div>
-          )}
-        </div>
-      )}
+      {activeTab === 'landing' && <LandingPreview assets={assets} setActiveTab={setActiveTab} />}
 
       </div>
     </div>
