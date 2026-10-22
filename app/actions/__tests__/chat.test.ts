@@ -33,7 +33,7 @@ const mocks = vi.hoisted(() => {
   const repos = vi.fn(() => repository);
   const startConversation = vi.fn(async () => { calls.push('startConversation'); });
   const applyDelta = vi.fn(async () => { calls.push('applyDelta'); return snapshot; });
-  const peekNextDecision = vi.fn(async () => [decision]);
+  const peekNextDecision = vi.fn(async (): Promise<PlannerDecision[]> => [decision]);
   const acknowledgeDecisions = vi.fn(async () => { calls.push('acknowledgeDecisions'); });
   const getSnapshot = vi.fn(async () => snapshot);
   const extract = vi.fn(async () => { calls.push('extract'); return delta; });
@@ -133,7 +133,46 @@ describe('chatAction durable turn boundary', () => {
     expect(result).toMatchObject({ ok: true, content: '¡Listo!' });
     expect(mocks.extract).not.toHaveBeenCalled();
     expect(mocks.applyDelta).not.toHaveBeenCalled();
+    // The committed plan already owns its announcements; resuming neither
+    // re-reads nor re-acknowledges the core queues (KAN-55).
+    expect(mocks.peekNextDecision).not.toHaveBeenCalled();
+    expect(mocks.acknowledgeDecisions).not.toHaveBeenCalled();
+    expect(mocks.render).toHaveBeenCalledWith(expect.objectContaining({ decisions: [mocks.decision] }));
     expect(mocks.render).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes the prior confirmation from the persisted turn and reads the core plan once, after effects (KAN-55)', async () => {
+    const confirm: PlannerDecision = {
+      kind: 'confirm_field', agentId: 'logo-agent', fieldName: 'business_name', pendingValue: 'Sazón Andino', reason: 'low_confidence',
+    };
+    const announcements: PlannerDecision[] = [
+      { kind: 'announce_dispatch', agentId: 'logo-agent', taskId: 'task-1' },
+      { kind: 'announce_completion', agentId: 'logo-agent', taskId: 'task-1', deliverableIds: [], artifacts: [] },
+    ];
+    mocks.listTurns.mockResolvedValueOnce([
+      { ...mocks.turn, id: 'turn-0', stage: 'responded', payload: { decisions: [confirm] } },
+    ] as never);
+    mocks.peekNextDecision.mockImplementationOnce(async () => {
+      mocks.calls.push('peekNextDecision');
+      return announcements;
+    });
+
+    const result = await chatAction({ ...input, userMessage: 'sí' });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(mocks.extract).toHaveBeenCalledWith(expect.objectContaining({ priorDecision: confirm }));
+    // No core read before extraction: the only plan read follows applyDelta.
+    expect(mocks.calls).toEqual([
+      'startConversation', 'run:extractor', 'extract', 'applyDelta', 'peekNextDecision',
+      'acknowledgeDecisions', 'run:responder', 'render',
+    ]);
+    expect(mocks.peekNextDecision).toHaveBeenCalledTimes(1);
+    const committed = mocks.checkpointTurn.mock.calls.find(([value]) => value.stage === 'effects_committed')?.[0];
+    expect(committed?.payload['decisions']).toEqual(announcements);
+    expect(mocks.checkpointTurn.mock.invocationCallOrder.at(-1)!)
+      .toBeLessThan(mocks.acknowledgeDecisions.mock.invocationCallOrder[0]);
+    expect(mocks.acknowledgeDecisions).toHaveBeenCalledWith(input.conversationId, announcements);
+    expect(mocks.render).toHaveBeenCalledWith(expect.objectContaining({ decisions: announcements }));
   });
 
   it('returns typed contention and does not call adapters for an active duplicate', async () => {

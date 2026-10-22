@@ -29,10 +29,6 @@ import type { FieldDelta, PlannerDecision, UUID } from '../contracts';
 
 const SUITE = process.env.APP_DATABASE_URL ? describe : describe.skip;
 
-function flushMicrotasks(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
-}
-
 async function fetchPilotIds(): Promise<{ tenantId: UUID; userId: UUID }> {
   // Use the superuser connection to read the seeded pilot tenant/user IDs.
   // Tenant SELECTs require app.tenant_id to be set under app_user, but we
@@ -97,9 +93,11 @@ SUITE('orchestrator + Postgres store (integration)', () => {
     const store = new PostgresConversationStore(registry.getFieldSchemas());
 
     let coreRef: OrchestratorCoreImpl | null = null;
-    const transport = new LocalAdapter(registry, (taskId, state) => {
-      void coreRef?.onTaskSettled(taskId, state);
-    });
+    // Return the settlement promise so waitForSettlement covers the core's
+    // Postgres round trips, not just the handler.
+    const transport = new LocalAdapter(registry, (taskId, state) =>
+      coreRef?.onTaskSettled(taskId, state),
+    );
     const notifier = new InProcessDecisionNotifier();
     const artifactNotifier = new InProcessArtifactNotifier();
     const core = new OrchestratorCoreImpl({
@@ -154,16 +152,40 @@ SUITE('orchestrator + Postgres store (integration)', () => {
     };
     await core.applyDelta(deltaProfile);
 
-    await flushMicrotasks();
-
-    expect(observed.find((d) => d.kind === 'announce_dispatch')).toMatchObject({
+    const dispatchAnnouncement = observed.find((d) => d.kind === 'announce_dispatch');
+    expect(dispatchAnnouncement).toMatchObject({
       kind: 'announce_dispatch',
       agentId,
     });
+    if (dispatchAnnouncement?.kind !== 'announce_dispatch') throw new Error('expected dispatch');
+
+    // KAN-78: settlement against Postgres takes several DB round trips
+    // (markCompleted, clearDispatch, snapshot read) before announce_completion
+    // is queued. A single setImmediate is not a settlement barrier; wait for
+    // the transport to report that the core settlement hook has finished.
+    await transport.waitForSettlement(dispatchAnnouncement.taskId);
+
     expect(observed.find((d) => d.kind === 'announce_completion')).toMatchObject({
       kind: 'announce_completion',
       agentId,
+      taskId: dispatchAnnouncement.taskId,
     });
+
+    // KAN-55: the controller's turn read sees each announcement once, and an
+    // acknowledged plan is not announced again by the next turn.
+    const announcementsOf = (plan: ReadonlyArray<PlannerDecision>) =>
+      plan.flatMap((d) =>
+        d.kind === 'announce_dispatch' || d.kind === 'announce_completion'
+          ? [`${d.kind}:${d.taskId}`]
+          : [],
+      );
+    const turnPlan = await core.peekNextDecision(conversationId);
+    expect(announcementsOf(turnPlan)).toEqual([
+      `announce_dispatch:${dispatchAnnouncement.taskId}`,
+      `announce_completion:${dispatchAnnouncement.taskId}`,
+    ]);
+    await core.acknowledgeDecisions(conversationId, turnPlan);
+    expect(announcementsOf(await core.peekNextDecision(conversationId))).toEqual([]);
 
     const snapshot = await core.getSnapshot(conversationId);
     expect(snapshot.tenantId).toBe(tenantId);

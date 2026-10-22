@@ -1,14 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import {
   InProcessDecisionNotifier,
   OrchestratorCoreImpl,
 } from '../orchestrator/orchestrator-core';
 import { InProcessArtifactNotifier } from '../orchestrator/artifact-notifier';
-import { InMemoryConversationStore } from '../orchestrator/in-memory-store';
+import {
+  InMemoryConversationStore,
+  type IConversationStore,
+} from '../orchestrator/in-memory-store';
 import { LocalAdapter } from '../../transport/local-adapter';
 import { newTaskId } from '../ids';
-import { CONFIDENCE_THRESHOLDS, type PlannerDecision } from '../contracts';
+import {
+  CONFIDENCE_THRESHOLDS,
+  type FieldDelta,
+  type PlannerDecision,
+} from '../contracts';
 import { buildDelta, buildSingleAgentFixtureRegistry } from './_fixtures';
 import type { A2AMessage, IAgentTransport, TaskState } from '../agent-types';
 
@@ -16,14 +23,34 @@ function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function buildHarness() {
+/**
+ * Wraps a store so every call yields to the event loop several times before
+ * touching state, like a real database round trip. Settlement through the
+ * core then spans many macrotasks, which is what the Postgres store does.
+ */
+function withSimulatedIo(store: IConversationStore, ticks = 5): IConversationStore {
+  const io = async () => {
+    for (let i = 0; i < ticks; i += 1) await flushMicrotasks();
+  };
+  return {
+    getOrCreate: async (...args) => { await io(); return store.getOrCreate(...args); },
+    get: async (...args) => { await io(); return store.get(...args); },
+    updateFieldSlot: async (...args) => { await io(); return store.updateFieldSlot(...args); },
+    recordDispatch: async (...args) => { await io(); return store.recordDispatch(...args); },
+    clearDispatch: async (...args) => { await io(); return store.clearDispatch(...args); },
+  };
+}
+
+function buildHarness(options: { readonly simulatedIo?: boolean } = {}) {
   const { registry, agentId } = buildSingleAgentFixtureRegistry();
-  const store = new InMemoryConversationStore(registry.getFieldSchemas());
+  const memoryStore = new InMemoryConversationStore(registry.getFieldSchemas());
+  const store = options.simulatedIo ? withSimulatedIo(memoryStore) : memoryStore;
 
   let coreRef: OrchestratorCoreImpl | null = null;
-  const transport = new LocalAdapter(registry, (taskId, state) => {
-    void coreRef?.onTaskSettled(taskId, state);
-  });
+  // Return the settlement promise so LocalAdapter.waitForSettlement covers it.
+  const transport = new LocalAdapter(registry, (taskId, state) =>
+    coreRef?.onTaskSettled(taskId, state),
+  );
 
   const notifier = new InProcessDecisionNotifier();
   const core = new OrchestratorCoreImpl({
@@ -78,7 +105,7 @@ function readyDelta(conversationId: string, agentId: string, source: string) {
 
 describe('orchestrator smoke (agent-agnostic)', () => {
   it('drives a fixture agent end-to-end via FieldDelta -> dispatch -> announce_completion', async () => {
-    const { core, notifier, agentId } = buildHarness();
+    const { core, notifier, agentId, transport } = buildHarness();
     const conversationId = randomUUID();
     const tenantId = randomUUID();
 
@@ -142,13 +169,13 @@ describe('orchestrator smoke (agent-agnostic)', () => {
       }),
     );
 
-    await flushMicrotasks();
-
     const dispatchAnnouncement = observed.find((d) => d.kind === 'announce_dispatch');
     expect(dispatchAnnouncement).toMatchObject({
       kind: 'announce_dispatch',
       agentId,
     });
+    if (dispatchAnnouncement?.kind !== 'announce_dispatch') throw new Error('expected dispatch');
+    await transport.waitForSettlement(dispatchAnnouncement.taskId);
 
     const completion = observed.find((d) => d.kind === 'announce_completion');
     expect(completion).toBeDefined();
@@ -458,5 +485,242 @@ describe('orchestrator smoke (agent-agnostic)', () => {
       completion: expect.objectContaining({ kind: 'announce_completion', taskId, artifacts }),
       publishedArtifacts: [expect.objectContaining({ conversationId, agentId, taskId, artifacts })],
     });
+  });
+  it('waitForSettlement is a barrier for the core settlement when the store does I/O (KAN-78)', async () => {
+    const { core, notifier, agentId, transport } = buildHarness({ simulatedIo: true });
+    const conversationId = randomUUID();
+    const observed: PlannerDecision[] = [];
+    const subscription = notifier.subscribe(conversationId, (d) => observed.push(d));
+    await core.startConversation(conversationId, randomUUID(), randomUUID());
+
+    await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
+    const dispatch = observed.find((d) => d.kind === 'announce_dispatch');
+    if (dispatch?.kind !== 'announce_dispatch') throw new Error('expected dispatch');
+
+    // The pre-KAN-78 test waited one macrotask. With store I/O the core is
+    // still settling at that point, so that wait was never a barrier.
+    await flushMicrotasks();
+    expect(observed.some((d) => d.kind === 'announce_completion')).toBe(false);
+
+    const settled = await transport.waitForSettlement(dispatch.taskId);
+    expect(settled.status).toBe('completed');
+    expect(observed.filter((d) => d.kind === 'announce_completion')).toContainEqual(
+      expect.objectContaining({ kind: 'announce_completion', agentId, taskId: dispatch.taskId }),
+    );
+    const snapshot = await core.getSnapshot(conversationId);
+    expect(snapshot.agentStates[agentId].lastDispatchedTaskId).toBeUndefined();
+    subscription.dispose();
+  });
+
+  it('contains a failing settlement hook instead of leaving a floating rejection', async () => {
+    const { registry, agentId } = buildSingleAgentFixtureRegistry();
+    const transport = new LocalAdapter(registry, async () => {
+      throw new Error('settlement store unavailable');
+    });
+    const taskId = newTaskId();
+    await transport.dispatch({
+      taskId,
+      tenantId: randomUUID(),
+      agentId,
+      agentCardVersion: '0.0.1',
+      requirements: { business_name: 'Sazón Andino' },
+      createdAt: new Date().toISOString(),
+    });
+
+    await expect(transport.waitForSettlement(taskId)).resolves.toMatchObject({ status: 'completed' });
+    await expect(transport.getResult(taskId)).resolves.toMatchObject({ status: 'completed' });
+    await expect(transport.waitForSettlement(newTaskId())).rejects.toThrow(/never dispatched/);
+  });
+});
+
+/**
+ * KAN-55: each dispatch/completion announcement reaches exactly one chat turn.
+ * `runTurn` mirrors app/actions/chat.ts: apply the delta, peek the plan,
+ * durably checkpoint it (here: record it), then acknowledge that exact plan.
+ * The confirmation pre-read is a peek, which must never consume or dispatch.
+ */
+describe('announcement delivery per turn (KAN-55)', () => {
+  type Core = OrchestratorCoreImpl;
+  interface TurnHooks {
+    /** Runs after applyDelta and before the controller peeks the plan. */
+    readonly beforePeek?: () => Promise<void>;
+    /** Runs after the peek and before the checkpoint/acknowledgement. */
+    readonly beforeAcknowledge?: () => Promise<void>;
+  }
+
+  async function runTurn(core: Core, delta: FieldDelta, hooks: TurnHooks = {}) {
+    await core.applyDelta(delta);
+    await hooks.beforePeek?.();
+    const decisions = await core.peekNextDecision(delta.conversationId);
+    await hooks.beforeAcknowledge?.();
+    const checkpointed = structuredClone(decisions);
+    await core.acknowledgeDecisions(delta.conversationId, checkpointed);
+    return checkpointed;
+  }
+
+  function announcementsOf(decisions: ReadonlyArray<PlannerDecision>): string[] {
+    return decisions.flatMap((decision) =>
+      decision.kind === 'announce_dispatch' || decision.kind === 'announce_completion'
+        ? [`${decision.kind}:${decision.taskId}`]
+        : [],
+    );
+  }
+
+  function hedgedNameDelta(conversationId: string, agentId: string): FieldDelta {
+    return buildDelta({
+      conversationId,
+      source: 'test-chat',
+      fields: {
+        [agentId]: {
+          business_name: {
+            value: 'Sazón Andino',
+            confidence: CONFIDENCE_THRESHOLDS.STORE_AND_CONFIRM,
+          },
+          business_profile: { value: 'Comida peruana', confidence: 1 },
+        },
+      },
+    });
+  }
+
+  /** Same shape as the Extractor's affirmation fast path. */
+  function affirmationDelta(conversationId: string, agentId: string, pendingValue: unknown): FieldDelta {
+    return buildDelta({
+      conversationId,
+      source: 'test-chat',
+      fields: { [agentId]: { business_name: { value: pendingValue, confidence: 1, rawInput: 'sí' } } },
+    });
+  }
+
+  function emptyDelta(conversationId: string): FieldDelta {
+    return buildDelta({ conversationId, source: 'test-chat', fields: {} });
+  }
+
+  function completedState(taskId: string): TaskState {
+    return {
+      status: 'completed',
+      result: {
+        status: 'completed',
+        taskId,
+        artifacts: [{ kind: 'text', inline: { value: 'logo' } }],
+        completedAt: new Date().toISOString() as `${string}T${string}Z`,
+      },
+    };
+  }
+
+  /** Turn 1 asks to confirm a hedged value; returns the persisted confirm_field. */
+  async function reachConfirmation(core: Core, conversationId: string, agentId: string) {
+    const turn1 = await runTurn(core, hedgedNameDelta(conversationId, agentId));
+    expect(turn1).toEqual([
+      expect.objectContaining({ kind: 'confirm_field', agentId, fieldName: 'business_name' }),
+    ]);
+    const confirm = turn1[0];
+    if (confirm.kind !== 'confirm_field') throw new Error('expected confirm_field');
+    return confirm;
+  }
+
+  it('synchronous completion: confirmation pre-reads do not consume or dispatch; the confirming turn announces both once', async () => {
+    const { core, transport, agentId } = buildHarness();
+    const dispatchSpy = vi.spyOn(transport, 'dispatch');
+    const conversationId = randomUUID();
+    await core.startConversation(conversationId, randomUUID(), randomUUID());
+
+    const confirm = await reachConfirmation(core, conversationId, agentId);
+    // Pre-reads of the confirmation are idempotent and side-effect free.
+    expect(await core.peekNextDecision(conversationId)).toEqual([confirm]);
+    expect(await core.peekNextDecision(conversationId)).toEqual([confirm]);
+    expect(dispatchSpy).not.toHaveBeenCalled();
+
+    const turn2 = await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue), {
+      // The task settles before the controller reads the plan.
+      beforePeek: async () => {
+        expect(dispatchSpy).toHaveBeenCalledTimes(1);
+        await transport.waitForSettlement(dispatchSpy.mock.calls[0][0].taskId);
+      },
+    });
+    const taskId = dispatchSpy.mock.calls[0][0].taskId;
+    expect(announcementsOf(turn2)).toEqual([
+      `announce_dispatch:${taskId}`,
+      `announce_completion:${taskId}`,
+    ]);
+
+    // Next turn's pre-read and the turn itself see neither announcement again.
+    expect(announcementsOf(await core.peekNextDecision(conversationId))).toEqual([]);
+    expect(announcementsOf(await runTurn(core, emptyDelta(conversationId)))).toEqual([]);
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('asynchronous completion between turns: dispatch is announced by the confirming turn, completion by the next turn, each once', async () => {
+    const { core, messages, agentId } = buildControlledHarness();
+    const conversationId = randomUUID();
+    await core.startConversation(conversationId, randomUUID(), randomUUID());
+
+    const confirm = await reachConfirmation(core, conversationId, agentId);
+    const turn2 = await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue));
+    expect(messages).toHaveLength(1);
+    const taskId = messages[0].taskId;
+    expect(announcementsOf(turn2)).toEqual([`announce_dispatch:${taskId}`]);
+
+    // Pre-read before the worker settles: nothing left to announce.
+    expect(announcementsOf(await core.peekNextDecision(conversationId))).toEqual([]);
+
+    await core.onTaskSettled(taskId, completedState(taskId));
+    // Repeated pre-reads keep the completion queued.
+    expect(announcementsOf(await core.peekNextDecision(conversationId))).toEqual([
+      `announce_completion:${taskId}`,
+    ]);
+    expect(announcementsOf(await core.peekNextDecision(conversationId))).toEqual([
+      `announce_completion:${taskId}`,
+    ]);
+
+    expect(announcementsOf(await runTurn(core, emptyDelta(conversationId)))).toEqual([
+      `announce_completion:${taskId}`,
+    ]);
+    expect(announcementsOf(await runTurn(core, emptyDelta(conversationId)))).toEqual([]);
+    expect(messages).toHaveLength(1);
+  });
+
+  it('asynchronous completion during a turn: it is not acknowledged with the dispatch and reaches the next turn once', async () => {
+    const { core, messages, agentId } = buildControlledHarness();
+    const conversationId = randomUUID();
+    await core.startConversation(conversationId, randomUUID(), randomUUID());
+
+    const confirm = await reachConfirmation(core, conversationId, agentId);
+    const turn2 = await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue), {
+      // The worker settles after the controller peeked but before it checkpointed.
+      beforeAcknowledge: async () => {
+        await core.onTaskSettled(messages[0].taskId, completedState(messages[0].taskId));
+      },
+    });
+    const taskId = messages[0].taskId;
+    expect(announcementsOf(turn2)).toEqual([`announce_dispatch:${taskId}`]);
+
+    expect(announcementsOf(await runTurn(core, emptyDelta(conversationId)))).toEqual([
+      `announce_completion:${taskId}`,
+    ]);
+    expect(announcementsOf(await runTurn(core, emptyDelta(conversationId)))).toEqual([]);
+    expect(messages).toHaveLength(1);
+  });
+
+  it('asynchronous completion with store I/O lands in exactly one turn', async () => {
+    const { core, transport, agentId } = buildHarness({ simulatedIo: true });
+    const dispatchSpy = vi.spyOn(transport, 'dispatch');
+    const conversationId = randomUUID();
+    await core.startConversation(conversationId, randomUUID(), randomUUID());
+
+    const confirm = await reachConfirmation(core, conversationId, agentId);
+    const turn2 = await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue));
+    const taskId = dispatchSpy.mock.calls[0][0].taskId;
+    await transport.waitForSettlement(taskId);
+    const turn3 = await runTurn(core, emptyDelta(conversationId));
+    const turn4 = await runTurn(core, emptyDelta(conversationId));
+
+    // Whichever turn the completion races into, the union is exactly one of each.
+    const delivered = [...turn2, ...turn3, ...turn4].flatMap((d) => announcementsOf([d]));
+    expect(delivered.sort()).toEqual(
+      [`announce_completion:${taskId}`, `announce_dispatch:${taskId}`].sort(),
+    );
+    expect(announcementsOf(turn2)).toContain(`announce_dispatch:${taskId}`);
+    expect(announcementsOf(turn4)).toEqual([]);
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
   });
 });

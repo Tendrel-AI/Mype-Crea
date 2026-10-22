@@ -33,15 +33,27 @@ import type {
 } from '../core/agent-types';
 import type { TaskId } from '../core/contracts';
 import type { AgentRegistry } from '../core/orchestrator/agent-registry';
+import { loggerFor } from '../services/logger';
+
+const log = loggerFor('transport.local');
+
+/**
+ * Settlement hook. May return a promise (the core's `onTaskSettled` does real
+ * I/O with the Postgres store); the adapter awaits it before it reports the
+ * task as settled, so `waitForSettlement` is a barrier for the whole
+ * settlement, not just for the handler.
+ */
+export type LocalSettlementCallback = (taskId: TaskId, state: TaskState) => void | Promise<void>;
 
 export class LocalAdapter implements IAgentTransport {
   private readonly tasks = new Map<TaskId, TaskState>();
-  private readonly completionCallbacks = new Map<TaskId, (state: TaskState) => void>();
+  /** One promise per dispatched task; resolves after the settlement hook has finished. */
+  private readonly settlements = new Map<TaskId, Promise<TaskState>>();
 
   constructor(
     private readonly registry: AgentRegistry,
     /** Hook so the core can be notified without polling. Production swaps this for LISTEN/NOTIFY. */
-    private readonly onTaskSettled?: (taskId: TaskId, state: TaskState) => void,
+    private readonly onTaskSettled?: LocalSettlementCallback,
   ) {}
 
   async dispatch(message: A2AMessage): Promise<{ taskId: TaskId }> {
@@ -53,6 +65,13 @@ export class LocalAdapter implements IAgentTransport {
     // Fire asynchronously so dispatch() returns before the handler runs —
     // this matches what distributed transports will do and catches code that
     // wrongly assumes dispatch = completion.
+    let resolveSettlement!: (state: TaskState) => void;
+    this.settlements.set(
+      taskId,
+      new Promise<TaskState>((resolve) => {
+        resolveSettlement = resolve;
+      }),
+    );
     queueMicrotask(async () => {
       this.tasks.set(taskId, { status: 'processing' });
       let result: A2ATaskResult;
@@ -76,9 +95,16 @@ export class LocalAdapter implements IAgentTransport {
           : { status: 'failed', result };
 
       this.tasks.set(taskId, finalState);
-      this.completionCallbacks.get(taskId)?.(finalState);
-      this.completionCallbacks.delete(taskId);
-      this.onTaskSettled?.(taskId, finalState);
+      try {
+        // Await the hook: with a real store it performs several round trips
+        // before the completion announcement is queued.
+        await this.onTaskSettled?.(taskId, finalState);
+      } catch (err) {
+        // Never leave a floating rejection in a microtask; the task state above
+        // stays the source of truth for getResult().
+        log.error({ err, taskId, agentId }, 'transport.local.settlement_callback_failed');
+      }
+      resolveSettlement(finalState);
     });
 
     return { taskId };
@@ -89,16 +115,16 @@ export class LocalAdapter implements IAgentTransport {
   }
 
   /**
-   * Promise that resolves once a task settles. Convenient for tests; production
-   * callers use onTaskSettled or the core's decision notifier instead.
+   * Resolves once a dispatched task settles AND the settlement hook has
+   * finished (for the core: completion queued, notifier woken). Convenient
+   * for tests; production callers use onTaskSettled or the core's decision
+   * notifier instead. Rejects for a task this adapter never dispatched.
    */
   waitForSettlement(taskId: TaskId): Promise<TaskState> {
-    const existing = this.tasks.get(taskId);
-    if (existing && (existing.status === 'completed' || existing.status === 'failed')) {
-      return Promise.resolve(existing);
+    const settlement = this.settlements.get(taskId);
+    if (!settlement) {
+      return Promise.reject(new Error(`LocalAdapter never dispatched task ${taskId}`));
     }
-    return new Promise((resolve) => {
-      this.completionCallbacks.set(taskId, resolve);
-    });
+    return settlement;
   }
 }

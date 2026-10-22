@@ -79,9 +79,10 @@ function buildTransport(
   onTaskSettled: OnTaskSettled,
 ): IAgentTransport {
   // LocalAdapter doesn't persist deliverables; supply [] for the third arg.
-  const local = new LocalAdapter(registry, (taskId, state) => {
-    onTaskSettled(taskId, state, []);
-  });
+  // Return the settlement promise so the adapter awaits it and contains failures.
+  const local = new LocalAdapter(registry, (taskId, state) =>
+    onTaskSettled(taskId, state, []),
+  );
 
   const publisher = getRedisPublisher();
   const subscriber = getRedisSubscriber();
