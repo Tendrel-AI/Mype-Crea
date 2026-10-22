@@ -140,7 +140,9 @@ export function createCurrentAdapterBehaviorSnapshot(
       toolChoice: { type: 'function', function: { name: 'submit_extracted_fields' } },
       fieldSchemaTemplate: EXTRACTOR_FIELD_SCHEMA_TEMPLATE,
       fields: stableFields,
-      fastPathVersion: 'extractor.confirm-fast-path.v1',
+      // v2 (KAN-56): only a bare yes/no skips the LLM; compound replies are
+      // extracted and combined with the pending confirmation.
+      fastPathVersion: 'extractor.confirm-fast-path.v2',
       historyPolicyVersion: 'none',
     },
     responder: {
@@ -170,6 +172,7 @@ export function assertSupportedAdapterBehavior(
     if (
       supplied.rendererVersion !== current.rendererVersion ||
       supplied.parserVersion !== current.parserVersion ||
+      supplied.fastPathVersion !== current.fastPathVersion ||
       supplied.historyPolicyVersion !== 'none'
     ) {
       throw new Error('Unsupported frozen extractor adapter behavior version.');
@@ -178,7 +181,6 @@ export function assertSupportedAdapterBehavior(
       throw new Error('Frozen extractor generation settings are invalid.');
     }
     if (
-      supplied.fastPathVersion !== 'extractor.confirm-fast-path.v1' ||
       supplied.toolChoice.function.name !== supplied.toolName ||
       !supplied.promptTemplate.includes('{{toolName}}') ||
       !supplied.promptTemplate.includes('{{fieldLines}}') ||
