@@ -14,15 +14,31 @@
  * Two paths:
  *
  *   1. Affirmation / denial fast-path: when the prior planner decision was
- *      `confirm_field`, regex matches on "sí/ok/confirmo/..." or
- *      "no/incorrecto/..." short-circuit the LLM. The pending value (or
- *      reset) is fanned out to every agent that owns the field.
+ *      `confirm_field` and the message is ONLY a yes ("sí", "correcto",
+ *      "dale", "sí, así es") or ONLY a no ("no", "no, ese no es"), the LLM
+ *      is skipped. The pending value (or reset) is fanned out to every agent
+ *      that owns the field.
  *
- *   2. LLM extraction: otherwise, calls Gemini Flash with a deduped union
- *      of every required + optional field name across all agents. The
+ *   2. LLM extraction: otherwise, calls the extractor model with a deduped
+ *      union of every required + optional field name across all agents. The
  *      response is parsed, low-confidence values are dropped against
  *      `CONFIDENCE_THRESHOLDS.STORE_AND_CONFIRM`, and the survivors are
  *      fanned out to their owners.
+ *
+ *      When a `confirm_field` was pending and the message opens with a yes
+ *      or a no but carries more ("sí, y mis colores son azul y blanco",
+ *      "no, se llama Dulce Casa"), the extraction runs and its result is
+ *      combined with the reply (`resolveCompoundConfirmation`):
+ *        - yes, field not restated (or restated with the pending value)
+ *          → the pending value is confirmed;
+ *        - the field restated with a DIFFERENT value (after a yes or a no)
+ *          → the pending value is never confirmed; the new value is kept
+ *          when it clears STORE_AND_CONFIRM, otherwise the field is reset;
+ *        - no, without a usable replacement → the field is reset.
+ *      A correction is emitted as a value WITHOUT a `reset_field` intent:
+ *      merge applies intents after fields, so a reset would erase it.
+ *      Extra facts follow the normal extraction rules; unknown fields are
+ *      stripped by the parser and rejected by merge, as for any turn.
  *
  * Contract conformance: implements `InputAdapter` (id + submit). Controllers
  * call `extract()` directly to obtain a delta, then either feed it through
@@ -36,6 +52,7 @@ import { z } from 'zod';
 import {
   CONFIDENCE_THRESHOLDS,
   type AgentId,
+  type ConfirmFieldDecision,
   type ConversationId,
   type FieldDelta,
   type InputAdapter,
@@ -43,6 +60,7 @@ import {
   type PlannerDecision,
   type AdapterSubmitResult,
   type FieldValueWithConfidence,
+  type UserIntent,
 } from '../core/contracts';
 import type { AgentRegistry } from '../core/orchestrator/agent-registry';
 import { getProvider } from '../services/llm';
@@ -58,12 +76,86 @@ import { loggerFor } from '../services/logger';
 
 const log = loggerFor('adapter.chat-input');
 
+// Leading cue: does the reply OPEN with a yes / no? Gives the polarity of a
+// compound reply ("sí, y ...", "no, se llama ...").
 // Note: `\b` would not work between `í` and `,` because JS regex treats
 // non-ASCII letters as non-word characters by default. We anchor on `^\s*`
 // + the keyword + a non-letter terminator instead.
-const AFFIRMATION_RE = /^\s*(s[ií]|ok|claro|correcto|confirmo|de acuerdo|por supuesto|exacto)(?=$|[^\p{L}])/iu;
+const AFFIRMATION_RE =
+  /^\s*(s[ií]|ok|okey|okay|claro|correcto|confirmo|de acuerdo|por supuesto|exacto|dale|perfecto|listo|as[ií] es)(?=$|[^\p{L}])/iu;
 
 const DENIAL_RE = /^\s*(no|incorrecto|nop|nel|negativo|para nada)(?=$|[^\p{L}])/iu;
+
+// Whole-message vocabularies for the fast path, in the form produced by
+// `normalizeReply` (lowercase, no accents, words joined by one space). A reply
+// takes the fast path only when it is a sequence of these phrases and nothing
+// else; any other content goes through the LLM.
+const AFFIRMATION_PHRASES = [
+  'si', 'ok', 'okey', 'okay', 'claro', 'claro que si', 'correcto', 'es correcto', 'esta correcto',
+  'confirmo', 'lo confirmo', 'de acuerdo', 'por supuesto', 'exacto', 'exactamente', 'dale',
+  'perfecto', 'listo', 'asi es', 'eso es', 'ese es', 'esta bien', 'asi esta bien', 'todo bien',
+];
+const DENIAL_PHRASES = [
+  'no', 'nop', 'nel', 'negativo', 'para nada', 'incorrecto', 'es incorrecto', 'no es correcto',
+  'no es asi', 'no es', 'ese no es', 'eso no es', 'no es ese', 'no es eso', 'esta mal',
+];
+const MAX_SIMPLE_REPLY_LENGTH = 60;
+/** Courtesy words that may accompany either answer without changing it. */
+const COURTESY_PHRASES = ['gracias', 'muchas gracias', 'por favor'];
+
+const SIMPLE_AFFIRMATION_RE = wholeReplyRe(AFFIRMATION_PHRASES, COURTESY_PHRASES);
+const SIMPLE_DENIAL_RE = wholeReplyRe(DENIAL_PHRASES, COURTESY_PHRASES);
+/** Only yes/no words, but of both kinds ("sí, no"): ambiguous, so no polarity. */
+const MIXED_YES_NO_RE = wholeReplyRe([...AFFIRMATION_PHRASES, ...DENIAL_PHRASES], COURTESY_PHRASES);
+
+function wholeReplyRe(answers: ReadonlyArray<string>, courtesy: ReadonlyArray<string>): RegExp {
+  // Longest first so "claro que si" wins over "claro".
+  const byLength = (list: ReadonlyArray<string>) => [...list].sort((a, b) => b.length - a.length).join('|');
+  const any = byLength([...answers, ...courtesy]);
+  // At least one real answer phrase; courtesy words alone carry no polarity.
+  return new RegExp(`^(?:(?:${any}) )*(?:${byLength(answers)})(?: (?:${any}))*$`);
+}
+
+/** Lowercase, strip accents, and collapse everything but letters/digits to single spaces. */
+function normalizeReply(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+export interface ConfirmationReply {
+  /** Whether the reply says yes, no, or neither to the pending value. */
+  readonly polarity: 'affirm' | 'deny' | 'none';
+  /** True when the reply is ONLY a yes or ONLY a no: fast path, no LLM call. */
+  readonly simple: boolean;
+}
+
+/**
+ * Classify a reply to a `confirm_field` question. A simple reply takes the
+ * fast path. Any other reply is extracted by the LLM, and its polarity comes
+ * from the opening word (`polarity: 'none'` when there is no yes/no cue or
+ * the yes/no words contradict each other).
+ */
+export function classifyConfirmationReply(message: string): ConfirmationReply {
+  const normalized = normalizeReply(message);
+  // A bare yes/no is short; the cap also bounds regex backtracking on long input.
+  if (normalized.length <= MAX_SIMPLE_REPLY_LENGTH) {
+    if (SIMPLE_AFFIRMATION_RE.test(normalized)) return { polarity: 'affirm', simple: true };
+    if (SIMPLE_DENIAL_RE.test(normalized)) return { polarity: 'deny', simple: true };
+    if (MIXED_YES_NO_RE.test(normalized)) return { polarity: 'none', simple: false };
+  }
+  if (AFFIRMATION_RE.test(message)) return { polarity: 'affirm', simple: false };
+  if (DENIAL_RE.test(message)) return { polarity: 'deny', simple: false };
+  return { polarity: 'none', simple: false };
+}
+
+/** Two values name the same thing when they match after `normalizeReply`. */
+function sameFieldValue(a: unknown, b: unknown): boolean {
+  return normalizeReply(String(a)) === normalizeReply(String(b));
+}
 
 export interface ExtractInput {
   readonly conversationId: ConversationId;
@@ -80,6 +172,106 @@ interface FieldOwnership {
   readonly agents: ReadonlyArray<AgentId>;
   readonly required: boolean;
   readonly promptHint: string;
+}
+
+type ExtractPath =
+  | 'fast_path.affirmation'
+  | 'fast_path.denial'
+  | 'llm'
+  | 'llm.compound_confirmation';
+
+type MutableFieldValues = Record<string, Record<string, FieldValueWithConfidence>>;
+
+/** A `confirm_field` the user answered with more than a bare yes/no. */
+interface PendingConfirmation {
+  readonly decision: ConfirmFieldDecision;
+  readonly owners: ReadonlyArray<AgentId>;
+  readonly polarity: ConfirmationReply['polarity'];
+}
+
+/** Write the pending value as user-confirmed (confidence 1.0) on every owner. */
+function confirmPendingValue(
+  fields: MutableFieldValues,
+  decision: ConfirmFieldDecision,
+  owners: ReadonlyArray<AgentId>,
+  rawInput: string,
+): void {
+  for (const agentId of owners) {
+    (fields[agentId] ??= {})[decision.fieldName] = {
+      value: decision.pendingValue,
+      confidence: 1.0,
+      rawInput,
+    };
+  }
+}
+
+function resetIntents(
+  decision: ConfirmFieldDecision,
+  owners: ReadonlyArray<AgentId>,
+): UserIntent[] {
+  return owners.map((agentId) => ({
+    kind: 'reset_field' as const,
+    agentId,
+    fieldName: decision.fieldName,
+  }));
+}
+
+function dropField(fields: MutableFieldValues, fieldName: string, owners: ReadonlyArray<AgentId>): void {
+  for (const agentId of owners) {
+    const bucket = fields[agentId];
+    if (!bucket) continue;
+    delete bucket[fieldName];
+    if (Object.keys(bucket).length === 0) delete fields[agentId];
+  }
+}
+
+/**
+ * Combine a compound reply to `confirm_field` with what the LLM extracted.
+ * Mutates `fields` (already fanned out) for the field under confirmation and
+ * returns the intents to emit. Every other extracted field is left as is.
+ *
+ * - polarity 'none': no yes/no cue → plain extraction, nothing changes.
+ * - The field restated with a value other than the pending one (after a yes
+ *   or a no) → a correction: the pending value is NOT confirmed. The new
+ *   value stays when it cleared STORE_AND_CONFIRM; otherwise the field is
+ *   reset. No reset is emitted alongside a kept value, because merge applies
+ *   intents after fields and would erase it.
+ * - yes, no contradiction → the pending value is confirmed at 1.0.
+ * - no, no usable replacement (or the same value restated) → reset.
+ */
+function resolveCompoundConfirmation(
+  pending: PendingConfirmation,
+  fields: MutableFieldValues,
+  mentioned: Readonly<Record<string, string>>,
+  rawInput: string,
+  logger: ReturnType<typeof loggerFor>,
+): UserIntent[] {
+  const { decision, owners, polarity } = pending;
+  const fieldName = decision.fieldName;
+  if (polarity === 'none') {
+    logger.info({ fieldName, outcome: 'no_cue' }, 'extractor.confirm.resolved');
+    return [];
+  }
+
+  const restated = mentioned[fieldName];
+  const contradicted = restated !== undefined && !sameFieldValue(restated, decision.pendingValue);
+  const correctionKept =
+    contradicted && owners.some((agentId) => fields[agentId]?.[fieldName] !== undefined);
+
+  if (correctionKept) {
+    logger.info({ fieldName, polarity, outcome: 'corrected' }, 'extractor.confirm.resolved');
+    return [];
+  }
+  if (polarity === 'affirm' && !contradicted) {
+    confirmPendingValue(fields, decision, owners, rawInput);
+    logger.info({ fieldName, polarity, outcome: 'confirmed' }, 'extractor.confirm.resolved');
+    return [];
+  }
+  // A no, or a yes contradicted by a value too uncertain to keep: the pending
+  // value must not survive, and nothing usable replaces it.
+  dropField(fields, fieldName, owners);
+  logger.info({ fieldName, polarity, contradicted, outcome: 'reset' }, 'extractor.confirm.resolved');
+  return resetIntents(decision, owners);
 }
 
 export class ChatInputAdapter implements InputAdapter {
@@ -129,7 +321,7 @@ export class ChatInputAdapter implements InputAdapter {
       'extractor.input',
     );
 
-    const emitOutput = (delta: FieldDelta, path: 'fast_path.affirmation' | 'fast_path.denial' | 'llm') => {
+    const emitOutput = (delta: FieldDelta, path: ExtractPath) => {
       child.info(
         {
           contract: 'FieldDelta',
@@ -156,26 +348,21 @@ export class ChatInputAdapter implements InputAdapter {
       return delta;
     };
 
-    // 1) Affirmation / denial fast-path on a prior confirm_field.
+    // 1) Reply to a prior confirm_field: a bare yes/no takes the fast path;
+    //    anything more is extracted below and combined with the reply.
+    let pendingConfirmation: PendingConfirmation | undefined;
     if (priorDecision?.kind === 'confirm_field') {
       const owners =
         ownership.get(priorDecision.fieldName)?.agents ?? [priorDecision.agentId];
+      const reply = classifyConfirmationReply(userMessage);
 
-      if (AFFIRMATION_RE.test(userMessage)) {
+      if (reply.simple && reply.polarity === 'affirm') {
         child.info(
           { fieldName: priorDecision.fieldName, owners },
           'extractor.fast_path.affirmation',
         );
         const fields: Record<string, Record<string, FieldValueWithConfidence>> = {};
-        for (const agentId of owners) {
-          fields[agentId] = {
-            [priorDecision.fieldName]: {
-              value: priorDecision.pendingValue,
-              confidence: 1.0,
-              rawInput: userMessage,
-            },
-          };
-        }
+        confirmPendingValue(fields, priorDecision, owners, userMessage);
         return emitOutput(
           {
             conversationId,
@@ -186,7 +373,7 @@ export class ChatInputAdapter implements InputAdapter {
           'fast_path.affirmation',
         );
       }
-      if (DENIAL_RE.test(userMessage)) {
+      if (reply.simple && reply.polarity === 'deny') {
         child.info(
           { fieldName: priorDecision.fieldName, owners },
           'extractor.fast_path.denial',
@@ -197,15 +384,16 @@ export class ChatInputAdapter implements InputAdapter {
             source: this.id,
             timestamp: new Date().toISOString(),
             fields: {},
-            intents: owners.map((agentId) => ({
-              kind: 'reset_field' as const,
-              agentId,
-              fieldName: priorDecision.fieldName,
-            })),
+            intents: resetIntents(priorDecision, owners),
           },
           'fast_path.denial',
         );
       }
+      pendingConfirmation = { decision: priorDecision, owners, polarity: reply.polarity };
+      child.info(
+        { fieldName: priorDecision.fieldName, owners, polarity: reply.polarity },
+        'extractor.confirm.compound',
+      );
     }
 
     // 2) LLM extraction over the deduped union of fields.
@@ -294,7 +482,7 @@ export class ChatInputAdapter implements InputAdapter {
       'extractor.llm.raw_response',
     );
 
-    const groundedFields = validateAndFilterExtractedFields(
+    const { accepted: groundedFields, mentioned } = validateAndFilterExtractedFields(
       rawArgs,
       extractedSchema,
       child,
@@ -309,6 +497,26 @@ export class ChatInputAdapter implements InputAdapter {
         const bucket = (fields[agentId] ??= {});
         bucket[fieldName] = value;
       }
+    }
+
+    if (pendingConfirmation) {
+      const intents = resolveCompoundConfirmation(
+        pendingConfirmation,
+        fields,
+        mentioned,
+        userMessage,
+        child,
+      );
+      return emitOutput(
+        {
+          conversationId,
+          source: this.id,
+          timestamp: new Date().toISOString(),
+          fields,
+          ...(intents.length > 0 ? { intents } : {}),
+        },
+        'llm.compound_confirmation',
+      );
     }
 
     return emitOutput(
@@ -463,11 +671,21 @@ function buildExtractedFieldsSchema(fieldNames: ReadonlyArray<string>) {
     .strict();
 }
 
+interface ExtractedFields {
+  /** Values that cleared STORE_AND_CONFIRM: these go into the delta. */
+  readonly accepted: Record<string, FieldValueWithConfidence>;
+  /**
+   * Every non-null value the model returned, whatever its confidence. Only
+   * used to notice that a pending value was contradicted; never stored.
+   */
+  readonly mentioned: Record<string, string>;
+}
+
 function validateAndFilterExtractedFields(
   rawArgs: string,
   schema: ReturnType<typeof buildExtractedFieldsSchema>,
   log: ReturnType<typeof loggerFor>,
-): Record<string, FieldValueWithConfidence> {
+): ExtractedFields {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawArgs.length > 0 ? rawArgs : '{}');
@@ -476,7 +694,7 @@ function validateAndFilterExtractedFields(
       { err: (err as Error).message, rawPreview: rawArgs.slice(0, 400) },
       'extractor.parse.failed',
     );
-    return {};
+    return { accepted: {}, mentioned: {} };
   }
 
   const result = schema.safeParse(parsed);
@@ -488,7 +706,7 @@ function validateAndFilterExtractedFields(
       },
       'extractor.parse.failed',
     );
-    return {};
+    return { accepted: {}, mentioned: {} };
   }
 
   // Surface the validated, pre-threshold conversion: this is exactly what the
@@ -512,8 +730,10 @@ function validateAndFilterExtractedFields(
   );
 
   const out: Record<string, FieldValueWithConfidence> = {};
+  const mentioned: Record<string, string> = {};
   for (const [name, slot] of Object.entries(result.data.fields)) {
     if (slot === null) continue;
+    mentioned[name] = slot.value.trim();
     if (slot.confidence < CONFIDENCE_THRESHOLDS.STORE_AND_CONFIRM) {
       log.debug(
         { fieldName: name, confidence: slot.confidence },
@@ -524,5 +744,5 @@ function validateAndFilterExtractedFields(
     out[name] = { value: slot.value.trim(), confidence: slot.confidence };
     log.debug({ fieldName: name, confidence: slot.confidence }, 'extractor.field.accepted');
   }
-  return out;
+  return { accepted: out, mentioned };
 }

@@ -229,21 +229,23 @@ export const extractorCases: ReadonlyArray<ExtractorCase> = [
     expected: { fields: { business_name: { contains: ['casa dulce'] } } },
   },
 
-  // --- known gaps (expected to fail today) ----------------------------------
+  // --- compound replies to confirm_field (KAN-56; these call the LLM) --------
+  // Formerly `known-gap`: the yes/no regex short-circuited and dropped the
+  // rest of the message. Ids kept stable for score history.
   {
     id: 'gap-confirm-no-with-correction',
-    tags: ['fast-path', 'known-gap'],
-    // The denial regex short-circuits on "No", so the corrected name is lost.
+    tags: ['confirm-compound'],
+    // The correction replaces the pending value. No reset_field intent: merge
+    // applies intents after fields, so a reset would erase the correction.
     inputs: { userMessage: 'No, se llama Dulce Casa.', priorDecision: confirmName('Dulce Hogar') },
     expected: {
-      fields: { business_name: { contains: ['dulce casa'] } },
-      intents: [{ kind: 'reset_field', fieldName: 'business_name' }],
+      fields: { business_name: { contains: ['dulce casa'], notContains: ['hogar'] } },
     },
   },
   {
     id: 'gap-confirm-yes-plus-colors',
-    tags: ['fast-path', 'known-gap'],
-    // The affirmation regex short-circuits, so the extra field is lost.
+    tags: ['confirm-compound'],
+    // The pending name is confirmed (1.0) and the extra field is kept.
     inputs: { userMessage: 'Sí, y los colores que quiero son azul y blanco.', priorDecision: confirmName('Dulce Hogar') },
     expected: {
       fields: {
