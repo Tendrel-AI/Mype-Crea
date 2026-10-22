@@ -18,7 +18,6 @@ import type {
   TaskId,
   UUID,
 } from '../core/contracts';
-import { randomUUID } from 'node:crypto';
 import type { AiConversationPin } from './models';
 import type { AgentFieldSchema } from '../core/orchestrator/in-memory-store';
 import {
@@ -49,8 +48,12 @@ function buildEmptyAgentStates(schemas: ReadonlyArray<AgentFieldSchema>): AgentS
   return states;
 }
 
-/** Resolve a platform assignment first, materializing shared behavior as a tenant release. */
-async function resolveNewConversationRelease(tx: TxClient, tenant: Tenant, user: User): Promise<string | undefined> {
+/**
+ * Resolve a new conversation's release: organization module assignment, else the tenant's
+ * active local release, else the global module default. Platform releases are materialized
+ * as tenant-local copies by `app.materialize_platform_ai_release` (migration 1792640000000).
+ */
+async function resolveNewConversationRelease(tx: TxClient, tenant: Tenant): Promise<string | undefined> {
   const assignment = await tx.query<{ readonly shared_release_id: string | null }>(
     `SELECT v.shared_release_id
        FROM platform_module_assignments a
@@ -83,42 +86,16 @@ async function resolveNewConversationRelease(tx: TxClient, tenant: Tenant, user:
     config = defaultConfig.rows[0];
   }
   if (config?.shared_release_id) {
-    const shared = await tx.query<{
-      readonly id: string;
-      readonly name: string;
-      readonly manifest: unknown;
-      readonly canonical_content: string;
-      readonly content_hash: string;
-      readonly allowed_override_paths: string[];
-    }>(
-      `SELECT id, name, manifest, canonical_content, content_hash, allowed_override_paths
-         FROM ai_shared_releases
-        WHERE id = $1 AND status = 'frozen'
-        FOR SHARE`,
+    // Tenant users cannot row-lock shared releases or insert tenant releases under RLS
+    // (KAN-77). The narrow definer helper re-derives the effective platform release for the
+    // current tenant, refuses any other id, and copies it as an immutable local release.
+    const materialized = await tx.query<{ readonly id: string | null }>(
+      `SELECT app.materialize_platform_ai_release($1) AS id`,
       [config.shared_release_id],
     );
-    const release = shared.rows[0];
-    if (!release) throw new Error('La versión compartida de IA ya no está disponible.');
-    const id = randomUUID();
-    await tx.query(
-      `INSERT INTO ai_releases
-         (tenant_id, id, name, status, draft_version, manifest, canonical_content,
-          content_hash, base_shared_release_id, is_platform_materialization,
-          allowed_override_paths, created_by, updated_by)
-       VALUES ($1, $2, $3, 'frozen', 1, $4::jsonb, $5, $6, $7, true, $8, $9, $9)
-       ON CONFLICT DO NOTHING`,
-      [tenant.id, id, release.name, JSON.stringify(release.manifest), release.canonical_content,
-        release.content_hash, release.id, release.allowed_override_paths, user.id],
-    );
-    const materialized = await tx.query<{ readonly id: string }>(
-      `SELECT id FROM ai_releases
-        WHERE tenant_id = $1 AND base_shared_release_id = $2 AND content_hash = $3
-          AND is_platform_materialization = true
-        ORDER BY created_at ASC LIMIT 1 FOR SHARE`,
-      [tenant.id, release.id, release.content_hash],
-    );
-    if (!materialized.rows[0]) throw new Error('No se pudo preparar la versión de IA para esta organización.');
-    return materialized.rows[0].id;
+    const releaseId = materialized.rows[0]?.id;
+    if (!releaseId) throw new Error('La versión compartida de IA ya no está disponible.');
+    return releaseId;
   }
 
   return undefined;
@@ -200,7 +177,7 @@ export function conversationsRepo(tenant: Tenant, user: User) {
           [input.conversationId, tenant.id, user.id],
         );
         if (!pinned.rows[0]) {
-          const resolvedReleaseId = await resolveNewConversationRelease(tx, tenant, user);
+          const resolvedReleaseId = await resolveNewConversationRelease(tx, tenant);
           await tx.query(
             `INSERT INTO conversations
                (id, tenant_id, user_id, ai_release_id, configuration_state)
