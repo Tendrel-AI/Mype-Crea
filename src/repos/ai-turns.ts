@@ -311,6 +311,9 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
 
         const token = randomUUID();
 
+        // No conflict target: a concurrent duplicate request can collide on either the
+        // request key or the one-open-turn-per-conversation index first. Both resolve
+        // to the lookups below instead of surfacing a unique violation.
         const inserted = await tx.query<TurnDbRow>(`INSERT INTO ai_turns(tenant_id,
         user_id,
         conversation_id,
@@ -330,7 +333,7 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
         $7,'reserved',
         $8,
         now()+interval '120 seconds')
-        ON CONFLICT (tenant_id, conversation_id, request_id) DO NOTHING
+        ON CONFLICT DO NOTHING
         RETURNING ${TURN_COLUMNS}`, [tenant.id, user.id, input.conversationId, pin.rows[0].ai_release_id, input.requestId, inputHash, input.inputContent, token]);
 
         if (inserted.rows[0]) return { kind: 'acquired', turn: mapTurn(inserted.rows[0]), ownerToken: token };
