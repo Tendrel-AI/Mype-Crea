@@ -89,6 +89,11 @@ class AnthropicChatClient implements IChatClient {
 
   private async create(params: ChatRequest): Promise<ChatCompletion> {
     assertSupportedRequest(params);
+    // Fail before any network I/O if a caller passes an OpenRouter slug or any
+    // other non-Claude ID; the direct API must only ever receive claude-* IDs.
+    if (!isAnthropicModelId(params.model)) {
+      throw new Error('Anthropic provider requires a direct claude-* model ID.');
+    }
     const { system, messages } = toAnthropicMessages(params.messages);
 
     // Anthropic requires a final user turn. Direct adapter/eval callers can
@@ -114,6 +119,7 @@ class AnthropicChatClient implements IChatClient {
       );
     }
 
+    const thinking = thinkingConfig(params.model, Boolean(tools?.length));
     const body: Record<string, unknown> = {
       model: params.model,
       max_tokens: params.max_tokens ?? 1024,
@@ -121,11 +127,7 @@ class AnthropicChatClient implements IChatClient {
       messages,
       ...(tools?.length ? { tools } : {}),
       ...(toolChoice ? { tool_choice: toolChoice } : {}),
-      // Sonnet 5.5 uses between_tools so text requests avoid hidden thinking
-      // consuming the output cap. Haiku 5.5 uses its documented default.
-      ...(params.model.startsWith('claude-sonnet-5-5')
-        ? { thinking: { type: 'between_tools' } }
-        : {}),
+      ...(thinking ? { thinking } : {}),
     };
 
     const invoke = async (input: Record<string, unknown>) =>
@@ -169,6 +171,19 @@ class AnthropicChatClient implements IChatClient {
       clearTimeout(timeout);
     }
   }
+}
+
+/**
+ * Keep up-front thinking out of short text replies so it cannot consume the
+ * output cap. Sonnet 5.5 rejects `disabled`; `between_tools` is its lowest
+ * setting (valid at its default `high` effort). Haiku 5.5 accepts `disabled`
+ * at its default `medium` effort; tool requests keep its documented default
+ * (forced tool calls return the tool call without a thinking block).
+ */
+function thinkingConfig(model: string, hasTools: boolean): Record<string, unknown> | undefined {
+  if (model.startsWith('claude-sonnet-5-5')) return { type: 'between_tools' };
+  if (model.startsWith('claude-haiku-5-5') && !hasTools) return { type: 'disabled' };
+  return undefined;
 }
 
 function explicitModel(model: string | undefined, fallback: string): string {

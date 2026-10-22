@@ -51,6 +51,9 @@ export class OpenRouterProvider implements ILLMProvider {
         completions: {
           create: async (params) => {
             assertSupportedRequest(params);
+            if (!isOpenRouterModelId(params.model)) {
+              throw new Error('OpenRouter provider requires a provider/model slug.');
+            }
             let response: Awaited<ReturnType<typeof tracedClient.chat.completions.create>>;
             try {
               response = await tracedClient.chat.completions.create({

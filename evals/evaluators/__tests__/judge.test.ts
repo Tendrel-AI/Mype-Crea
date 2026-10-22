@@ -76,4 +76,23 @@ describe('provider-aware judge model', () => {
     expect(params.tool_choice).toEqual({ type: 'function', function: { name: 'submit_verdict' } });
     expect(params.tools[0].function.name).toBe('submit_verdict');
   });
+
+  it('sends an Anthropic judge request with Haiku and without a temperature', async () => {
+    process.env.LLM_PROVIDER = 'anthropic';
+    delete process.env.EVAL_JUDGE_MODEL;
+    const fake = new FakeLLMProvider().scriptToolCall('submit_verdict', JSON.stringify({
+      faithfulness: 5,
+      tone: 4,
+      reasoning: 'Cumple la decisión.',
+    }));
+    setProvider(fake);
+
+    const result = await judgeReply({ decisions: [], reply: 'Perfecto, ¿confirmas el nombre?' });
+
+    expect(result.verdict.faithfulness).toBe(5);
+    const params = fake.captured[0].params as Record<string, unknown>;
+    expect(params.model).toBe('claude-haiku-5-5');
+    expect(params).not.toHaveProperty('temperature');
+    expect(params.tool_choice).toEqual({ type: 'function', function: { name: 'submit_verdict' } });
+  });
 });

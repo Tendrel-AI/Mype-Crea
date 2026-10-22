@@ -1,6 +1,6 @@
 /**
  * Responder eval (Layer 4). Renders every plan in `datasets/responder.ts`
- * with the real ChatOutputAdapter + OpenRouter model, then scores the reply
+ * with the real ChatOutputAdapter + the model of the selected LLM_PROVIDER, then scores the reply
  * twice: deterministic guardrail checks (`evaluators/responder.ts`) and an
  * LLM judge for faithfulness and tone (`evaluators/judge.ts`).
  *
@@ -16,6 +16,7 @@ import { ChatOutputAdapter } from '../src/adapters/chat-output-adapter';
 import { buildDefaultRegistry } from '../src/core/orchestrator/bootstrap-registry';
 import { buildSnapshot } from '../src/core/__tests__/_fixtures/snapshot';
 import { getProvider } from '../src/services/llm';
+import { evalModelProfile } from '../src/services/llm/eval-model-profile';
 import { evalLlmContext } from './_support/context';
 import { RESPONDER_DATASET_VERSION, responderCases } from './datasets/responder';
 import { JUDGE_PROMPT_VERSION, judgeModel, judgeReply } from './evaluators/judge';
@@ -54,6 +55,7 @@ ls.describe(
     metadata: {
       dataset: RESPONDER_DATASET_VERSION,
       model: getProvider().resolve('responder').modelId,
+      modelProfile: evalModelProfile(),
       judgeModel: judgeModel(),
       judgePrompt: JUDGE_PROMPT_VERSION,
     },
