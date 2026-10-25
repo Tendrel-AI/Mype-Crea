@@ -5,6 +5,7 @@ import {
   type ApprovalStoreRepo,
 } from '../approval-store';
 import type { DeliverableApprovalRow } from '../approvals';
+import { hasStalenessSource } from '../../core/approvals';
 
 const approval: DeliverableApprovalRow = {
   id: 'a0000000-0000-4000-8000-000000000001',
@@ -23,6 +24,7 @@ function fakeRepo(overrides: Partial<ApprovalStoreRepo> = {}): ApprovalStoreRepo
     approve: vi.fn(async () => ({ kind: 'rejected', reason: 'not_found' }) as const),
     getApproved: vi.fn(async () => []),
     markStale: vi.fn(async () => []),
+    listStale: vi.fn(async () => []),
     ...overrides,
   };
 }
@@ -62,9 +64,23 @@ describe('toApproveResult', () => {
 });
 
 describe('createApprovalStoreFromRepo', () => {
-  it('exposes exactly the port methods', () => {
+  it('exposes exactly the port methods plus the stale-marks read capability', () => {
     const store = createApprovalStoreFromRepo(fakeRepo());
-    expect(Object.keys(store).sort()).toEqual(['approve', 'getApproved', 'markDependentsStale']);
+    expect(Object.keys(store).sort()).toEqual(['approve', 'getApproved', 'getStaleKinds', 'markDependentsStale']);
+  });
+
+  it('is recognized by the core as a staleness source', () => {
+    expect(hasStalenessSource(createApprovalStoreFromRepo(fakeRepo()))).toBe(true);
+  });
+
+  it('reads the persisted stale kinds from listStale', async () => {
+    const listStale = vi.fn(async () => [
+      { deliverableKind: 'label' as const, markedAt: approval.approvedAt },
+      { deliverableKind: 'tagline' as const, markedAt: approval.approvedAt },
+    ]);
+    const store = createApprovalStoreFromRepo(fakeRepo({ listStale }));
+    await expect(store.getStaleKinds(approval.conversationId)).resolves.toEqual(['label', 'tagline']);
+    expect(listStale).toHaveBeenCalledWith(approval.conversationId);
   });
 
   it('passes approve input through and maps the outcome', async () => {

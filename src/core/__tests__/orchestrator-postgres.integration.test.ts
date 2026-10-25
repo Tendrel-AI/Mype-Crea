@@ -21,7 +21,7 @@ import {
 } from '../orchestrator/artifact-notifier';
 import { PostgresConversationStore } from '../orchestrator/postgres-store';
 import { PostgresDeliverableWorkflowStore } from '../orchestrator/postgres-workflow';
-import { SelectedAtApprovalStore } from '../orchestrator/selected-at-approval-store';
+import { createPostgresApprovalStore } from '../../repos/approval-store';
 import { buildSingleAgentFixtureRegistry } from './_fixtures/registry';
 import { LocalAdapter } from '../../transport/local-adapter';
 import { newTaskId } from '../ids';
@@ -110,7 +110,7 @@ SUITE('orchestrator + Postgres store (integration)', () => {
       artifactNotifier,
       newTaskId,
       workflowFor: (tid, uid) => new PostgresDeliverableWorkflowStore(tid, uid),
-      approvalsFor: (tid, uid) => new SelectedAtApprovalStore(tid, uid),
+      approvalsFor: (tid, uid) => createPostgresApprovalStore({ id: tid }, { id: uid }),
     });
     coreRef = core;
 

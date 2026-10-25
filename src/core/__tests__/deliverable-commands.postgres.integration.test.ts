@@ -1,9 +1,10 @@
 /**
- * Integration test (KAN-28): typed deliverable commands against real
+ * Integration test (KAN-28 / KAN-34): typed deliverable commands against real
  * PostgreSQL — the Postgres workflow store (guarded task insert, idempotency
- * key, pending-only cancel, iteration rows) and the TEMPORARY selected_at
- * approval adapter. Skipped without APP_DATABASE_URL. Run it only against a
- * disposable database (docs/agents/testing.md).
+ * key, pending-only cancel, iteration rows under the KAN-34 refinement CHECK)
+ * and the production KAN-34 approval store (append-only history, persisted
+ * stale marks feeding the state function). Skipped without APP_DATABASE_URL.
+ * Run it only against a disposable database (docs/agents/testing.md).
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -13,7 +14,7 @@ import { InProcessDecisionNotifier, OrchestratorCoreImpl } from '../orchestrator
 import { AgentRegistry } from '../orchestrator/agent-registry';
 import { PostgresConversationStore } from '../orchestrator/postgres-store';
 import { PostgresDeliverableWorkflowStore } from '../orchestrator/postgres-workflow';
-import { SelectedAtApprovalStore } from '../orchestrator/selected-at-approval-store';
+import { createPostgresApprovalStore } from '../../repos/approval-store';
 import { buildFixtureCard, fixtureEchoHandler } from './_fixtures/registry';
 import { newTaskId } from '../ids';
 import { closePool } from '../../db/pool';
@@ -23,6 +24,7 @@ import type { DeliverableCommand, DeliverableStateView, UUID } from '../contract
 
 const SUITE = process.env.APP_DATABASE_URL ? describe : describe.skip;
 const AGENT_ID = 'logo-fixture-agent';
+const LABEL_AGENT_ID = 'label-fixture-agent';
 
 async function ownerQuery<T extends pg.QueryResultRow>(sql: string, params: unknown[] = []): Promise<T[]> {
   const url = process.env.DATABASE_URL;
@@ -63,7 +65,7 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     await closePool();
   });
 
-  async function harness() {
+  async function harness(opts: { withDependentLabel?: boolean } = {}) {
     const registry = new AgentRegistry();
     registry.register(
       buildFixtureCard({
@@ -74,6 +76,18 @@ SUITE('deliverable commands + Postgres (integration)', () => {
       fixtureEchoHandler,
       undefined,
     );
+    if (opts.withDependentLabel) {
+      registry.register(
+        buildFixtureCard({
+          id: LABEL_AGENT_ID,
+          required: [{ name: 'business_name' }],
+          deliverableKind: 'label',
+          dependsOn: ['logo'],
+        }),
+        fixtureEchoHandler,
+        undefined,
+      );
+    }
     const messages: A2AMessage[] = [];
     const core = new OrchestratorCoreImpl({
       store: new PostgresConversationStore(registry.getFieldSchemas()),
@@ -89,7 +103,7 @@ SUITE('deliverable commands + Postgres (integration)', () => {
       notifier: new InProcessDecisionNotifier(),
       newTaskId,
       workflowFor: (tid, uid) => new PostgresDeliverableWorkflowStore(tid, uid),
-      approvalsFor: (tid, uid) => new SelectedAtApprovalStore(tid, uid),
+      approvalsFor: (tid, uid) => createPostgresApprovalStore({ id: tid }, { id: uid }),
     });
     const conversationId = randomUUID();
     created.push(conversationId);
@@ -103,24 +117,30 @@ SUITE('deliverable commands + Postgres (integration)', () => {
           business_name: { value: 'Sazón Andino', confidence: 1 },
           business_profile: { value: 'Comida peruana', confidence: 1 },
         },
+        ...(opts.withDependentLabel
+          ? { [LABEL_AGENT_ID]: { business_name: { value: 'Sazón Andino', confidence: 1 } } }
+          : {}),
       },
     });
-    const view = async (): Promise<DeliverableStateView> => (await core.getDeliverableStates(conversationId))[0];
-    const command = async (partial: Record<string, unknown>, commandId: string = randomUUID()) => {
-      const current = await view();
+    const viewOf = async (agentId: string): Promise<DeliverableStateView> =>
+      (await core.getDeliverableStates(conversationId)).find((s) => s.agentId === agentId)!;
+    const view = () => viewOf(AGENT_ID);
+    const commandFor = async (agentId: string, partial: Record<string, unknown>, commandId: string = randomUUID()) => {
+      const current = await viewOf(agentId);
       return core.executeCommand({
         commandId,
         conversationId,
-        agentId: AGENT_ID,
+        agentId,
         expectedState: current.state,
         stateToken: current.stateToken,
         ...partial,
       } as DeliverableCommand);
     };
+    const command = (partial: Record<string, unknown>, commandId?: string) => commandFor(AGENT_ID, partial, commandId);
     const tasks = () => systemRepos({ id: tenantId }).agentTasks.listByConversation(conversationId);
     const settle = (taskId: string, state: TaskState) =>
       core.onTaskSettled(taskId, state);
-    return { core, conversationId, messages, view, command, tasks, settle };
+    return { core, conversationId, messages, view, viewOf, command, commandFor, tasks, settle };
   }
 
   const completed = (taskId: string): TaskState => ({
@@ -183,7 +203,7 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     expect(await h.command({ kind: 'cancel', taskId: second.taskId })).toMatchObject({ ok: false, reason: 'not_allowed' });
   });
 
-  it('Iterar and Reintentar insert iteration rows with the right trigger and refinement; Aprobar replaces through selected_at', { timeout: 30_000 }, async () => {
+  it('Iterar and Reintentar insert iteration rows that satisfy the refinement CHECK; Aprobar replaces through the KAN-34 store with history', { timeout: 30_000 }, async () => {
     const h = await harness();
     const generated = await h.command({ kind: 'generate' });
     if (!generated.ok) throw new Error('expected ok');
@@ -227,11 +247,16 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     expect(await h.view()).toMatchObject({ state: 'failed', allowedCommands: ['retry'] });
     const retry = await h.command({ kind: 'retry', failedTaskId: iterate.taskId });
     if (!retry.ok) throw new Error('expected ok');
-    expect((await h.tasks()).find((t) => t.id === retry.taskId)).toMatchObject({
+    const retryRow = (await h.tasks()).find((t) => t.id === retry.taskId)!;
+    expect(retryRow).toMatchObject({
       parentTaskId: iterate.taskId,
+      iterationRootId: generated.taskId,
       iterationNumber: 3,
       iterationTrigger: 'failure',
     });
+    // Reintentar carries no refinement (the brief only); the CHECK accepts it.
+    expect(retryRow.requirementsSnapshot).not.toHaveProperty('refinement');
+    expect(retryRow.requirementsSnapshot).toMatchObject({ business_name: 'Sazón Andino' });
     await h.settle(retry.taskId!, completed(retry.taskId!));
     const d2 = await repos({ id: tenantId }, { id: userId }).deliverables.insert({
       conversationId: h.conversationId,
@@ -252,5 +277,78 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     expect(rows.find((r) => r.id === d1.id)).toMatchObject({ selectedAt: null, supersededBy: d2.id });
     expect(rows.find((r) => r.id === d2.id)?.selectedAt).not.toBeNull();
     expect(await h.view()).toMatchObject({ state: 'approved', approvedDeliverableId: d2.id });
+
+    // KAN-34 append-only trail: the first approval and the replacement, nothing for the rejection.
+    const history = await repos({ id: tenantId }, { id: userId }).approvals.listHistory(h.conversationId, 'logo');
+    expect(history.map((r) => [r.deliverableId, r.replacedDeliverableId])).toEqual([
+      [d1.id, null],
+      [d2.id, d1.id],
+    ]);
+    // Re-approving the current deliverable is a replayed no-op: no new history row.
+    expect(await h.command({ kind: 'approve', deliverableId: d2.id, expectedApprovedId: d2.id })).toMatchObject({
+      ok: true,
+      replayed: true,
+    });
+    expect(await repos({ id: tenantId }, { id: userId }).approvals.listHistory(h.conversationId)).toHaveLength(2);
+  });
+
+  it('persisted stale marks reach the state function; replacing an upstream approval marks approved dependents', { timeout: 30_000 }, async () => {
+    const h = await harness({ withDependentLabel: true });
+    const r = repos({ id: tenantId }, { id: userId });
+    const candidate = async (agentId: string, kind: 'logo' | 'label', partial: Record<string, unknown>, url: string) => {
+      const created = await h.commandFor(agentId, partial);
+      if (!created.ok) throw new Error(`${agentId} ${String(partial.kind)} rejected: ${created.message}`);
+      await h.settle(created.taskId!, completed(created.taskId!));
+      return r.deliverables.insert({ conversationId: h.conversationId, agentTaskId: created.taskId!, kind, contentUrl: url });
+    };
+
+    // The label is blocked until the logo is approved.
+    expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({ state: 'blocked', allowedCommands: [] });
+    const logo1 = await candidate(AGENT_ID, 'logo', { kind: 'generate' }, 'https://cdn.test/logo-1.png');
+    expect(await h.command({ kind: 'approve', deliverableId: logo1.id, expectedApprovedId: null })).toMatchObject({ ok: true });
+    const label1 = await candidate(LABEL_AGENT_ID, 'label', { kind: 'generate' }, 'https://cdn.test/label-1.png');
+    expect(
+      await h.commandFor(LABEL_AGENT_ID, { kind: 'approve', deliverableId: label1.id, expectedApprovedId: null }),
+    ).toMatchObject({ ok: true });
+    expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({ state: 'approved', approvedDeliverableId: label1.id });
+
+    // A mark alone (no upstream timestamp change) makes the approved label «obsoleto»:
+    // the state function sees the KAN-34 marks, not only approval timestamps.
+    await r.approvals.markStale({ conversationId: h.conversationId, deliverableKinds: ['label'] });
+    expect((await r.approvals.listStale(h.conversationId)).map((m) => m.deliverableKind)).toEqual(['label']);
+    // «obsoleto» is an overlay on `approved`; it also offers Generar again (never automatic).
+    expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({
+      state: 'approved',
+      stale: true,
+      approvedDeliverableId: label1.id,
+      allowedCommands: ['generate', 'iterate'],
+    });
+
+    // Approving another label candidate clears the mark (newer approval event).
+    const label2 = await candidate(
+      LABEL_AGENT_ID,
+      'label',
+      { kind: 'iterate', deliverableId: label1.id, observation: 'Más contraste' },
+      'https://cdn.test/label-2.png',
+    );
+    expect(
+      await h.commandFor(LABEL_AGENT_ID, { kind: 'approve', deliverableId: label2.id, expectedApprovedId: label1.id }),
+    ).toMatchObject({ ok: true });
+    expect(await r.approvals.listStale(h.conversationId)).toEqual([]);
+    expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({ state: 'approved', stale: false, approvedDeliverableId: label2.id });
+
+    // Replacing the logo approval writes a persisted mark for the approved dependent (RF-07);
+    // nothing is regenerated.
+    const tasksBefore = (await h.tasks()).length;
+    const logo2 = await candidate(
+      AGENT_ID,
+      'logo',
+      { kind: 'iterate', deliverableId: logo1.id, observation: 'Más azul' },
+      'https://cdn.test/logo-2.png',
+    );
+    expect(await h.command({ kind: 'approve', deliverableId: logo2.id, expectedApprovedId: logo1.id })).toMatchObject({ ok: true });
+    expect((await r.approvals.listStale(h.conversationId)).map((m) => m.deliverableKind)).toEqual(['label']);
+    expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({ state: 'approved', stale: true, approvedDeliverableId: label2.id });
+    expect((await h.tasks()).length).toBe(tasksBefore + 1);
   });
 });

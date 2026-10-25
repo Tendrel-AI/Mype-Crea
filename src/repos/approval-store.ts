@@ -1,10 +1,16 @@
 /**
- * PostgreSQL adapter for the core approval port (KAN-34 / KAN-65).
+ * PostgreSQL adapter for the core approval port (KAN-34 / KAN-65), wired as THE production
+ * approval store at `createApprovalStore` in `src/core/orchestrator/runtime.ts`.
  *
- * The core declares `IApprovalStore` in `src/core/approvals.ts` (KAN-28). The repository layer
- * must not import from the core's orchestration modules, so the port types are declared here
- * structurally and must stay identical to the core's definition; TypeScript checks the match
- * wherever the core receives this object.
+ * The core declares `IApprovalStore` and the optional read capability `IApprovalStalenessSource`
+ * in `src/core/approvals.ts` (KAN-28). The repository layer must not import from the core's
+ * orchestration modules, so both are declared here structurally and must stay identical to the
+ * core's definitions; TypeScript checks the match where the runtime hands this object to the core.
+ *
+ * Staleness (RF-07): `markDependentsStale` appends `deliverable_stale_marks` events and
+ * `getStaleKinds` reads them back through `approvalsRepo.listStale` (newest mark newer than the
+ * newest approval of the kind, by `event_seq`). The core feeds `getStaleKinds` into the pure
+ * state function as `markedStaleKinds`; `IApprovalStore` itself is unchanged.
  */
 import type { Tenant, User } from '../db/with-transaction';
 import { approvalsRepo, type ApproveOutcome } from './approvals';
@@ -29,10 +35,18 @@ export interface IApprovalStore {
   }): Promise<void>;
 }
 
+/** Optional read capability of the core (`IApprovalStalenessSource`), declared structurally. */
+export interface IApprovalStalenessSource {
+  getStaleKinds(conversationId: string): Promise<ReadonlyArray<string>>;
+}
+
+/** What the Postgres adapter provides: the port plus the persisted stale marks. */
+export type PostgresApprovalStore = IApprovalStore & IApprovalStalenessSource;
+
 /** The subset of the approvals repository the adapter needs (injectable for unit tests). */
 export type ApprovalStoreRepo = Pick<
   ReturnType<typeof approvalsRepo>,
-  'approve' | 'getApproved' | 'markStale'
+  'approve' | 'getApproved' | 'markStale' | 'listStale'
 >;
 
 /**
@@ -54,7 +68,7 @@ export function toApproveResult(outcome: ApproveOutcome): ApproveResult {
   }
 }
 
-export function createApprovalStoreFromRepo(repo: ApprovalStoreRepo): IApprovalStore {
+export function createApprovalStoreFromRepo(repo: ApprovalStoreRepo): PostgresApprovalStore {
   return {
     async approve(input) {
       return toApproveResult(await repo.approve(input));
@@ -70,9 +84,12 @@ export function createApprovalStoreFromRepo(repo: ApprovalStoreRepo): IApprovalS
     async markDependentsStale(input) {
       await repo.markStale(input);
     },
+    async getStaleKinds(conversationId) {
+      return (await repo.listStale(conversationId)).map((s) => s.deliverableKind);
+    },
   };
 }
 
-export function createPostgresApprovalStore(tenant: Tenant, user: User): IApprovalStore {
+export function createPostgresApprovalStore(tenant: Tenant, user: User): PostgresApprovalStore {
   return createApprovalStoreFromRepo(approvalsRepo(tenant, user));
 }

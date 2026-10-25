@@ -9,11 +9,13 @@
  * Nothing is regenerated automatically.
  *
  * This is the contract shared with the KAN-34 persistence work. The core
- * depends only on `IApprovalStore`; implementations:
+ * depends only on `IApprovalStore` (plus the optional read capability
+ * `IApprovalStalenessSource`); implementations:
  *   - `InMemoryApprovalStore` (below) — unit tests and the in-memory core.
- *   - `SelectedAtApprovalStore` (src/core/orchestrator/selected-at-approval-store.ts)
- *     — TEMPORARY production adapter over `deliverables.selected_at` /
- *     `superseded_by`, until the KAN-34 Postgres adapter replaces it.
+ *   - `createPostgresApprovalStore` (src/repos/approval-store.ts) — production,
+ *     wired at `createApprovalStore` in ./orchestrator/runtime.ts: append-only
+ *     `deliverable_approvals` history and `deliverable_stale_marks` events,
+ *     keeping `deliverables.selected_at` / `superseded_by` current.
  *
  * Concurrency: `expectedApprovedId` is the approved deliverable the client
  * saw (or null). A mismatch with the current approval is rejected as
@@ -42,9 +44,11 @@ export interface IApprovalStore {
 
 /**
  * Optional read capability. A store that persists the stale marks written by
- * `markDependentsStale` may expose them here; the core then unions them with
+ * `markDependentsStale` exposes them here; the core then unions them with
  * the staleness it derives purely from approval timestamps
  * (`deriveStaleKinds`). Not part of the shared `IApprovalStore` contract.
+ * Both production (Postgres: kinds whose newest mark is newer than their
+ * newest approval) and in-memory stores implement it.
  */
 export interface IApprovalStalenessSource {
   getStaleKinds(conversationId: string): Promise<ReadonlyArray<string>>;
