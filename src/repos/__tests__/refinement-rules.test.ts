@@ -5,6 +5,7 @@ import {
   codePointLength,
   validateRefinement,
 } from '../refinement-rules';
+import * as coreRule from '../../core/refinement';
 import { REFINEMENT_PARITY_CASES } from './fixtures/refinement-parity-cases';
 
 const VOSEO = /\b(pod[eé]s|ten[eé]s|quer[eé]s|escrib[ií]|eleg[ií]|sos|vos)\b/i;
@@ -12,6 +13,15 @@ const VOSEO = /\b(pod[eé]s|ten[eé]s|quer[eé]s|escrib[ií]|eleg[ií]|sos|vos)\
 describe('checkStoredRefinement (parity cases shared with app.is_valid_refinement)', () => {
   it.each(REFINEMENT_PARITY_CASES.map((c) => [c.name, c] as const))('%s', (_name, c) => {
     expect(checkStoredRefinement(c.value).ok).toBe(c.valid);
+  });
+});
+
+describe('single definition', () => {
+  it('re-exports the core rule instead of keeping a second copy', () => {
+    expect(checkStoredRefinement).toBe(coreRule.checkStoredRefinement);
+    expect(validateRefinement).toBe(coreRule.validateRefinement);
+    expect(codePointLength).toBe(coreRule.codePointLength);
+    expect(REFINEMENT_LIMITS).toBe(coreRule.REFINEMENT_LIMITS);
   });
 });
 

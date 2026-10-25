@@ -1,23 +1,16 @@
 /**
- * Core refinement rule (KAN-28 / KAN-34 / KAN-65 R2). The parity cases are
- * the KAN-34 cases verbatim, so the core mirror agrees with the repository
- * rule and the PostgreSQL CHECK `app.is_valid_refinement`.
+ * Core refinement helpers (KAN-28 / KAN-34 / KAN-65 R2). The stored-shape
+ * rule itself (`checkStoredRefinement`) is held to the ONE shared parity
+ * fixture in src/repos/__tests__/refinement-rules.test.ts (TypeScript) and
+ * approvals.integration.test.ts (PostgreSQL `app.is_valid_refinement`).
  */
 import { describe, expect, it } from 'vitest';
 import {
   REFINEMENT_MESSAGES,
   buildIterationRefinement,
-  checkStoredRefinement,
   splitRequirementsSnapshot,
 } from '../refinement';
 import { MAX_ITERATION_OBSERVATION_LENGTH } from '../contracts';
-import { REFINEMENT_PARITY_CASES } from './_fixtures/refinement-parity-cases';
-
-describe('checkStoredRefinement — KAN-34 parity cases', () => {
-  it.each(REFINEMENT_PARITY_CASES.map((c) => [c.name, c] as const))('%s', (_name, c) => {
-    expect(checkStoredRefinement(c.value).ok).toBe(c.valid);
-  });
-});
 
 describe('buildIterationRefinement', () => {
   const anchor = '3f1c2a4e-9b7d-4c2e-8f10-0a1b2c3d4e5f';
@@ -43,6 +36,7 @@ describe('buildIterationRefinement', () => {
     expect(buildIterationRefinement({ observation: '😀'.repeat(500), anchorDeliverableId: null }).ok).toBe(true);
     expect(buildIterationRefinement({ observation: '😀'.repeat(501), anchorDeliverableId: null })).toEqual({
       ok: false,
+      code: 'observation_too_long',
       message: REFINEMENT_MESSAGES.observationTooLong,
     });
   });
@@ -51,7 +45,7 @@ describe('buildIterationRefinement', () => {
     expect(buildIterationRefinement({ observation: 5, anchorDeliverableId: null }).ok).toBe(false);
     expect(
       buildIterationRefinement({ parameterChanges: { 'font-size': 1 }, anchorDeliverableId: null }),
-    ).toEqual({ ok: false, message: REFINEMENT_MESSAGES.invalidParameter });
+    ).toEqual({ ok: false, code: 'invalid_parameter_key', message: REFINEMENT_MESSAGES.invalidParameter });
   });
 });
 

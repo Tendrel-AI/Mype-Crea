@@ -12,7 +12,7 @@ import { closePool, getPool } from '../../db/pool';
 import { withTenantAdminTransaction, withTenantTransaction } from '../../db/with-transaction';
 import { repos, type Tenant, type User } from '..';
 import { createPostgresApprovalStore } from '../approval-store';
-import { RefinementValidationError } from '../refinement-rules';
+import { RefinementValidationError, checkStoredRefinement } from '../refinement-rules';
 import { RefinementTargetError } from '../refinements';
 import type { DeliverableKind } from '../models';
 import type { UUID } from '../../core/contracts';
@@ -565,5 +565,7 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
       return out;
     });
     expect(verdicts).toEqual(REFINEMENT_PARITY_CASES.map((c) => [c.name, c.valid]));
+    // Same cases, both languages: the single TypeScript rule gives the SQL verdict on every case.
+    expect(REFINEMENT_PARITY_CASES.map((c) => [c.name, checkStoredRefinement(c.value).ok])).toEqual(verdicts);
   });
 });

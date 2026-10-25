@@ -1,6 +1,7 @@
 /**
- * Shared parity cases for the refinement rule. The unit test runs them through
- * `checkStoredRefinement` (TypeScript) and the approvals integration suite runs the same cases
+ * THE shared parity cases for the refinement rule (one fixture, no copies). The unit test
+ * `refinement-rules.test.ts` runs them through `checkStoredRefinement` (the single TypeScript
+ * definition in src/core/refinement.ts) and the approvals integration suite runs the same cases
  * through `app.is_valid_refinement(jsonb)` (PostgreSQL). Each case states the expected verdict,
  * so both definitions must agree with it and therefore with each other.
  */

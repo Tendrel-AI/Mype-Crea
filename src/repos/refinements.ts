@@ -3,7 +3,7 @@
  *
  * Creates an iteration `agent_tasks` row whose `requirements_snapshot` carries the validated,
  * iteration-local refinement under the reserved key `refinement`:
- *   `{ parameterChanges, observations[], anchorDeliverableId }` (caps in refinement-rules.ts).
+ *   `{ parameterChanges, observations[], anchorDeliverableId }` (caps in src/core/refinement.ts, the single rule).
  *
  * Guarantees:
  *   - Refinement never writes the brief: `conversations.agent_states` is only locked, never

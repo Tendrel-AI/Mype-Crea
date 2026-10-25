@@ -1,14 +1,12 @@
 /**
- * MYPES Platform — Iteration refinement rule, core side (KAN-28 / KAN-34 / KAN-65 R2)
- * ====================================================================================
+ * MYPES Platform — Iteration refinement rule (KAN-28 / KAN-34 / KAN-65 R2)
+ * =========================================================================
  *
- * An «Iterar» command may carry short observations anchored to one candidate
- * and iteration-local parameter overrides. They are stored ONLY in the
- * iteration task's `agent_tasks.requirements_snapshot` under the reserved key
+ * THE single TypeScript definition of the refinement rule. An «Iterar»
+ * command may carry short observations anchored to one candidate and
+ * iteration-local parameter overrides. They are stored ONLY in the iteration
+ * task's `agent_tasks.requirements_snapshot` under the reserved key
  * `refinement` and never touch the brief.
- *
- * Shape and caps are the KAN-34 rule (src/repos/refinement-rules.ts and the
- * PostgreSQL CHECK `app.is_valid_refinement`, on `developer` since 45e9b26):
  *
  *   { parameterChanges: {key: string|number|boolean} (≤20 keys, key
  *       ^[A-Za-z][A-Za-z0-9_]{0,63}$, strings ≤200 code points),
@@ -16,12 +14,15 @@
  *       non-ASCII-whitespace character),
  *     anchorDeliverableId: lowercase UUID | null }
  *
- * TEMPORARY MIRROR: this branch predates KAN-34, so the core cannot import
- * that module yet (and the core must not import repositories). The cases in
- * `__tests__/refinement.test.ts` are the KAN-34 parity cases verbatim, so the
- * two TypeScript copies agree with each other and with the SQL CHECK. Follow-up
- * at merge: keep ONE TypeScript definition (here, in the core) and have the
- * repository import it.
+ * Pure (no I/O, no imports), so both the core (command handler, workers) and
+ * the repository layer (`src/repos/refinement-rules.ts` re-exports it) use
+ * this module. The same rule is enforced in PostgreSQL by
+ * `app.is_valid_refinement(jsonb)` (CHECK `agent_tasks_refinement_valid`,
+ * migration `1792800001000_iteration-refinement-check`). ONE parity fixture
+ * (`src/repos/__tests__/fixtures/refinement-parity-cases.ts`) is run through
+ * this rule (`refinement-rules.test.ts`) and through the SQL function
+ * (`approvals.integration.test.ts`). Change the rule, the SQL function and
+ * the fixture together.
  *
  * Lengths are Unicode code points (PostgreSQL `char_length`), not UTF-16 units.
  */
@@ -43,30 +44,68 @@ export type RefinementParameterValue = string | number | boolean;
 export interface IterationRefinement {
   readonly parameterChanges: Readonly<Record<string, RefinementParameterValue>>;
   readonly observations: ReadonlyArray<string>;
+  /** Candidate (deliverable of the parent task) the observations are anchored to, if any. */
   readonly anchorDeliverableId: string | null;
 }
 
+/** Caller input for `validateRefinement`; missing collections default to empty. */
+export interface IterationRefinementInput {
+  readonly parameterChanges?: Readonly<Record<string, unknown>>;
+  readonly observations?: readonly unknown[];
+  readonly anchorDeliverableId?: string | null;
+}
+
+export type RefinementErrorCode =
+  | 'invalid_shape'
+  | 'too_many_parameters'
+  | 'invalid_parameter_key'
+  | 'invalid_parameter_value'
+  | 'parameter_value_too_long'
+  | 'too_many_observations'
+  | 'invalid_observation'
+  | 'empty_observation'
+  | 'observation_too_long'
+  | 'invalid_anchor';
+
 export type RefinementCheck =
   | { readonly ok: true; readonly value: IterationRefinement }
-  | { readonly ok: false; readonly message: string };
+  | { readonly ok: false; readonly code: RefinementErrorCode; readonly message: string };
 
-/** User-visible copy (neutral Latin-American Spanish, tú). */
-export const REFINEMENT_MESSAGES = {
-  invalid: 'No pudimos leer los cambios que pediste. Inténtalo de nuevo.',
-  tooManyParameters: `Puedes ajustar como máximo ${REFINEMENT_LIMITS.maxParameterChanges} opciones a la vez.`,
-  invalidParameter: 'Una de las opciones que ajustaste no es válida.',
-  invalidParameterValue: 'Uno de los valores que elegiste no es válido.',
-  parameterTooLong: `Cada valor puede tener hasta ${REFINEMENT_LIMITS.maxParameterStringChars} caracteres.`,
-  tooManyObservations: `Puedes escribir como máximo ${REFINEMENT_LIMITS.maxObservations} observaciones.`,
-  invalidObservation: 'Cada observación debe ser un texto.',
-  emptyObservation: 'Escribe qué quieres cambiar antes de enviar la observación.',
-  observationTooLong: `Cada observación puede tener hasta ${REFINEMENT_LIMITS.maxObservationChars} caracteres.`,
-  invalidAnchor: 'La propuesta que elegiste para iterar no es válida.',
-} as const;
+/** Same type under the repository's historical name. */
+export type RefinementValidation = RefinementCheck;
+
+/** User-visible copy by error code (neutral Latin-American Spanish, tú). */
+export const REFINEMENT_ERROR_MESSAGES: Readonly<Record<RefinementErrorCode, string>> = Object.freeze({
+  invalid_shape: 'No pudimos leer los cambios que pediste. Inténtalo de nuevo.',
+  too_many_parameters: `Puedes ajustar como máximo ${REFINEMENT_LIMITS.maxParameterChanges} opciones a la vez.`,
+  invalid_parameter_key: 'Una de las opciones que ajustaste no es válida.',
+  invalid_parameter_value: 'Uno de los valores que elegiste no es válido.',
+  parameter_value_too_long: `Cada valor puede tener hasta ${REFINEMENT_LIMITS.maxParameterStringChars} caracteres.`,
+  too_many_observations: `Puedes escribir como máximo ${REFINEMENT_LIMITS.maxObservations} observaciones.`,
+  invalid_observation: 'Cada observación debe ser un texto.',
+  empty_observation: 'Escribe qué quieres cambiar antes de enviar la observación.',
+  observation_too_long: `Cada observación puede tener hasta ${REFINEMENT_LIMITS.maxObservationChars} caracteres.`,
+  invalid_anchor: 'La propuesta que elegiste para iterar no es válida.',
+});
+
+/** The same copy under the keys the command handler and its tests use. */
+export const REFINEMENT_MESSAGES = Object.freeze({
+  invalid: REFINEMENT_ERROR_MESSAGES.invalid_shape,
+  tooManyParameters: REFINEMENT_ERROR_MESSAGES.too_many_parameters,
+  invalidParameter: REFINEMENT_ERROR_MESSAGES.invalid_parameter_key,
+  invalidParameterValue: REFINEMENT_ERROR_MESSAGES.invalid_parameter_value,
+  parameterTooLong: REFINEMENT_ERROR_MESSAGES.parameter_value_too_long,
+  tooManyObservations: REFINEMENT_ERROR_MESSAGES.too_many_observations,
+  invalidObservation: REFINEMENT_ERROR_MESSAGES.invalid_observation,
+  emptyObservation: REFINEMENT_ERROR_MESSAGES.empty_observation,
+  observationTooLong: REFINEMENT_ERROR_MESSAGES.observation_too_long,
+  invalidAnchor: REFINEMENT_ERROR_MESSAGES.invalid_anchor,
+});
 
 const PARAMETER_KEY = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 const NON_ASCII_WHITESPACE = /[^ \t\n\r\f\v]/;
 const LOWER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const STORED_KEYS: ReadonlySet<string> = new Set(['parameterChanges', 'observations', 'anchorDeliverableId']);
 
 /** Unicode code point count (matches PostgreSQL `char_length`). */
 export function codePointLength(value: string): number {
@@ -79,44 +118,48 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-const fail = (message: string): RefinementCheck => ({ ok: false, message });
+function fail(code: RefinementErrorCode): RefinementCheck {
+  return { ok: false, code, message: REFINEMENT_ERROR_MESSAGES[code] };
+}
 
-/** The stored-shape rule. Judges exactly the value that would be written. */
+/**
+ * The stored-shape rule, mirrored by `app.is_valid_refinement`. No
+ * normalization: it judges exactly the value that would be written.
+ */
 export function checkStoredRefinement(value: unknown): RefinementCheck {
-  if (!isPlainObject(value)) return fail(REFINEMENT_MESSAGES.invalid);
+  if (!isPlainObject(value)) return fail('invalid_shape');
   for (const key of Object.keys(value)) {
-    if (key !== 'parameterChanges' && key !== 'observations' && key !== 'anchorDeliverableId') {
-      return fail(REFINEMENT_MESSAGES.invalid);
-    }
+    if (!STORED_KEYS.has(key)) return fail('invalid_shape');
   }
   const { parameterChanges, observations } = value;
-  if (!isPlainObject(parameterChanges) || !Array.isArray(observations)) return fail(REFINEMENT_MESSAGES.invalid);
+  if (!isPlainObject(parameterChanges) || !Array.isArray(observations)) return fail('invalid_shape');
 
   const entries = Object.entries(parameterChanges);
-  if (entries.length > REFINEMENT_LIMITS.maxParameterChanges) return fail(REFINEMENT_MESSAGES.tooManyParameters);
+  if (entries.length > REFINEMENT_LIMITS.maxParameterChanges) return fail('too_many_parameters');
   for (const [key, v] of entries) {
-    if (!PARAMETER_KEY.test(key)) return fail(REFINEMENT_MESSAGES.invalidParameter);
+    if (!PARAMETER_KEY.test(key)) return fail('invalid_parameter_key');
     if (typeof v === 'string') {
-      if (v.includes('\u0000')) return fail(REFINEMENT_MESSAGES.invalidParameterValue);
+      if (v.includes('\u0000')) return fail('invalid_parameter_value');
       if (codePointLength(v) > REFINEMENT_LIMITS.maxParameterStringChars) {
-        return fail(REFINEMENT_MESSAGES.parameterTooLong);
+        return fail('parameter_value_too_long');
       }
     } else if (!(typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)))) {
-      return fail(REFINEMENT_MESSAGES.invalidParameterValue);
+      return fail('invalid_parameter_value');
     }
   }
 
-  if (observations.length > REFINEMENT_LIMITS.maxObservations) return fail(REFINEMENT_MESSAGES.tooManyObservations);
+  if (observations.length > REFINEMENT_LIMITS.maxObservations) return fail('too_many_observations');
   for (const o of observations) {
-    if (typeof o !== 'string' || o.includes('\u0000')) return fail(REFINEMENT_MESSAGES.invalidObservation);
+    // PostgreSQL text/jsonb cannot store NUL, so it is rejected here rather than at INSERT.
+    if (typeof o !== 'string' || o.includes('\u0000')) return fail('invalid_observation');
     const len = codePointLength(o);
-    if (len === 0 || !NON_ASCII_WHITESPACE.test(o)) return fail(REFINEMENT_MESSAGES.emptyObservation);
-    if (len > REFINEMENT_LIMITS.maxObservationChars) return fail(REFINEMENT_MESSAGES.observationTooLong);
+    if (len === 0 || !NON_ASCII_WHITESPACE.test(o)) return fail('empty_observation');
+    if (len > REFINEMENT_LIMITS.maxObservationChars) return fail('observation_too_long');
   }
 
   const anchor = value.anchorDeliverableId;
   if (anchor !== undefined && anchor !== null) {
-    if (typeof anchor !== 'string' || !LOWER_UUID.test(anchor)) return fail(REFINEMENT_MESSAGES.invalidAnchor);
+    if (typeof anchor !== 'string' || !LOWER_UUID.test(anchor)) return fail('invalid_anchor');
   }
 
   return {
@@ -127,6 +170,28 @@ export function checkStoredRefinement(value: unknown): RefinementCheck {
       anchorDeliverableId: (anchor as string | null | undefined) ?? null,
     },
   };
+}
+
+/**
+ * Normalize caller input (default empty collections, trim every observation,
+ * lowercase the anchor) and validate the result with the stored-shape rule.
+ * An observation that is blank after trimming is rejected (`empty_observation`).
+ */
+export function validateRefinement(input: unknown): RefinementCheck {
+  if (!isPlainObject(input)) return fail('invalid_shape');
+  for (const key of Object.keys(input)) {
+    if (!STORED_KEYS.has(key)) return fail('invalid_shape');
+  }
+  const parameterChanges = input.parameterChanges ?? {};
+  const rawObservations = input.observations ?? [];
+  if (!Array.isArray(rawObservations)) return fail('invalid_shape');
+  const observations = rawObservations.map((o) => (typeof o === 'string' ? o.trim() : o));
+  const anchor = input.anchorDeliverableId;
+  return checkStoredRefinement({
+    parameterChanges,
+    observations,
+    anchorDeliverableId: typeof anchor === 'string' ? anchor.toLowerCase() : (anchor ?? null),
+  });
 }
 
 /**
@@ -142,7 +207,7 @@ export function buildIterationRefinement(input: {
 }): RefinementCheck {
   let observations: unknown[] = [];
   if (input.observation !== undefined && input.observation !== null) {
-    if (typeof input.observation !== 'string') return fail(REFINEMENT_MESSAGES.invalid);
+    if (typeof input.observation !== 'string') return fail('invalid_shape');
     const trimmed = input.observation.trim();
     if (trimmed.length > 0) observations = [trimmed];
   }
