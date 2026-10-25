@@ -166,13 +166,13 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
     const { ids: [first, second] } = await candidates(A.tenant, A.member, conv, 'logo', 2);
     const store = createPostgresApprovalStore(A.tenant, A.member);
 
-    const r1 = await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: first, expectedApprovedId: null });
+    const r1 = await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: first, expectedApprovedId: null, dependentKinds: [] });
     expect(r1).toMatchObject({ ok: true, replacedDeliverableId: null });
     expect(await store.getApproved(conv)).toEqual([
       { deliverableKind: 'logo', deliverableId: first, approvedAt: expect.any(String) },
     ]);
 
-    const r2 = await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: second, expectedApprovedId: first });
+    const r2 = await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: second, expectedApprovedId: first, dependentKinds: [] });
     expect(r2).toMatchObject({ ok: true, replacedDeliverableId: first });
     expect((await store.getApproved(conv)).map((a) => a.deliverableId)).toEqual([second]);
 
@@ -192,7 +192,7 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
     expect(rows.find((r) => r.id === second)?.superseded_by).toBeNull();
 
     // Re-approving the replaced one again flips it back and clears its superseded_by.
-    const r3 = await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: first, expectedApprovedId: second });
+    const r3 = await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: first, expectedApprovedId: second, dependentKinds: [] });
     expect(r3).toMatchObject({ ok: true, replacedDeliverableId: second });
     const after = await selectedRows(conv, 'logo');
     expect(after.find((r) => r.id === first)).toMatchObject({ superseded_by: null });
@@ -204,16 +204,16 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
     const conv = await newConversation(A.tenant, A.member);
     const { ids: [x, y, z] } = await candidates(A.tenant, A.member, conv, 'logo', 3);
     const store = createPostgresApprovalStore(A.tenant, A.member);
-    await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: x, expectedApprovedId: null });
-    const ry = await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: y, expectedApprovedId: x });
+    await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: x, expectedApprovedId: null, dependentKinds: [] });
+    const ry = await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: y, expectedApprovedId: x, dependentKinds: [] });
     expect(ry.ok).toBe(true);
 
     for (const expectedApprovedId of [x, null, randomUUID(), 'not-a-uuid']) {
       expect(
-        await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: z, expectedApprovedId }),
+        await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: z, expectedApprovedId, dependentKinds: [] }),
       ).toEqual({ ok: false, reason: 'stale' });
     }
-    const same = await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: y, expectedApprovedId: y });
+    const same = await store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: y, expectedApprovedId: y, dependentKinds: [] });
     expect(same).toEqual({ ok: true, approvalId: ry.ok ? ry.approvalId : '', replacedDeliverableId: null });
     expect(await repos(A.tenant, A.member).approvals.listHistory(conv)).toHaveLength(2);
     expect((await store.getApproved(conv)).map((a) => a.deliverableId)).toEqual([y]);
@@ -234,7 +234,7 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
       expect(locked.rowCount).toBe(1);
 
       const racing = ids.map((deliverableId) =>
-        store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId, expectedApprovedId: null }),
+        store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId, expectedApprovedId: null, dependentKinds: [] }),
       );
       const deadline = Date.now() + 10_000;
       for (;;) {
@@ -264,7 +264,7 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
     const others = ids.filter((id) => id !== current);
     const results = await Promise.all(
       others.map((deliverableId) =>
-        store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId, expectedApprovedId: current }),
+        store.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId, expectedApprovedId: current, dependentKinds: [] }),
       ),
     );
     expect(results.filter((r) => r.ok)).toHaveLength(1);
@@ -280,7 +280,7 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
     const { ids: [pending] } = await candidates(A.tenant, A.member, conv, 'logo', 1, { complete: false });
     const store = createPostgresApprovalStore(A.tenant, A.member);
     const approve = (deliverableId: string, deliverableKind = 'logo', conversationId: string = conv) =>
-      store.approve({ conversationId, deliverableKind, deliverableId, expectedApprovedId: null });
+      store.approve({ conversationId, deliverableKind, deliverableId, expectedApprovedId: null, dependentKinds: [] });
 
     expect(await approve(foreignLogo)).toEqual({ ok: false, reason: 'not_candidate' });
     expect(await approve(tagline)).toEqual({ ok: false, reason: 'not_candidate' });
@@ -293,7 +293,7 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
     // Another ordinary member of the same tenant cannot approve inside this conversation.
     const intruder = createPostgresApprovalStore(A.tenant, A.otherMember);
     expect(
-      await intruder.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: logo, expectedApprovedId: null }),
+      await intruder.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: logo, expectedApprovedId: null, dependentKinds: [] }),
     ).toEqual({ ok: false, reason: 'not_found' });
     expect(await intruder.getApproved(conv)).toEqual([]);
 
@@ -305,7 +305,7 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
     const conv = await newConversation(A.tenant, A.member);
     const { ids: [logo] } = await candidates(A.tenant, A.member, conv, 'logo', 1);
     const res = await createPostgresApprovalStore(A.tenant, A.member).approve({
-      conversationId: conv, deliverableKind: 'logo', deliverableId: logo, expectedApprovedId: null,
+      conversationId: conv, deliverableKind: 'logo', deliverableId: logo, expectedApprovedId: null, dependentKinds: [],
     });
     expect(res.ok).toBe(true);
     await repos(A.tenant, A.member).approvals.markStale({ conversationId: conv, deliverableKinds: ['tagline'] });
@@ -316,7 +316,7 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
     expect(await foreign.getApproved(conv)).toEqual([]);
     expect(await foreign.listStale(conv)).toEqual([]);
     expect(
-      await foreign.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: logo, expectedApprovedId: logo }),
+      await foreign.approve({ conversationId: conv, deliverableKind: 'logo', deliverableId: logo, expectedApprovedId: logo, dependentKinds: [] }),
     ).toEqual({ kind: 'rejected', reason: 'not_found' });
     await expect(foreign.markStale({ conversationId: conv, deliverableKinds: ['logo'] })).rejects.toThrow(
       'conversation not found',
@@ -363,7 +363,7 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
     const conv = await newConversation(A.tenant, A.member);
     const { ids: [logo] } = await candidates(A.tenant, A.member, conv, 'logo', 1);
     await repos(A.tenant, A.member).approvals.approve({
-      conversationId: conv, deliverableKind: 'logo', deliverableId: logo, expectedApprovedId: null,
+      conversationId: conv, deliverableKind: 'logo', deliverableId: logo, expectedApprovedId: null, dependentKinds: [],
     });
     await repos(A.tenant, A.member).approvals.markStale({ conversationId: conv, deliverableKinds: ['tagline'] });
 
@@ -407,39 +407,118 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
     expect(left.rowCount).toBe(0);
   });
 
-  it('marks dependents stale without regenerating, and a later approval of the kind clears it', async () => {
+  it('marks dependents stale in the approval transaction, without regenerating; a later approval of the kind clears it', async () => {
     const conv = await newConversation(A.tenant, A.member);
     const r = repos(A.tenant, A.member);
     const store = createPostgresApprovalStore(A.tenant, A.member);
     const { ids: [tag1, tag2] } = await candidates(A.tenant, A.member, conv, 'tagline', 2);
-    await store.approve({ conversationId: conv, deliverableKind: 'tagline', deliverableId: tag1, expectedApprovedId: null });
     const tasksBefore = (await r.agentTasks.listByConversation(conv)).length;
 
-    await store.markDependentsStale({ conversationId: conv, deliverableKinds: ['tagline', 'label', 'tagline'] });
-    expect((await r.approvals.listStale(conv)).map((s) => s.deliverableKind)).toEqual(['tagline', 'label']);
+    await store.approve({
+      conversationId: conv, deliverableKind: 'tagline', deliverableId: tag1, expectedApprovedId: null,
+      dependentKinds: ['label', 'social_pack', 'label'],
+    });
+    expect((await r.approvals.listStale(conv)).map((s) => s.deliverableKind)).toEqual(['label', 'social_pack']);
     expect((await r.agentTasks.listByConversation(conv)).length).toBe(tasksBefore);
     expect((await store.getApproved(conv)).map((a) => a.deliverableId)).toEqual([tag1]);
+    // The marks follow the approval row in event order (same transaction, higher event_seq).
+    const [approvalRow] = await r.approvals.listHistory(conv);
+    const marks = await owner.query<{ event_seq: string }>(
+      `SELECT event_seq FROM deliverable_stale_marks WHERE conversation_id = $1`, [conv],
+    );
+    expect(marks.rows.every((m) => Number(m.event_seq) > approvalRow.eventSeq)).toBe(true);
 
-    // Re-approving the same deliverable is a no-op and does not clear staleness.
-    await store.approve({ conversationId: conv, deliverableKind: 'tagline', deliverableId: tag1, expectedApprovedId: tag1 });
-    expect((await r.approvals.listStale(conv)).map((s) => s.deliverableKind)).toEqual(['tagline', 'label']);
+    // Re-approving the same deliverable is a no-op: no new approval, no new marks.
+    await store.approve({
+      conversationId: conv, deliverableKind: 'tagline', deliverableId: tag1, expectedApprovedId: tag1,
+      dependentKinds: ['label', 'social_pack'],
+    });
+    expect(await owner.query(`SELECT 1 FROM deliverable_stale_marks WHERE conversation_id = $1`, [conv]))
+      .toMatchObject({ rowCount: 2 });
+    expect(await r.approvals.listHistory(conv)).toHaveLength(1);
 
-    await store.approve({ conversationId: conv, deliverableKind: 'tagline', deliverableId: tag2, expectedApprovedId: tag1 });
-    expect((await r.approvals.listStale(conv)).map((s) => s.deliverableKind)).toEqual(['label']);
+    // A standalone mark (repo-level) on tagline, then a new tagline approval clears it while
+    // writing fresh marks for its dependents. Marks are never removed.
+    await r.approvals.markStale({ conversationId: conv, deliverableKinds: ['tagline'] });
+    expect((await r.approvals.listStale(conv)).map((s) => s.deliverableKind)).toEqual(['tagline', 'label', 'social_pack']);
+    await store.approve({
+      conversationId: conv, deliverableKind: 'tagline', deliverableId: tag2, expectedApprovedId: tag1,
+      dependentKinds: ['label'],
+    });
+    expect((await r.approvals.listStale(conv)).map((s) => s.deliverableKind)).toEqual(['label', 'social_pack']);
+    expect(await owner.query(`SELECT 1 FROM deliverable_stale_marks WHERE conversation_id = $1`, [conv]))
+      .toMatchObject({ rowCount: 4 });
 
-    // A newer mark makes it stale again; the marks themselves are never removed.
-    await store.markDependentsStale({ conversationId: conv, deliverableKinds: ['tagline'] });
-    expect((await r.approvals.listStale(conv)).map((s) => s.deliverableKind)).toEqual(['tagline', 'label']);
-    const marks = await owner.query(`SELECT 1 FROM deliverable_stale_marks WHERE conversation_id = $1`, [conv]);
-    expect(marks.rowCount).toBe(3);
-
-    await expect(store.markDependentsStale({ conversationId: conv, deliverableKinds: ['banner'] })).rejects.toThrow(
+    // Invalid dependents fail before any write.
+    await expect(store.approve({
+      conversationId: conv, deliverableKind: 'tagline', deliverableId: tag1, expectedApprovedId: tag2,
+      dependentKinds: ['banner'],
+    })).rejects.toThrow('unknown deliverable kinds');
+    await expect(store.approve({
+      conversationId: conv, deliverableKind: 'tagline', deliverableId: tag1, expectedApprovedId: tag2,
+      dependentKinds: ['tagline'],
+    })).rejects.toThrow('cannot depend on itself');
+    expect((await store.getApproved(conv)).map((a) => a.deliverableId)).toEqual([tag2]);
+    await expect(r.approvals.markStale({ conversationId: conv, deliverableKinds: ['banner'] })).rejects.toThrow(
       'unknown deliverable kinds',
     );
     await expect(
-      createPostgresApprovalStore(A.tenant, A.otherMember).markDependentsStale({ conversationId: conv, deliverableKinds: ['label'] }),
+      repos(A.tenant, A.otherMember).approvals.markStale({ conversationId: conv, deliverableKinds: ['label'] }),
     ).rejects.toThrow('conversation not found');
-    await expect(store.markDependentsStale({ conversationId: conv, deliverableKinds: [] })).resolves.toBeUndefined();
+  });
+
+  it('rolls the approval back when writing a stale mark fails inside its transaction (KAN-34)', async () => {
+    const conv = await newConversation(A.tenant, A.member);
+    const r = repos(A.tenant, A.member);
+    const store = createPostgresApprovalStore(A.tenant, A.member);
+    const { ids: [logo1, logo2] } = await candidates(A.tenant, A.member, conv, 'logo', 2);
+    await store.approve({
+      conversationId: conv, deliverableKind: 'logo', deliverableId: logo1, expectedApprovedId: null,
+      dependentKinds: ['label'],
+    });
+    const historyBefore = await r.approvals.listHistory(conv);
+    const staleBefore = await r.approvals.listStale(conv);
+    const rowsBefore = await selectedRows(conv, 'logo');
+    const marksBefore = (await owner.query(`SELECT 1 FROM deliverable_stale_marks WHERE conversation_id = $1`, [conv])).rowCount;
+
+    // Disposable-DB fault injection (owner DDL, this conversation only): the second dependent's
+    // mark fails AFTER the approval row, the selection change and the first mark were written.
+    const fn = `kan34_fail_marks_${conv.replace(/-/g, '')}`;
+    await owner.query(`
+      CREATE FUNCTION app.${fn}() RETURNS trigger LANGUAGE plpgsql AS $f$
+      BEGIN
+        IF NEW.conversation_id = '${conv}' AND NEW.deliverable_kind = 'social_pack' THEN
+          RAISE EXCEPTION 'synthetic stale-mark failure';
+        END IF;
+        RETURN NEW;
+      END $f$`);
+    await owner.query(`CREATE TRIGGER zz_${fn} BEFORE INSERT ON deliverable_stale_marks
+      FOR EACH ROW EXECUTE FUNCTION app.${fn}()`);
+    try {
+      await expect(store.approve({
+        conversationId: conv, deliverableKind: 'logo', deliverableId: logo2, expectedApprovedId: logo1,
+        dependentKinds: ['label', 'social_pack'],
+      })).rejects.toThrow('synthetic stale-mark failure');
+    } finally {
+      await owner.query(`DROP TRIGGER zz_${fn} ON deliverable_stale_marks`);
+      await owner.query(`DROP FUNCTION app.${fn}()`);
+    }
+
+    // Nothing from the failed approval survived: trail, selection, superseded_by and marks.
+    expect(await r.approvals.listHistory(conv)).toEqual(historyBefore);
+    expect(await r.approvals.listStale(conv)).toEqual(staleBefore);
+    expect(await selectedRows(conv, 'logo')).toEqual(rowsBefore);
+    expect((await store.getApproved(conv)).map((a) => a.deliverableId)).toEqual([logo1]);
+    expect((await owner.query(`SELECT 1 FROM deliverable_stale_marks WHERE conversation_id = $1`, [conv])).rowCount)
+      .toBe(marksBefore);
+
+    // The same approval succeeds once the fault is gone, with all its marks.
+    const retry = await store.approve({
+      conversationId: conv, deliverableKind: 'logo', deliverableId: logo2, expectedApprovedId: logo1,
+      dependentKinds: ['label', 'social_pack'],
+    });
+    expect(retry).toMatchObject({ ok: true, replacedDeliverableId: logo1 });
+    expect((await r.approvals.listStale(conv)).map((s) => s.deliverableKind)).toEqual(['label', 'social_pack']);
   });
 
   it('stores a capped, anchored refinement on the iteration only and never touches the brief', async () => {

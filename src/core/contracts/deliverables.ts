@@ -75,7 +75,11 @@ export interface DeliverableStateView {
   readonly agentId: AgentId;
   readonly deliverableKind: string;
   readonly state: DeliverableStateKind;
-  /** Obsoleto overlay: approved, but an upstream approval changed since. */
+  /**
+   * Obsoleto overlay: approved, and the approval store holds an explicit stale
+   * mark for this kind newer than its approval (written with an upstream
+   * approval or replacement). Never derived from timestamps.
+   */
   readonly stale: boolean;
   readonly allowedCommands: ReadonlyArray<DeliverableCommandKind>;
   /** Required brief fields that are not `filled` yet, sorted. */

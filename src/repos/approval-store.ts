@@ -2,15 +2,16 @@
  * PostgreSQL adapter for the core approval port (KAN-34 / KAN-65), wired as THE production
  * approval store at `createApprovalStore` in `src/core/orchestrator/runtime.ts`.
  *
- * The core declares `IApprovalStore` and the optional read capability `IApprovalStalenessSource`
- * in `src/core/approvals.ts` (KAN-28). The repository layer must not import from the core's
- * orchestration modules, so both are declared here structurally and must stay identical to the
- * core's definitions; TypeScript checks the match where the runtime hands this object to the core.
+ * The core declares `IApprovalStore` in `src/core/approvals.ts` (KAN-28). The repository layer
+ * must not import from the core's orchestration modules, so it is declared here structurally and
+ * must stay identical to the core's definition; TypeScript checks the match where the runtime
+ * hands this object to the core.
  *
- * Staleness (RF-07): `markDependentsStale` appends `deliverable_stale_marks` events and
- * `getStaleKinds` reads them back through `approvalsRepo.listStale` (newest mark newer than the
- * newest approval of the kind, by `event_seq`). The core feeds `getStaleKinds` into the pure
- * state function as `markedStaleKinds`; `IApprovalStore` itself is unchanged.
+ * Atomicity (KAN-34): `approve` passes `dependentKinds` to `approvalsRepo.approve`, which writes
+ * the approval row, the selection change and the dependents' `deliverable_stale_marks` in ONE
+ * `withTenantTransaction`. Staleness (RF-07) is read back by `getStaleKinds` through
+ * `approvalsRepo.listStale` (newest mark newer than the newest approval of the kind, by
+ * `event_seq`); it is the only source of «obsoleto».
  */
 import type { Tenant, User } from '../db/with-transaction';
 import { approvalsRepo, type ApproveOutcome } from './approvals';
@@ -21,32 +22,25 @@ export type ApproveResult =
 
 export interface IApprovalStore {
   approve(input: {
-    conversationId: string;
-    deliverableKind: string;
-    deliverableId: string;
-    expectedApprovedId: string | null;
+    readonly conversationId: string;
+    readonly deliverableKind: string;
+    readonly deliverableId: string;
+    readonly expectedApprovedId: string | null;
+    readonly dependentKinds: ReadonlyArray<string>;
   }): Promise<ApproveResult>;
   getApproved(
     conversationId: string,
   ): Promise<ReadonlyArray<{ deliverableKind: string; deliverableId: string; approvedAt: string }>>;
-  markDependentsStale(input: {
-    conversationId: string;
-    deliverableKinds: ReadonlyArray<string>;
-  }): Promise<void>;
-}
-
-/** Optional read capability of the core (`IApprovalStalenessSource`), declared structurally. */
-export interface IApprovalStalenessSource {
   getStaleKinds(conversationId: string): Promise<ReadonlyArray<string>>;
 }
 
-/** What the Postgres adapter provides: the port plus the persisted stale marks. */
-export type PostgresApprovalStore = IApprovalStore & IApprovalStalenessSource;
+/** What the Postgres adapter provides. */
+export type PostgresApprovalStore = IApprovalStore;
 
 /** The subset of the approvals repository the adapter needs (injectable for unit tests). */
 export type ApprovalStoreRepo = Pick<
   ReturnType<typeof approvalsRepo>,
-  'approve' | 'getApproved' | 'markStale' | 'listStale'
+  'approve' | 'getApproved' | 'listStale'
 >;
 
 /**
@@ -80,9 +74,6 @@ export function createApprovalStoreFromRepo(repo: ApprovalStoreRepo): PostgresAp
         deliverableId: r.deliverableId,
         approvedAt: r.approvedAt,
       }));
-    },
-    async markDependentsStale(input) {
-      await repo.markStale(input);
     },
     async getStaleKinds(conversationId) {
       return (await repo.listStale(conversationId)).map((s) => s.deliverableKind);

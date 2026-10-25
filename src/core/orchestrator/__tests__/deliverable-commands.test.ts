@@ -2,8 +2,9 @@
  * executeDeliverableCommand — the only path that starts, cancels, or approves
  * (KAN-28 / KAN-64 / KAN-65). Covers each command allowed and forbidden,
  * stale rejection, idempotent replay, Cancelar only while pending, Iterar /
- * Reintentar iteration rows, Aprobar replace with dependents marked stale,
- * and that nothing is dispatched without a command.
+ * Reintentar iteration rows, Aprobar replace with dependents marked stale in
+ * the same atomic write (a failed mark rolls the approval back), and that
+ * nothing is dispatched without a command.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -54,7 +55,7 @@ function harness(options: { specs?: DeliverableSpec[]; filled?: boolean } = {}) 
       (await workflow.listCandidates(conversationId as ConversationId)).find((c) => c.deliverableId === deliverableId)
         ?.kind ?? null,
   });
-  const markSpy = vi.spyOn(approvals, 'markDependentsStale');
+  const approveSpy = vi.spyOn(approvals, 'approve');
   const dispatch = vi.fn<DeliverableCommandContext['dispatch']>(async () => {});
   const onCanceled = vi.fn<DeliverableCommandContext['onCanceled']>(async () => {});
   const ctx: DeliverableCommandContext = {
@@ -132,7 +133,7 @@ function harness(options: { specs?: DeliverableSpec[]; filled?: boolean } = {}) 
     ctx,
     workflow,
     approvals,
-    markSpy,
+    approveSpy,
     dispatch,
     onCanceled,
     view,
@@ -492,7 +493,14 @@ describe('executeDeliverableCommand — Aprobar', () => {
     const h = harness({ specs: [LOGO, LABEL, SOCIAL] });
     const logo1 = await h.reviewed('logo-agent', 'logo');
     okOf(await h.run({ kind: 'approve', deliverableId: logo1.deliverableId, expectedApprovedId: null }));
-    expect(h.markSpy).toHaveBeenLastCalledWith({ conversationId: CONVERSATION, deliverableKinds: ['label', 'social_pack'] });
+    // One call carries the approval and the dependents to mark stale (one atomic write).
+    expect(h.approveSpy).toHaveBeenLastCalledWith({
+      conversationId: CONVERSATION,
+      deliverableKind: 'logo',
+      deliverableId: logo1.deliverableId,
+      expectedApprovedId: null,
+      dependentKinds: ['label', 'social_pack'],
+    });
 
     const label = await h.reviewed('label-agent', 'label');
     okOf(await h.run({ kind: 'approve', deliverableId: label.deliverableId, expectedApprovedId: null }, 'label-agent'));
@@ -503,18 +511,80 @@ describe('executeDeliverableCommand — Aprobar', () => {
     const logo2 = await h.complete(iteration.taskId!);
     const dispatchesBefore = h.dispatch.mock.calls.length;
     okOf(await h.run({ kind: 'approve', deliverableId: logo2, expectedApprovedId: logo1.deliverableId }));
-    expect(h.markSpy).toHaveBeenCalledTimes(3); // logo, label (-> social_pack), logo again
+    expect(h.approveSpy.mock.calls.map(([input]) => input.dependentKinds)).toEqual([
+      ['label', 'social_pack'], // logo
+      ['social_pack'], // label
+      ['label', 'social_pack'], // logo again
+    ]);
+    expect(await h.approvals.getStaleKinds(CONVERSATION)).toEqual(['label', 'social_pack']);
     const labelView = await h.view('label-agent');
     expect(labelView).toMatchObject({ state: 'approved', stale: true });
     expect(labelView.allowedCommands).toContain('generate');
     expect(h.dispatch.mock.calls.length).toBe(dispatchesBefore);
   });
 
-  it('does not call markDependentsStale when nothing depends on the kind', async () => {
+  it('passes no dependents and marks nothing when nothing depends on the kind', async () => {
     const h = harness();
     const { deliverableId } = await h.reviewed();
     okOf(await h.run({ kind: 'approve', deliverableId, expectedApprovedId: null }));
-    expect(h.markSpy).not.toHaveBeenCalled();
+    expect(h.approveSpy).toHaveBeenCalledWith(expect.objectContaining({ dependentKinds: [] }));
+    expect(await h.approvals.getStaleKinds(CONVERSATION)).toEqual([]);
+  });
+
+  it('a failure while writing the stale marks rolls the approval back (approve + marks are atomic)', async () => {
+    const h = harness({ specs: [LOGO, LABEL, SOCIAL] });
+    const logo1 = await h.reviewed('logo-agent', 'logo');
+    okOf(await h.run({ kind: 'approve', deliverableId: logo1.deliverableId, expectedApprovedId: null }));
+    const label = await h.reviewed('label-agent', 'label');
+    okOf(await h.run({ kind: 'approve', deliverableId: label.deliverableId, expectedApprovedId: null }, 'label-agent'));
+    const iteration = okOf(await h.run({ kind: 'iterate' }));
+    const logo2 = await h.complete(iteration.taskId!);
+
+    const historyBefore = h.approvals.historyFor(CONVERSATION);
+    const staleBefore = await h.approvals.getStaleKinds(CONVERSATION);
+    const viewsBefore = await deriveStatesFor(h.ctx, CONVERSATION);
+
+    // The first mark is staged, then the write fails mid-way.
+    const stage = vi
+      .spyOn(h.approvals as unknown as { stageStaleMarks(s: Set<string>, k: string, d: ReadonlyArray<string>): void }, 'stageStaleMarks')
+      .mockImplementationOnce((staged, _kind, dependents) => {
+        staged.add(dependents[0]);
+        throw new Error('synthetic stale-mark failure');
+      });
+    await expect(
+      h.run({ kind: 'approve', deliverableId: logo2, expectedApprovedId: logo1.deliverableId }),
+    ).rejects.toThrow('synthetic stale-mark failure');
+    expect(stage).toHaveBeenCalledTimes(1);
+
+    // Nothing changed: same approval, same trail, no marks, same views and tokens.
+    expect(h.approvals.historyFor(CONVERSATION)).toEqual(historyBefore);
+    expect(await h.approvals.getStaleKinds(CONVERSATION)).toEqual(staleBefore);
+    expect((await h.view()).approvedDeliverableId).toBe(logo1.deliverableId);
+    expect((await h.view('label-agent')).stale).toBe(false);
+    expect(await deriveStatesFor(h.ctx, CONVERSATION)).toEqual(viewsBefore);
+
+    // Retrying the same approval once the store recovers applies both writes.
+    okOf(await h.run({ kind: 'approve', deliverableId: logo2, expectedApprovedId: logo1.deliverableId }));
+    expect((await h.view()).approvedDeliverableId).toBe(logo2);
+    expect(await h.approvals.getStaleKinds(CONVERSATION)).toEqual(['label', 'social_pack']);
+    expect((await h.view('label-agent')).stale).toBe(true);
+  });
+
+  it('the in-memory store refuses a dependent equal to the approved kind without writing anything', async () => {
+    const h = harness();
+    const { deliverableId } = await h.reviewed();
+    await expect(
+      h.approvals.approve({
+        conversationId: CONVERSATION,
+        deliverableKind: 'logo',
+        deliverableId,
+        expectedApprovedId: null,
+        dependentKinds: ['label', 'logo'],
+      }),
+    ).rejects.toThrow('cannot depend on itself');
+    expect(h.approvals.historyFor(CONVERSATION)).toEqual([]);
+    expect(await h.approvals.getApproved(CONVERSATION)).toEqual([]);
+    expect(await h.approvals.getStaleKinds(CONVERSATION)).toEqual([]);
   });
 });
 
