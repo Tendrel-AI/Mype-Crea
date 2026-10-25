@@ -498,7 +498,9 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
     );
 
     expect(provider.create).toHaveBeenCalledTimes(1);
-    expect(delta.intents).toBeUndefined();
+    expect(delta.intents).toEqual([
+      { kind: 'reset_field', agentId: AGENT, fieldName: 'business_name' },
+    ]);
     expect(state.requiredFields.business_name).toEqual({
       status: 'filled',
       value: 'Dulce Casa',
@@ -531,14 +533,17 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
     expect(state.requiredFields.business_name).toEqual({ status: 'empty' });
   });
 
-  it('denial + correction: the corrected value is stored (no reset intent that would erase it)', async () => {
+  it('denial + correction: reset plus the corrected value, and merge stores the correction', async () => {
     const { delta, provider, state } = await runConfirmTurn(
       'No, se llama Dulce Casa.',
       toolArgs({ business_name: { value: 'Dulce Casa', confidence: 1.0 } }),
     );
 
     expect(provider.create).toHaveBeenCalledTimes(1);
-    expect(delta.intents).toBeUndefined();
+    expect(delta.intents).toEqual([
+      { kind: 'reset_field', agentId: AGENT, fieldName: 'business_name' },
+    ]);
+    expect(delta.fields[AGENT]?.business_name).toMatchObject({ value: 'Dulce Casa', confidence: 1.0 });
     expect(state.requiredFields.business_name).toEqual({
       status: 'filled',
       value: 'Dulce Casa',
@@ -667,18 +672,29 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
     });
   });
 
-  it('known limit: a correction less confident than the stored pending value loses the merge conflict, but the old value stays unconfirmed', async () => {
-    // Merge keeps the existing slot when the incoming confidence is lower and
-    // applies reset_field after field values, so the adapter cannot force the
-    // replacement in this band. The contradicted value must still not be filled.
-    const correctionConfidence = CONFIDENCE_THRESHOLDS.STORE_AND_CONFIRM + 0.05;
-    expect(correctionConfidence).toBeLessThan(PENDING_CONFIDENCE);
-    const { state } = await runConfirmTurn(
-      'No, creo que es Dulce Casa',
-      toolArgs({ business_name: { value: 'Dulce Casa', confidence: correctionConfidence } }),
-    );
+  it.each([
+    ['No, creo que es Dulce Casa'],
+    ['Sí, aunque creo que es Dulce Casa'],
+  ])(
+    'a correction less confident than the stored pending value still replaces it: "%s"',
+    async (message) => {
+      // The adapter emits reset_field next to the correction and merge applies
+      // resets before values, so the old value cannot win the conflict check.
+      const correctionConfidence = CONFIDENCE_THRESHOLDS.STORE_AND_CONFIRM + 0.05;
+      expect(correctionConfidence).toBeLessThan(PENDING_CONFIDENCE);
+      const { delta, state } = await runConfirmTurn(
+        message,
+        toolArgs({ business_name: { value: 'Dulce Casa', confidence: correctionConfidence } }),
+      );
 
-    expect(state.requiredFields.business_name.status).toBe('pending_confirmation');
-    expect(state.requiredFields.business_name).not.toMatchObject({ status: 'filled' });
-  });
+      expect(delta.intents).toEqual([
+        { kind: 'reset_field', agentId: AGENT, fieldName: 'business_name' },
+      ]);
+      expect(state.requiredFields.business_name).toEqual({
+        status: 'pending_confirmation',
+        value: 'Dulce Casa',
+        confidence: correctionConfidence,
+      });
+    },
+  );
 });
