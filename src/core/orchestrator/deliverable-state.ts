@@ -20,8 +20,9 @@
  *   failed     latest task failed                            → FAILURE_RECOVERY_COMMANDS
  *              by category (KAN-58: never a dead end): retry for every
  *              category, plus iterate for content_policy
- *   stale      overlay on approved: an upstream approval changed after this
- *              approval                                     → iterate, generate,
+ *   stale      overlay on approved: the approval store holds a stale mark
+ *              for this kind newer than its approval (written atomically when
+ *              an upstream kind is approved or replaced)    → iterate, generate,
  *                                                              approve(other); never automatic
  *
  * Precedence (first match wins): generating, failed, approved, in_review,
@@ -74,7 +75,6 @@ export const FAILURE_RECOVERY_COMMANDS: Readonly<Record<TaskErrorCategory, Reado
 export interface ApprovalFact {
   readonly deliverableKind: string;
   readonly deliverableId: string;
-  readonly approvedAt: string;
 }
 
 /** Everything the state function reads besides the snapshot. */
@@ -85,51 +85,41 @@ export interface DeliverableWorkflowFacts {
   readonly candidates: ReadonlyArray<WorkflowCandidate>;
   /** Current approval per kind. */
   readonly approvals: ReadonlyArray<ApprovalFact>;
-  /** Kinds a store explicitly marked stale (optional capability). */
-  readonly markedStaleKinds?: ReadonlyArray<string>;
+  /**
+   * Kinds the approval store explicitly marked stale (newest mark newer than
+   * the kind's newest approval). The only source of «obsoleto».
+   */
+  readonly markedStaleKinds: ReadonlyArray<string>;
 }
 
 export const EMPTY_WORKFLOW_FACTS: DeliverableWorkflowFacts = Object.freeze({
   tasks: [],
   candidates: [],
   approvals: [],
+  markedStaleKinds: [],
 });
 
 /**
- * Pure staleness rule (RF-07 overlay): an approved kind is stale when any
- * kind it depends on — directly or transitively — was approved *after* it.
- * Replacing an upstream approval therefore marks every approved dependent
- * stale; re-approving the dependent clears it. Unioned with any marks the
- * approval store persisted.
+ * Pure staleness rule (RF-07 overlay): an approved kind is stale exactly when
+ * the approval store holds an explicit stale mark for it. Marks are written
+ * atomically with every new or replaced approval for all (transitive)
+ * dependents, and a later approval of the kind clears its own mark. Approval
+ * timestamps are never compared (owner decision 2026-10-25): two racing
+ * approvals cannot produce a false «obsoleto». Marks on kinds with nothing
+ * approved are ignored.
  */
 export function deriveStaleKinds(
-  specs: ReadonlyArray<DeliverableSpec>,
   approvals: ReadonlyArray<ApprovalFact>,
-  markedStaleKinds: ReadonlyArray<string> = [],
+  markedStaleKinds: ReadonlyArray<string>,
 ): ReadonlySet<string> {
-  const approvedAt = new Map(approvals.map((a) => [a.deliverableKind, a.approvedAt] as const));
-  const dependsOn = new Map(specs.map((s) => [s.deliverableKind, s.dependsOn] as const));
-  const stale = new Set<string>();
-  for (const spec of specs) {
-    const own = approvedAt.get(spec.deliverableKind);
-    if (own === undefined) continue;
-    const upstream = transitiveUpstream(spec.deliverableKind, dependsOn);
-    if ([...upstream].some((kind) => {
-      const at = approvedAt.get(kind);
-      return at !== undefined && at > own;
-    })) {
-      stale.add(spec.deliverableKind);
-    }
-  }
-  for (const kind of markedStaleKinds) {
-    if (approvedAt.has(kind)) stale.add(kind);
-  }
-  return stale;
+  const approved = new Set(approvals.map((a) => a.deliverableKind));
+  return new Set(markedStaleKinds.filter((kind) => approved.has(kind)));
 }
 
 /**
- * Every kind that depends on `kind`, directly or transitively, sorted. Used
- * by the command handler to mark dependents stale after a replacement.
+ * Every kind that depends on `kind`, directly or transitively, sorted. The
+ * command handler passes them to `IApprovalStore.approve` so the store marks
+ * them stale in the same atomic write as the approval.
  */
 export function dependentKindsOf(
   kind: string,
@@ -272,7 +262,7 @@ export function deriveDeliverableStates(
   specs: ReadonlyArray<DeliverableSpec>,
   facts: DeliverableWorkflowFacts = EMPTY_WORKFLOW_FACTS,
 ): ReadonlyArray<DeliverableStateView> {
-  const staleKinds = deriveStaleKinds(specs, facts.approvals, facts.markedStaleKinds);
+  const staleKinds = deriveStaleKinds(facts.approvals, facts.markedStaleKinds);
   const usableApprovedKinds = new Set(
     facts.approvals.map((a) => a.deliverableKind).filter((kind) => !staleKinds.has(kind)),
   );
@@ -280,21 +270,6 @@ export function deriveDeliverableStates(
     .slice()
     .sort((a, b) => compare(a.agentId, b.agentId))
     .map((spec) => deriveDeliverableState(snapshot, { spec, facts, usableApprovedKinds, staleKinds }));
-}
-
-function transitiveUpstream(
-  kind: string,
-  dependsOn: ReadonlyMap<string, ReadonlyArray<string>>,
-): ReadonlySet<string> {
-  const out = new Set<string>();
-  const queue = [...(dependsOn.get(kind) ?? [])];
-  while (queue.length > 0) {
-    const next = queue.shift()!;
-    if (out.has(next) || next === kind) continue;
-    out.add(next);
-    queue.push(...(dependsOn.get(next) ?? []));
-  }
-  return out;
 }
 
 function byCreation(a: WorkflowTask, b: WorkflowTask): number {

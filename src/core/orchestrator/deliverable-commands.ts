@@ -36,7 +36,7 @@ import {
   type FieldSlot,
   type TaskId,
 } from '../contracts';
-import { hasStalenessSource, type IApprovalStore } from '../approvals';
+import type { IApprovalStore } from '../approvals';
 import {
   REFINEMENT_SNAPSHOT_KEY,
   buildIterationRefinement,
@@ -97,7 +97,7 @@ export async function loadWorkflowFacts(
     ctx.workflow.listTasks(conversationId),
     ctx.workflow.listCandidates(conversationId),
     ctx.approvals.getApproved(conversationId),
-    hasStalenessSource(ctx.approvals) ? ctx.approvals.getStaleKinds(conversationId) : Promise.resolve([]),
+    ctx.approvals.getStaleKinds(conversationId),
   ]);
   return { tasks, candidates, approvals, markedStaleKinds };
 }
@@ -246,26 +246,22 @@ export async function executeDeliverableCommand(
       if (command.expectedApprovedId !== view.approvedDeliverableId) {
         return reject('stale', COMMAND_MESSAGES.approveStale, states);
       }
+      // RF-07: a new or replaced approval makes the (transitive) dependents
+      // obsolete. The store records the approval and their stale marks in one
+      // atomic write (KAN-34), so an approval never stands without its marks.
+      // Only approved dependents show the overlay; a later approval of a
+      // dependent clears it. Nothing is regenerated automatically.
       const result = await ctx.approvals.approve({
         conversationId: command.conversationId,
         deliverableKind: spec.deliverableKind,
         deliverableId: command.deliverableId,
         expectedApprovedId: command.expectedApprovedId,
+        dependentKinds: dependentKindsOf(spec.deliverableKind, ctx.specs),
       });
       if (!result.ok) {
         if (result.reason === 'stale') return reject('stale', COMMAND_MESSAGES.approveStale);
         if (result.reason === 'not_candidate') return reject('not_allowed', COMMAND_MESSAGES.approveNotCandidate);
         return reject('not_found', COMMAND_MESSAGES.approveNotCandidate);
-      }
-      // RF-07: a new or replaced approval makes the (transitive) dependents
-      // obsolete. Only approved dependents show the overlay; a later approval
-      // of a dependent clears it. Nothing is regenerated automatically.
-      const dependents = dependentKindsOf(spec.deliverableKind, ctx.specs);
-      if (dependents.length > 0) {
-        await ctx.approvals.markDependentsStale({
-          conversationId: command.conversationId,
-          deliverableKinds: dependents,
-        });
       }
       return accept(false, { approvalId: result.approvalId });
     }

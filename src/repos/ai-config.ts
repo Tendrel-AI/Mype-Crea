@@ -71,6 +71,9 @@ export function aiConfigRepo(tenant: Tenant, user: User, actor?: RepositoryActor
   const actorId = actor?.workosUserId ?? '';
 
   const asTenantAdmin = async<T>(fn: (tx: TxClient) => Promise<T>) => withTenantTransaction(tenant, user, async tx => {
+    // The persisted role is the ceiling; an actor carrying a reduced effective role
+    // (developer role switcher, KAN-79) is refused even when the row says admin.
+    if (actor?.tenantRole !== undefined && actor.tenantRole !== 'admin') throw new Error('No tienes permisos para administrar la configuración.');
     const ok = await tx.query(`SELECT 1
         FROM users
         WHERE tenant_id=$1 AND id=$2 AND status='active' AND role='admin'`, [tenant.id, user.id]);

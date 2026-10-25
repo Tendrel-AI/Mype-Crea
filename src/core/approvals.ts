@@ -5,59 +5,69 @@
  * «Aprobar» is the single select-and-approve act per deliverable type
  * (KAN-65 Option A). Approving another candidate replaces the current
  * approval; the store records every approval/replacement (append-only
- * history, KAN-34) and the core asks it to mark dependents stale (RF-07).
- * Nothing is regenerated automatically.
+ * history, KAN-34) and, in the SAME atomic write, marks the dependent kinds
+ * stale (RF-07). Nothing is regenerated automatically.
+ *
+ * «Obsoleto» comes only from those explicit stale marks (owner decision
+ * 2026-10-25): a kind is stale while its newest mark is newer than its newest
+ * approval. Approval timestamps are never compared, so two racing approvals
+ * cannot produce a false «obsoleto».
  *
  * This is the contract shared with the KAN-34 persistence work. The core
- * depends only on `IApprovalStore` (plus the optional read capability
- * `IApprovalStalenessSource`); implementations:
+ * depends only on `IApprovalStore`; implementations:
  *   - `InMemoryApprovalStore` (below) — unit tests and the in-memory core.
  *   - `createPostgresApprovalStore` (src/repos/approval-store.ts) — production,
  *     wired at `createApprovalStore` in ./orchestrator/runtime.ts: append-only
  *     `deliverable_approvals` history and `deliverable_stale_marks` events,
- *     keeping `deliverables.selected_at` / `superseded_by` current.
+ *     keeping `deliverables.selected_at` / `superseded_by` current, all inside
+ *     one tenant transaction.
  *
  * Concurrency: `expectedApprovedId` is the approved deliverable the client
  * saw (or null). A mismatch with the current approval is rejected as
  * `stale` (KAN-34 AC3) and nothing changes.
+ *
+ * Atomicity (KAN-34): `approve` records the approval and the stale marks of
+ * `dependentKinds` together or not at all. If writing a mark fails, the
+ * approval is rolled back and the error propagates.
  */
 
 export type ApproveResult =
   | { ok: true; approvalId: string; replacedDeliverableId: string | null }
   | { ok: false; reason: 'stale' | 'not_candidate' | 'not_found' };
 
+export interface ApproveInput {
+  readonly conversationId: string;
+  readonly deliverableKind: string;
+  readonly deliverableId: string;
+  /** The approved deliverable the client saw (null when none was approved). */
+  readonly expectedApprovedId: string | null;
+  /**
+   * Kinds that depend on `deliverableKind` (transitively). When a new
+   * approval is recorded they are marked stale in the same atomic write. An
+   * idempotent re-approval of the current deliverable records nothing and
+   * marks nothing. Must not contain `deliverableKind` itself.
+   */
+  readonly dependentKinds: ReadonlyArray<string>;
+}
+
+export interface ApprovedRecord {
+  readonly deliverableKind: string;
+  readonly deliverableId: string;
+  /** Informational only: never compared to derive staleness. */
+  readonly approvedAt: string;
+}
+
 export interface IApprovalStore {
-  approve(input: {
-    conversationId: string;
-    deliverableKind: string;
-    deliverableId: string;
-    expectedApprovedId: string | null;
-  }): Promise<ApproveResult>;
-  getApproved(
-    conversationId: string,
-  ): Promise<ReadonlyArray<{ deliverableKind: string; deliverableId: string; approvedAt: string }>>;
-  markDependentsStale(input: {
-    conversationId: string;
-    deliverableKinds: ReadonlyArray<string>;
-  }): Promise<void>;
-}
-
-/**
- * Optional read capability. A store that persists the stale marks written by
- * `markDependentsStale` exposes them here; the core then unions them with
- * the staleness it derives purely from approval timestamps
- * (`deriveStaleKinds`). Not part of the shared `IApprovalStore` contract.
- * Both production (Postgres: kinds whose newest mark is newer than their
- * newest approval) and in-memory stores implement it.
- */
-export interface IApprovalStalenessSource {
+  /** Approve and mark `dependentKinds` stale, atomically. */
+  approve(input: ApproveInput): Promise<ApproveResult>;
+  /** Current approval per kind. */
+  getApproved(conversationId: string): Promise<ReadonlyArray<ApprovedRecord>>;
+  /**
+   * Kinds whose newest stale mark is newer than their newest approval. The
+   * core feeds them into the pure state function; it is the only source of
+   * «obsoleto».
+   */
   getStaleKinds(conversationId: string): Promise<ReadonlyArray<string>>;
-}
-
-export function hasStalenessSource(
-  store: IApprovalStore,
-): store is IApprovalStore & IApprovalStalenessSource {
-  return typeof (store as Partial<IApprovalStalenessSource>).getStaleKinds === 'function';
 }
 
 /** Candidate lookup the in-memory store needs to answer `not_candidate` / `not_found`. */
@@ -75,11 +85,12 @@ interface ApprovalRecord {
 }
 
 /**
- * In-memory approval store with the same semantics the Postgres adapters
- * must provide: one approved deliverable per (conversation, kind), atomic
- * replace, append-only history, `expectedApprovedId` concurrency.
+ * In-memory approval store with the same semantics the Postgres adapter
+ * provides: one approved deliverable per (conversation, kind), atomic
+ * replace + stale marks, append-only history, `expectedApprovedId`
+ * concurrency.
  */
-export class InMemoryApprovalStore implements IApprovalStore, IApprovalStalenessSource {
+export class InMemoryApprovalStore implements IApprovalStore {
   private readonly history = new Map<string, ApprovalRecord[]>();
   private readonly staleKinds = new Map<string, Set<string>>();
   private sequence = 0;
@@ -89,12 +100,7 @@ export class InMemoryApprovalStore implements IApprovalStore, IApprovalStaleness
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async approve(input: {
-    conversationId: string;
-    deliverableKind: string;
-    deliverableId: string;
-    expectedApprovedId: string | null;
-  }): Promise<ApproveResult> {
+  async approve(input: ApproveInput): Promise<ApproveResult> {
     const kind = await this.candidates.kindOf(input.conversationId, input.deliverableId);
     if (kind === null) return { ok: false, reason: 'not_found' };
     if (kind !== input.deliverableKind) return { ok: false, reason: 'not_candidate' };
@@ -107,30 +113,30 @@ export class InMemoryApprovalStore implements IApprovalStore, IApprovalStaleness
       return { ok: true, approvalId: current.approvalId, replacedDeliverableId: null };
     }
 
-    this.sequence += 1;
-    // Strictly increasing timestamps keep the timestamp-based staleness rule
-    // deterministic even when two approvals land in the same millisecond.
-    const base = this.now().getTime();
-    const last = this.lastApprovedAt(input.conversationId);
-    const approvedAt = new Date(Math.max(base, last + 1)).toISOString();
+    // Stage both writes, then commit them together: a failure while staging
+    // the stale marks leaves the approval untouched (the Postgres adapter gets
+    // the same guarantee from its single transaction).
     const record: ApprovalRecord = {
-      approvalId: `approval-${this.sequence}`,
+      approvalId: `approval-${this.sequence + 1}`,
       deliverableKind: input.deliverableKind,
       deliverableId: input.deliverableId,
       replacedDeliverableId: currentId,
-      approvedAt,
+      approvedAt: this.now().toISOString(),
     };
+    const nextStale = new Set(this.staleKinds.get(input.conversationId) ?? []);
+    // A fresh approval of this kind clears its own stale mark.
+    nextStale.delete(input.deliverableKind);
+    this.stageStaleMarks(nextStale, input.deliverableKind, input.dependentKinds);
+
+    this.sequence += 1;
     const bucket = this.history.get(input.conversationId) ?? [];
     bucket.push(record);
     this.history.set(input.conversationId, bucket);
-    // A fresh approval of this kind clears its own stale mark.
-    this.staleKinds.get(input.conversationId)?.delete(input.deliverableKind);
+    this.staleKinds.set(input.conversationId, nextStale);
     return { ok: true, approvalId: record.approvalId, replacedDeliverableId: currentId };
   }
 
-  async getApproved(
-    conversationId: string,
-  ): Promise<ReadonlyArray<{ deliverableKind: string; deliverableId: string; approvedAt: string }>> {
+  async getApproved(conversationId: string): Promise<ReadonlyArray<ApprovedRecord>> {
     const latestByKind = new Map<string, ApprovalRecord>();
     for (const record of this.history.get(conversationId) ?? []) {
       latestByKind.set(record.deliverableKind, record);
@@ -138,18 +144,6 @@ export class InMemoryApprovalStore implements IApprovalStore, IApprovalStaleness
     return [...latestByKind.values()]
       .sort((a, b) => (a.deliverableKind < b.deliverableKind ? -1 : 1))
       .map(({ deliverableKind, deliverableId, approvedAt }) => ({ deliverableKind, deliverableId, approvedAt }));
-  }
-
-  async markDependentsStale(input: {
-    conversationId: string;
-    deliverableKinds: ReadonlyArray<string>;
-  }): Promise<void> {
-    // Marks may exist for kinds with nothing approved (KAN-34); the state
-    // function shows «obsoleto» only as an overlay on an approved kind, and
-    // a later approval of the kind clears its mark.
-    const bucket = this.staleKinds.get(input.conversationId) ?? new Set<string>();
-    for (const kind of input.deliverableKinds) bucket.add(kind);
-    this.staleKinds.set(input.conversationId, bucket);
   }
 
   async getStaleKinds(conversationId: string): Promise<ReadonlyArray<string>> {
@@ -161,16 +155,27 @@ export class InMemoryApprovalStore implements IApprovalStore, IApprovalStaleness
     return [...(this.history.get(conversationId) ?? [])];
   }
 
+  /**
+   * Add the dependents' marks to the staged set. Marks may exist for kinds
+   * with nothing approved (KAN-34); the state function shows «obsoleto» only
+   * as an overlay on an approved kind, and a later approval of the kind
+   * clears its mark. Throws (before anything is committed) when a dependent
+   * is the approved kind itself.
+   */
+  protected stageStaleMarks(staged: Set<string>, approvedKind: string, dependentKinds: ReadonlyArray<string>): void {
+    for (const kind of dependentKinds) {
+      if (kind === approvedKind) {
+        throw new Error(`approvals.approve: a kind cannot depend on itself: ${kind}`);
+      }
+      staged.add(kind);
+    }
+  }
+
   private currentFor(conversationId: string, kind: string): ApprovalRecord | undefined {
     const records = this.history.get(conversationId) ?? [];
     for (let i = records.length - 1; i >= 0; i -= 1) {
       if (records[i].deliverableKind === kind) return records[i];
     }
     return undefined;
-  }
-
-  private lastApprovedAt(conversationId: string): number {
-    const records = this.history.get(conversationId) ?? [];
-    return records.length ? Date.parse(records[records.length - 1].approvedAt) : 0;
   }
 }

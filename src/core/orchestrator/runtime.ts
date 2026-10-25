@@ -44,7 +44,7 @@ import { buildDefaultRegistry } from './bootstrap-registry';
 import { PostgresConversationStore } from './postgres-store';
 import { PostgresDeliverableWorkflowStore } from './postgres-workflow';
 import { createPostgresApprovalStore } from '../../repos/approval-store';
-import type { IApprovalStalenessSource, IApprovalStore } from '../approvals';
+import type { IApprovalStore } from '../approvals';
 import {
   defaultArtifactNotifier,
   defaultDecisionNotifier,
@@ -163,12 +163,12 @@ async function reconcileConfiguredTenantEvents(): Promise<void> {
 
 /**
  * The single approval-store wiring point: the KAN-34 Postgres store
- * (append-only approval history + stale-mark events, src/repos/approval-store.ts).
- * The return type requires the staleness read capability, so the persisted
- * stale marks always reach the state function as `markedStaleKinds`
- * (see `loadWorkflowFacts` in ./deliverable-commands.ts).
+ * (append-only approval history + stale-mark events written in one
+ * transaction per approval, src/repos/approval-store.ts). Its persisted stale
+ * marks reach the state function as `markedStaleKinds` (see
+ * `loadWorkflowFacts` in ./deliverable-commands.ts).
  */
-function createApprovalStore(tenantId: UUID, userId: UUID): IApprovalStore & IApprovalStalenessSource {
+function createApprovalStore(tenantId: UUID, userId: UUID): IApprovalStore {
   return createPostgresApprovalStore({ id: tenantId }, { id: userId });
 }
 

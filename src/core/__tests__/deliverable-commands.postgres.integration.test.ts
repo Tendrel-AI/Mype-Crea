@@ -393,8 +393,10 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     ).toMatchObject({ ok: true });
     expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({ state: 'approved', approvedDeliverableId: label1.id });
 
-    // A mark alone (no upstream timestamp change) makes the approved label «obsoleto»:
-    // the state function sees the KAN-34 marks, not only approval timestamps.
+    // Approving the logo first and the label later never makes the label «obsoleto» by itself
+    // (no timestamp comparison, owner decision 2026-10-25). A mark alone does: the state
+    // function reads only the explicit KAN-34 marks.
+    expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({ stale: false });
     await r.approvals.markStale({ conversationId: h.conversationId, deliverableKinds: ['label'] });
     expect((await r.approvals.listStale(h.conversationId)).map((m) => m.deliverableKind)).toEqual(['label']);
     // «obsoleto» is an overlay on `approved`; it also offers Generar again (never automatic).
@@ -418,8 +420,8 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     expect(await r.approvals.listStale(h.conversationId)).toEqual([]);
     expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({ state: 'approved', stale: false, approvedDeliverableId: label2.id });
 
-    // Replacing the logo approval writes a persisted mark for the approved dependent (RF-07);
-    // nothing is regenerated.
+    // Replacing the logo approval writes a persisted mark for the approved dependent (RF-07) in
+    // the approval's own transaction; nothing is regenerated.
     const tasksBefore = (await h.tasks()).length;
     const logo2 = await candidate(
       AGENT_ID,
