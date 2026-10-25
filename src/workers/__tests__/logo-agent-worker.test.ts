@@ -10,7 +10,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { startLogoAgentWorker } from '../logo-agent-worker';
-import { channelForAgent } from '../../transport/redis-queue-adapter';
+import { channelForAgent, dispatchWakeUp, type DispatchNotification } from '../../transport/redis-queue-adapter';
 import {
   AgentRegistry,
   type AgentCard,
@@ -30,7 +30,35 @@ import {
   flushMicrotasks,
 } from './_helpers';
 
+/** A dispatch wake-up as every publisher writes it (through the notification contract). */
+const wakeUp = (payload: DispatchNotification): string => dispatchWakeUp(payload).message;
+
 describe('logo-agent worker', () => {
+  it.each([
+    ['not JSON', 'not-json'],
+    ['a pre-contract payload without version or kind', JSON.stringify({
+      taskId: '77777777-7777-7777-7777-777777777777',
+      tenantId: '66666666-6666-6666-6666-666666666666',
+      agentId: 'logo-agent',
+    })],
+    ['another notification kind', JSON.stringify({ v: 1, kind: 'task_processing', taskId: 't', agentId: 'a', conversationId: 'c', claimedAt: 'now' })],
+    ['a dispatch without tenantId', JSON.stringify({ v: 1, kind: 'task_dispatch', taskId: 't', agentId: 'logo-agent' })],
+  ])('rejects a wake-up that is %s without reading or claiming anything (KAN-58)', async (_label, raw) => {
+    const subscriber = new FakeSubscriber();
+    const findById = vi.fn();
+    const claimById = vi.fn();
+    await startLogoAgentWorker(
+      buildWorkerTestContext({
+        subscriber,
+        systemReposFor: () => ({ agentTasks: { findById, claimById } as never, llmCalls: {} as never }),
+      }),
+    );
+    subscriber.emitMessage(channelForAgent('logo-agent' as AgentId), raw);
+    await flushMicrotasks();
+    expect(findById).not.toHaveBeenCalled();
+    expect(claimById).not.toHaveBeenCalled();
+  });
+
   it('subscribes to the logo-agent dispatch channel on start', async () => {
     const subscriber = new FakeSubscriber();
     const ctx = buildWorkerTestContext({ subscriber });
@@ -87,7 +115,7 @@ describe('logo-agent worker', () => {
 
     subscriber.emitMessage(
       channelForAgent('logo-agent' as AgentId),
-      JSON.stringify({
+      wakeUp({
         taskId: row.id,
         tenantId: '66666666-6666-6666-6666-666666666666',
         agentId: 'logo-agent',
@@ -139,7 +167,7 @@ describe('logo-agent worker', () => {
       deliverablesFor,
       onTaskSettled,
     }));
-    subscriber.emitMessage(channelForAgent('logo-agent' as AgentId), JSON.stringify({
+    subscriber.emitMessage(channelForAgent('logo-agent' as AgentId), wakeUp({
       taskId: row.id,
       tenantId: '66666666-6666-6666-6666-666666666666',
       agentId: 'logo-agent',
@@ -186,7 +214,7 @@ describe('logo-agent worker', () => {
 
     subscriber.emitMessage(
       channelForAgent('logo-agent' as AgentId),
-      JSON.stringify({
+      wakeUp({
         taskId: '77777777-7777-7777-7777-777777777777',
         tenantId: '66666666-6666-6666-6666-666666666666',
         agentId: 'logo-agent',
@@ -225,7 +253,7 @@ describe('logo-agent worker', () => {
 
     subscriber.emitMessage(
       channelForAgent('logo-agent' as AgentId),
-      JSON.stringify({
+      wakeUp({
         taskId: row.id,
         tenantId: '66666666-6666-6666-6666-666666666666',
         agentId: 'logo-agent',
@@ -284,7 +312,7 @@ describe('logo-agent worker', () => {
     let handlingFinished = false;
     const handling = onMessage(
       channelForAgent('logo-agent' as AgentId),
-      JSON.stringify({
+      wakeUp({
         taskId: row.id,
         tenantId: '66666666-6666-6666-6666-666666666666',
         agentId: 'logo-agent',
@@ -337,7 +365,7 @@ describe('logo-agent worker', () => {
 
     subscriber.emitMessage(
       channelForAgent('logo-agent' as AgentId),
-      JSON.stringify({
+      wakeUp({
         taskId: row.id,
         tenantId: '66666666-6666-6666-6666-666666666666',
         agentId: 'logo-agent',
@@ -368,7 +396,7 @@ describe('logo-agent worker', () => {
       systemReposFor: () => ({ agentTasks: { findById, claimById } as never, llmCalls: {} as never }),
       onTaskSettled,
     }));
-    subscriber.emitMessage(channelForAgent('logo-agent' as AgentId), JSON.stringify({
+    subscriber.emitMessage(channelForAgent('logo-agent' as AgentId), wakeUp({
       taskId: row.id,
       tenantId: '66666666-6666-6666-6666-666666666666',
       agentId: 'logo-agent',
@@ -402,7 +430,7 @@ describe('logo-agent worker', () => {
       settleTaskFor: () => ({ settleTaskAndEnqueue } as never),
       onTaskSettled,
     }));
-    subscriber.emitMessage(channelForAgent('logo-agent' as AgentId), JSON.stringify({
+    subscriber.emitMessage(channelForAgent('logo-agent' as AgentId), wakeUp({
       taskId: row.id,
       tenantId: '66666666-6666-6666-6666-666666666666',
       agentId: 'logo-agent',
@@ -446,7 +474,7 @@ describe('logo-agent worker', () => {
       onTaskSettled,
     }));
     const onMessage = subscriber.listeners('message')[0] as (channel: string, payload: string) => Promise<void>;
-    await expect(onMessage(channelForAgent('logo-agent' as AgentId), JSON.stringify({
+    await expect(onMessage(channelForAgent('logo-agent' as AgentId), wakeUp({
       taskId: row.id,
       tenantId: '66666666-6666-6666-6666-666666666666',
       agentId: 'logo-agent',

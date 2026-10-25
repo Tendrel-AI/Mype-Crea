@@ -8,6 +8,15 @@ import { withTenantAdminTransaction, withTenantTransaction, type Tenant, type Tx
 import type { AiTurnAttempt, DeliverableKind, ErrorCategory, MessageRow, UsageSummary } from './models';
 
 import type { A2AArtifact } from '../core/agent-types';
+import {
+  durableEventFor,
+  durableEventSuffix,
+  notification,
+  notificationToJson,
+  taskFailureDetail,
+  type NotificationArtifact,
+  type NotificationOf,
+} from '../core/contracts/notifications';
 
 import type { AiEventKind, AiTurnEvent, AiTurnNotice, AiTurnRow, AiTurnStage } from './models';
 
@@ -55,15 +64,73 @@ interface AttemptDbRow extends Omit<AiTurnAttempt, 'costAmount' | 'startedAt' | 
   readonly startedAt: string | Date;
   readonly finishedAt: string | Date | null;
 }
-interface ReconcileRow {
-  readonly taskId: TaskId;
+interface ReconcileRow extends SettledTaskFacts {
   readonly conversationId: ConversationId;
+  readonly userId: UUID;
+}
+
+/** A settled task as read back from `agent_tasks` + its `deliverables`. */
+interface SettledTaskFacts {
+  readonly taskId: TaskId;
   readonly agentId: string;
   readonly status: 'completed' | 'failed';
-  readonly errorCategory: string | null;
-  readonly userId: UUID;
+  readonly errorCategory: ErrorCategory | null;
+  readonly error: { readonly kind?: unknown; readonly message?: unknown } | null;
   readonly deliverableIds: readonly UUID[];
-  readonly artifacts: JsonValue;
+  readonly artifacts: ReadonlyArray<NotificationArtifact>;
+}
+
+/** Columns (on `t` = agent_tasks, `d` = deliverables) that build `SettledTaskFacts`; GROUP BY t.id. */
+const SETTLED_TASK_COLUMNS = `t.id AS "taskId",
+        t.agent_id AS "agentId",
+        t.status,
+        t.error_category AS "errorCategory",
+        t.error,
+        COALESCE(jsonb_agg(d.id ORDER BY d.created_at, d.id) FILTER (WHERE d.id IS NOT NULL), '[]'::jsonb) AS "deliverableIds",
+        COALESCE(jsonb_agg(jsonb_build_object('kind', COALESCE(d.content_inline->>'kind', d.kind::text),
+          'url', d.content_url,
+          'inline', d.content_inline->'value',
+          'metadata', COALESCE(d.content_inline->'metadata', '{}'::jsonb)) ORDER BY d.created_at, d.id)
+          FILTER (WHERE d.id IS NOT NULL), '[]'::jsonb) AS artifacts`;
+
+/**
+ * The durable notice for a settled task, built through the notification
+ * contract (the only place its shape is defined).
+ */
+function settledTaskNotification(
+  facts: SettledTaskFacts,
+): NotificationOf<'task_completed'> | NotificationOf<'task_failed'> {
+  if (facts.status === 'completed') {
+    return notification('task_completed', {
+      taskId: facts.taskId,
+      agentId: facts.agentId,
+      deliverableIds: facts.deliverableIds,
+      artifacts: facts.artifacts,
+    });
+  }
+  const kind = typeof facts.error?.kind === 'string' ? facts.error.kind : 'unknown';
+  const message = typeof facts.error?.message === 'string' ? facts.error.message : 'No error detail supplied';
+  return notification('task_failed', {
+    taskId: facts.taskId,
+    agentId: facts.agentId,
+    detail: taskFailureDetail({ kind, message }, facts.errorCategory ?? 'permanent_bug'),
+  });
+}
+
+/** Insert a task notice into the owner-scoped outbox once (deterministic event id). */
+async function insertTaskNotice(
+  tx: TxClient,
+  scope: { readonly tenantId: UUID; readonly userId: UUID; readonly conversationId: ConversationId },
+  n: NotificationOf<'task_completed'> | NotificationOf<'task_failed'>,
+): Promise<boolean> {
+  const { outboxKind, eventId } = durableEventFor(n);
+  const r = await tx.query(
+    `INSERT INTO ai_turn_events(tenant_id, user_id, conversation_id, task_id, event_id, kind, payload)
+     VALUES($1, $2, $3, $4, $5, $6, $7::jsonb)
+     ON CONFLICT (tenant_id, event_id) DO NOTHING`,
+    [scope.tenantId, scope.userId, scope.conversationId, n.taskId, eventId, outboxKind, json(notificationToJson(n))],
+  );
+  return r.rowCount === 1;
 }
 const TURN_COLUMNS = `id, user_id AS "userId", conversation_id AS "conversationId", request_id AS "requestId", input_hash AS "inputHash", input_content AS "inputContent", response_content AS "responseContent", release_id AS "releaseId", stage, version, payload, failure_category AS "failureCategory", created_at AS "createdAt", updated_at AS "updatedAt"`;
 
@@ -997,46 +1064,25 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
           );
 
         }
-        const kind = input.state === 'completed' ? 'artifact' : 'notice';
-
-        const eventId = `${input.taskId}:announce_${input.state === 'completed' ? 'completion' : 'failure'}`;
-
-        const artifacts = input.state === 'completed'
-          ? input.artifacts.map((artifact) => ({
-            kind: artifact.kind,
-            url: artifact.url ?? null,
-            inline: artifact.inline === undefined ? null : artifact.inline as JsonValue,
-            metadata: artifact.metadata ? artifact.metadata as Record<string, JsonValue> : {},
-          }))
-          : [];
-
-        const payload: Record<string, JsonValue> = {
-          type: `agent_${input.state}`,
-          taskId: input.taskId,
-          agentId: task.rows[0].agent_id,
-          deliverableIds: ids,
-          artifacts,
-        };
-
-        if (input.errorCategory) payload.errorCategory = input.errorCategory;
-
-        await tx.query(
-          `INSERT INTO ai_turn_events(tenant_id,
-        user_id,
-        conversation_id,
-        task_id,
-        event_id,
-        kind,
-        payload)
-        VALUES($1,
-        $2,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7::jsonb)
-        ON CONFLICT (tenant_id, event_id) DO NOTHING`,
-          [tenant.id, user.id, input.conversationId, input.taskId, eventId, kind, json(payload)],
+        await insertTaskNotice(
+          tx,
+          { tenantId: tenant.id as UUID, userId: user.id as UUID, conversationId: input.conversationId },
+          settledTaskNotification({
+            taskId: input.taskId,
+            agentId: task.rows[0].agent_id,
+            status: input.state,
+            errorCategory: input.state === 'failed' ? input.errorCategory ?? 'permanent_bug' : null,
+            error: input.state === 'failed' ? input.error ?? null : null,
+            deliverableIds: ids,
+            artifacts: input.state === 'completed'
+              ? input.artifacts.map((artifact) => ({
+                kind: artifact.kind,
+                url: artifact.url ?? null,
+                inline: artifact.inline === undefined ? null : artifact.inline,
+                metadata: artifact.metadata ?? {},
+              }))
+              : [],
+          }),
         );
 
         return { deliverableIds: ids };
@@ -1049,39 +1095,18 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
       taskId: TaskId
     }): Promise<void> {
       return withTenantTransaction(tenant, user, async (tx) => {
-        const task = await tx.query<{
-          status: string;
-          error_category: string | null
-        }>(`SELECT t.status,
-        t.error_category
+        const r = await tx.query<SettledTaskFacts>(`SELECT ${SETTLED_TASK_COLUMNS}
         FROM agent_tasks t
         JOIN conversations c ON c.tenant_id=t.tenant_id AND c.id=t.conversation_id
-        WHERE t.tenant_id=$1 AND t.id=$2 AND t.conversation_id=$3 AND c.user_id=$4`, [tenant.id, input.taskId, input.conversationId, user.id]);
-        const status = task.rows[0]?.status;
-        if (!status || !['completed', 'failed'].includes(status)) return;
-        const ds = await tx.query<{ id: UUID }>(`SELECT id
-        FROM deliverables
-        WHERE tenant_id=$1 AND conversation_id=$2 AND agent_task_id=$3
-        ORDER BY created_at, id`, [tenant.id, input.conversationId, input.taskId]);
-        const state = status as 'completed' | 'failed';
-        const eventId = `${input.taskId}:announce_${state === 'completed' ? 'completion' : 'failure'}`;
-        const payload: Record<string, JsonValue> = { type: `agent_${state}`, taskId: input.taskId, deliverableIds: ds.rows.map(row => row.id) };
-        if (task.rows[0].error_category) payload.errorCategory = task.rows[0].error_category;
-        await tx.query(`INSERT INTO ai_turn_events(tenant_id,
-        user_id,
-        conversation_id,
-        task_id,
-        event_id,
-        kind,
-        payload)
-        VALUES($1,
-        $2,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7::jsonb)
-        ON CONFLICT (tenant_id, event_id) DO NOTHING`, [tenant.id, user.id, input.conversationId, input.taskId, eventId, state === 'completed' ? 'artifact' : 'notice', json(payload)]);
+        LEFT JOIN deliverables d ON d.tenant_id=t.tenant_id AND d.conversation_id=t.conversation_id AND d.agent_task_id=t.id
+        WHERE t.tenant_id=$1 AND t.id=$2 AND t.conversation_id=$3 AND c.user_id=$4 AND t.status IN ('completed','failed')
+        GROUP BY t.id`, [tenant.id, input.taskId, input.conversationId, user.id]);
+        if (!r.rows[0]) return;
+        await insertTaskNotice(
+          tx,
+          { tenantId: tenant.id as UUID, userId: user.id as UUID, conversationId: input.conversationId },
+          settledTaskNotification(r.rows[0]),
+        );
       });
     },
     async listSettledTasksMissingEvents(input: { limit?: number } = {}): Promise<Array<{
@@ -1096,10 +1121,11 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
         t.id AS task_id
         FROM agent_tasks t
         JOIN conversations c ON c.tenant_id=t.tenant_id AND c.id=t.conversation_id
-        LEFT JOIN ai_turn_events e ON e.tenant_id=t.tenant_id AND e.event_id=t.id::text||CASE WHEN t.status='completed' THEN ':announce_completion' ELSE ':announce_failure' END
+        LEFT JOIN ai_turn_events e ON e.tenant_id=t.tenant_id AND e.event_id=t.id::text||':'||CASE WHEN t.status='completed' THEN $4 ELSE $5 END
         WHERE t.tenant_id=$1 AND c.user_id=$2 AND t.status IN ('completed','failed') AND e.id IS NULL
         ORDER BY t.completed_at, t.id
-        LIMIT $3`, [tenant.id, user.id, Math.min(Math.max(input.limit ?? 100, 1), 500)]);
+        LIMIT $3`, [tenant.id, user.id, Math.min(Math.max(input.limit ?? 100, 1), 500),
+          durableEventSuffix('task_completed'), durableEventSuffix('task_failed')]);
         return r.rows.map(row => ({ conversationId: row.conversation_id, taskId: row.task_id }));
       });
     },
@@ -1112,18 +1138,9 @@ export function aiEventsRepo(tenant: Tenant) {
     async reconcileSettledTasks(input: { limit?: number } = {}): Promise<number> {
       return withTenantAdminTransaction(tenant, async (tx) => {
         const rows = await tx.query<ReconcileRow>(
-          `SELECT t.id AS "taskId",
+          `SELECT ${SETTLED_TASK_COLUMNS},
         t.conversation_id AS "conversationId",
-        t.agent_id AS "agentId",
-        t.status,
-        t.error_category AS "errorCategory",
-        c.user_id AS "userId",
-        COALESCE(jsonb_agg(d.id) FILTER (WHERE d.id IS NOT NULL), '[]'::jsonb) AS "deliverableIds",
-        COALESCE(jsonb_agg(jsonb_build_object('kind',
-        COALESCE(d.content_inline->>'kind',
-        d.kind),'url',
-        d.content_url,'inline',
-        d.content_inline->'value')) FILTER (WHERE d.id IS NOT NULL), '[]'::jsonb) AS artifacts
+        c.user_id AS "userId"
         FROM agent_tasks t
         JOIN conversations c ON c.tenant_id=t.tenant_id AND c.id=t.conversation_id
         LEFT JOIN deliverables d ON d.tenant_id=t.tenant_id AND d.agent_task_id=t.id
@@ -1141,46 +1158,16 @@ export function aiEventsRepo(tenant: Tenant) {
         $1,
         true)`, [row.userId]);
 
-          const state = row.status as 'completed' | 'failed';
-
-          const eventId = `${row.taskId}:announce_${state === 'completed' ? 'completion' : 'failure'}`;
-
+          const n = settledTaskNotification(row);
           const prior = await tx.query(`SELECT 1
         FROM ai_turn_events
-        WHERE tenant_id=$1 AND user_id=$2 AND event_id=$3`, [tenant.id, row.userId, eventId]);
+        WHERE tenant_id=$1 AND user_id=$2 AND event_id=$3`, [tenant.id, row.userId, durableEventFor(n).eventId]);
 
           if (prior.rows.length) continue;
 
-          const payload: Record<string, JsonValue> = {
-            type: `agent_${state}`,
-            taskId: row.taskId as string,
-            agentId: row.agentId as string,
-            deliverableIds: row.deliverableIds as JsonValue,
-            artifacts: row.artifacts as JsonValue,
-          };
-
-          if (row.errorCategory) payload.errorCategory = row.errorCategory as string;
-
-          await tx.query(
-            `INSERT INTO ai_turn_events(tenant_id,
-        user_id,
-        conversation_id,
-        task_id,
-        event_id,
-        kind,
-        payload)
-        VALUES($1,
-        $2,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7::jsonb)
-        ON CONFLICT (tenant_id, event_id) DO NOTHING`,
-            [tenant.id, row.userId, row.conversationId, row.taskId, eventId, state === 'completed' ? 'artifact' : 'notice', json(payload)],
-          );
-
-          inserted += 1;
+          if (await insertTaskNotice(tx, { tenantId: tenant.id as UUID, userId: row.userId, conversationId: row.conversationId }, n)) {
+            inserted += 1;
+          }
 
         }
         return inserted;

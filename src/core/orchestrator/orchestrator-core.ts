@@ -29,7 +29,6 @@
  *   - docs/agents/architecture.md  (rules 1, 2: modality-blind core)
  */
 
-import { EventEmitter } from 'node:events';
 import type {
   AgentId,
   AnnounceDispatchDecision,
@@ -56,6 +55,7 @@ import type { IConversationStore } from './in-memory-store';
 import { mergeFieldDelta } from './merge';
 import { planNextDecision } from './planner';
 import type { IArtifactNotifier } from './artifact-notifier';
+import { InProcessNotificationChannel, type NotificationChannel } from './notification-channels';
 import type { IterationRefinement } from '../refinement';
 import {
   InMemoryDeliverableWorkflowStore,
@@ -75,7 +75,7 @@ const COMMAND_REPLAY_CACHE_SIZE = 1000;
 const log = loggerFor('orchestrator.core');
 
 // ---------------------------------------------------------------------------
-// Decision notifier — in prod this is Postgres LISTEN/NOTIFY
+// Decision notifier — the `decision` kind of the notification contract
 // ---------------------------------------------------------------------------
 
 export interface IDecisionNotifier {
@@ -86,22 +86,26 @@ export interface IDecisionNotifier {
   ): { dispose(): void };
 }
 
-/** In-process notifier. Production replaces with a LISTEN/NOTIFY-backed one. */
-export class InProcessDecisionNotifier implements IDecisionNotifier {
-  private readonly emitter = new EventEmitter();
+/** Decision notifier over any `decision` channel (see notification-channels.ts). */
+export class ChannelDecisionNotifier implements IDecisionNotifier {
+  constructor(private readonly channel: NotificationChannel<'decision'>) {}
 
   notify(conversationId: ConversationId, decision: PlannerDecision): void {
-    this.emitter.emit(conversationId, decision);
+    this.channel.publish({ conversationId, decision });
   }
 
   subscribe(
     conversationId: ConversationId,
     handler: (decision: PlannerDecision) => void,
   ): { dispose(): void } {
-    this.emitter.on(conversationId, handler);
-    return {
-      dispose: () => this.emitter.off(conversationId, handler),
-    };
+    return this.channel.subscribe(conversationId, (payload) => handler(payload.decision));
+  }
+}
+
+/** In-process notifier (single-process dev/tests); Redis in production. */
+export class InProcessDecisionNotifier extends ChannelDecisionNotifier {
+  constructor() {
+    super(new InProcessNotificationChannel('decision'));
   }
 }
 
@@ -166,7 +170,8 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
    * Completed tasks whose announce_completion decision has not yet been
    * acknowledged. Cleared by acknowledgeDecisions. Failed tasks are never
    * queued here: no decision announces them (their failure is persisted on
-   * agent_tasks), so queueing them would only leak memory.
+   * agent_tasks and surfaced by the deliverable card and the durable
+   * `task_failed` notice), so queueing them would only leak memory.
    */
   private readonly pendingCompletions = new Map<ConversationId, PendingCompletion[]>();
 
@@ -309,9 +314,11 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
       }
     }
 
-    // 2. Include completion announcements. Only completed tasks are queued;
-    // failed tasks have no decision yet (a future `announce_failure` variant
-    // is an open product decision).
+    // 2. Include completion announcements. Only completed tasks are queued.
+    // A failure has no PlannerDecision (owner decision 2026-10-25, KAN-58):
+    // the deliverable card shows it with recovery commands, and its technical
+    // detail reaches the chat only in developer mode, through the durable
+    // `task_failed` notification (src/core/contracts/notifications.ts).
     const pending = this.pendingCompletions.get(conversationId);
     if (pending && pending.length > 0) {
       for (const next of pending) {
@@ -723,7 +730,8 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
       });
       this.pendingCompletions.set(owner.conversationId, bucket);
     } else if (state.status === 'failed') {
-      // Nothing announces a failure, so it is not queued (see pendingCompletions).
+      // No decision announces a failure, so it is not queued (see pendingCompletions);
+      // the durable `task_failed` notice and the deliverable card surface it.
       child.info(
         {
           errorKind: state.result.error.kind,

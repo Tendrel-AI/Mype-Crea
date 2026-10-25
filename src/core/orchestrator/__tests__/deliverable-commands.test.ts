@@ -411,21 +411,25 @@ describe('executeDeliverableCommand — Iterar', () => {
 });
 
 describe('executeDeliverableCommand — Reintentar', () => {
-  it('chains a retry (trigger failure) onto the failed task, only for transient failures', async () => {
-    const h = harness();
-    const { taskId } = okOf(await h.run({ kind: 'generate' }));
-    await h.fail(taskId!, 'transient');
-    expect((await h.view()).allowedCommands).toEqual(['retry']);
-    const retry = okOf(await h.run({ kind: 'retry', failedTaskId: taskId }));
-    const row = (await h.workflow.listTasks(CONVERSATION)).find((t) => t.id === retry.taskId)!;
-    expect(row).toMatchObject({ parentTaskId: taskId, iterationRootId: taskId, iterationNumber: 2, iterationTrigger: 'failure' });
-    expect(h.workflow.requirementsOf(retry.taskId!)).not.toHaveProperty('refinement');
-  });
+  it.each(['transient', 'permanent_bug', 'content_policy'] as const)(
+    'chains a retry (trigger failure) onto a %s failure (KAN-58: never a dead end)',
+    async (category) => {
+      const h = harness();
+      const { taskId } = okOf(await h.run({ kind: 'generate' }));
+      await h.fail(taskId!, category);
+      expect((await h.view()).allowedCommands).toContain('retry');
+      const retry = okOf(await h.run({ kind: 'retry', failedTaskId: taskId }));
+      const row = (await h.workflow.listTasks(CONVERSATION)).find((t) => t.id === retry.taskId)!;
+      expect(row).toMatchObject({ parentTaskId: taskId, iterationRootId: taskId, iterationNumber: 2, iterationTrigger: 'failure' });
+      expect(h.workflow.requirementsOf(retry.taskId!)).not.toHaveProperty('refinement');
+    },
+  );
 
-  it.each(['permanent_bug', 'content_policy'] as const)('is not allowed after a %s failure', async (category) => {
+  it('is not allowed while the brief is incomplete', async () => {
     const h = harness();
     const { taskId } = okOf(await h.run({ kind: 'generate' }));
-    await h.fail(taskId!, category);
+    await h.fail(taskId!, 'permanent_bug');
+    h.setFilled(false);
     expect((await h.view()).allowedCommands).toEqual([]);
     expect(await h.run({ kind: 'retry', failedTaskId: taskId })).toMatchObject({ ok: false, reason: 'not_allowed' });
   });
@@ -435,6 +439,59 @@ describe('executeDeliverableCommand — Reintentar', () => {
     const { taskId } = okOf(await h.run({ kind: 'generate' }));
     await h.fail(taskId!, 'transient');
     expect(await h.run({ kind: 'retry', failedTaskId: randomUUID() })).toMatchObject({ ok: false, reason: 'stale' });
+  });
+});
+
+describe('executeDeliverableCommand — Iterar after a failure (KAN-58)', () => {
+  it('chains an iteration (trigger failure) onto a content_policy failure with no anchor', async () => {
+    const h = harness();
+    const { taskId } = okOf(await h.run({ kind: 'generate' }));
+    await h.fail(taskId!, 'content_policy');
+    expect((await h.view()).allowedCommands).toEqual(['iterate', 'retry']);
+    const result = okOf(await h.run({ kind: 'iterate', observation: 'Sin la mascota, solo letras' }));
+    const row = (await h.workflow.listTasks(CONVERSATION)).find((t) => t.id === result.taskId)!;
+    expect(row).toMatchObject({ parentTaskId: taskId, iterationRootId: taskId, iterationNumber: 2, iterationTrigger: 'failure' });
+    expect(h.workflow.requirementsOf(result.taskId!)).toEqual({
+      business_name: 'Sazón Andino',
+      refinement: { parameterChanges: {}, observations: ['Sin la mascota, solo letras'], anchorDeliverableId: null },
+    });
+  });
+
+  it('chains onto a failed iteration that follows a candidate (still no anchor)', async () => {
+    const h = harness();
+    await h.reviewed();
+    const iteration = okOf(await h.run({ kind: 'iterate', observation: 'Más rojo' }));
+    await h.fail(iteration.taskId!, 'content_policy');
+    const result = okOf(await h.run({ kind: 'iterate', observation: 'Mejor un tono vino' }));
+    const row = (await h.workflow.listTasks(CONVERSATION)).find((t) => t.id === result.taskId)!;
+    expect(row).toMatchObject({ parentTaskId: iteration.taskId, iterationNumber: 3, iterationTrigger: 'failure' });
+    expect(h.workflow.requirementsOf(result.taskId!)?.refinement).toMatchObject({ anchorDeliverableId: null });
+  });
+
+  it('rejects an empty change before any write', async () => {
+    const h = harness();
+    const { taskId } = okOf(await h.run({ kind: 'generate' }));
+    await h.fail(taskId!, 'content_policy');
+    const result = await h.run({ kind: 'iterate', observation: '   ' });
+    expect(result).toMatchObject({ ok: false, reason: 'invalid', message: COMMAND_MESSAGES.iterateNeedsChange });
+    expect(h.dispatch).toHaveBeenCalledTimes(1); // only the initial Generar
+  });
+
+  it('rejects an anchor: a failed state has no candidate to refine', async () => {
+    const h = harness();
+    const { taskId } = okOf(await h.run({ kind: 'generate' }));
+    await h.fail(taskId!, 'content_policy');
+    const result = await h.run({ kind: 'iterate', deliverableId: randomUUID(), observation: 'Más azul' });
+    expect(result).toMatchObject({ ok: false, reason: 'invalid' });
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['transient', 'permanent_bug'] as const)('is not offered after a %s failure (Reintentar is)', async (category) => {
+    const h = harness();
+    const { taskId } = okOf(await h.run({ kind: 'generate' }));
+    await h.fail(taskId!, category);
+    expect((await h.view()).allowedCommands).toEqual(['retry']);
+    expect(await h.run({ kind: 'iterate', observation: 'Más azul' })).toMatchObject({ ok: false, reason: 'not_allowed' });
   });
 });
 

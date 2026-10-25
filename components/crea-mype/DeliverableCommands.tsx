@@ -15,6 +15,7 @@
 import React, { useState } from 'react';
 import { CheckCircle2, Loader2, RefreshCw, Sparkles, Wand2, XCircle, ArrowRight } from 'lucide-react';
 import type { DeliverableCommandKind, DeliverableStateKind, DeliverableStateView } from '../../src/core/contracts';
+import { failedCardMessage } from './failure-copy';
 
 /** Mirrors MAX_ITERATION_OBSERVATION_LENGTH; the server enforces it in code points. */
 export const OBSERVATION_MAX_LENGTH = 500;
@@ -50,6 +51,25 @@ function codePoints(value: string): number {
   return [...value].length;
 }
 
+/**
+ * The Iterar request for `observation`, or null when it cannot be sent.
+ * A failed deliverable's Iterar changes the failed request (KAN-58): it has
+ * no anchor candidate and needs an observation (an unchanged request is a
+ * Reintentar). Otherwise the anchor is the approved or newest candidate.
+ */
+export function iterateSubmission(
+  view: Pick<DeliverableStateView, 'state' | 'approvedDeliverableId' | 'candidates'>,
+  observation: string,
+): Extract<DeliverableCommandRequest, { kind: 'iterate' }> | null {
+  const trimmed = observation.trim();
+  if (codePoints(trimmed) > OBSERVATION_MAX_LENGTH) return null;
+  if (view.state === 'failed') {
+    return trimmed.length === 0 ? null : { kind: 'iterate', deliverableId: null, observation: trimmed };
+  }
+  const anchorId = view.approvedDeliverableId ?? view.candidates.at(-1)?.deliverableId ?? null;
+  return { kind: 'iterate', deliverableId: anchorId, observation: trimmed };
+}
+
 export function DeliverableCommands({
   view,
   label,
@@ -72,8 +92,9 @@ export function DeliverableCommands({
 
   if (!view) return null;
 
-  const anchorId = view.approvedDeliverableId ?? view.candidates.at(-1)?.deliverableId ?? null;
+  const iteratingFailed = view.state === 'failed';
   const tooLong = codePoints(observation.trim()) > OBSERVATION_MAX_LENGTH;
+  const submission = iterateSubmission(view, observation);
   const buttonBase =
     'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
 
@@ -106,9 +127,7 @@ export function DeliverableCommands({
       )}
       {view.state === 'failed' && (
         <p role="status" className="text-xs text-red-700">
-          {view.lastFailure?.retryable
-            ? 'La generación falló por un problema temporal. Puedes reintentar.'
-            : `No pudimos generar tu ${label}. Revisa la información en el chat o inicia un producto nuevo.`}
+          {failedCardMessage(view, label)}
         </p>
       )}
       {view.stale && (
@@ -215,14 +234,14 @@ export function DeliverableCommands({
           className="space-y-2"
           onSubmit={(event) => {
             event.preventDefault();
-            if (tooLong) return;
-            onCommand({ kind: 'iterate', deliverableId: anchorId, observation: observation.trim() });
+            if (!submission) return;
+            onCommand(submission);
             setObservation('');
             setIterating(false);
           }}
         >
           <label className="block text-xs font-medium text-neutral-700" htmlFor={`iterate-${view.agentId}`}>
-            ¿Qué quieres cambiar de esta propuesta?
+            {iteratingFailed ? '¿Qué quieres cambiar de lo que pediste?' : '¿Qué quieres cambiar de esta propuesta?'}
           </label>
           <textarea
             id={`iterate-${view.agentId}`}
@@ -250,7 +269,7 @@ export function DeliverableCommands({
               </button>
               <button
                 type="submit"
-                disabled={busy || tooLong}
+                disabled={busy || !submission}
                 className={`${buttonBase} bg-orange-600 text-white hover:bg-orange-500`}
               >
                 Enviar

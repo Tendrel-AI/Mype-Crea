@@ -580,12 +580,12 @@ describe('orchestrator smoke (agent-agnostic)', () => {
   });
 
   it.each([
-    ['content_policy', 'content_policy', []],
+    ['content_policy', 'content_policy', ['iterate', 'retry']],
     ['rate_limited', 'transient', ['retry']],
-    ['config_missing', 'permanent_bug', []],
-    ['something_new', 'permanent_bug', []],
+    ['config_missing', 'permanent_bug', ['retry']],
+    ['something_new', 'permanent_bug', ['retry']],
   ] as const)(
-    'persists a failed task with kind %s as error_category %s; Reintentar offered: %j (KAN-58, KAN-64)',
+    'persists a failed task with kind %s as error_category %s; recovery offered: %j (KAN-58, KAN-64)',
     async (kind, expectedCategory, expectedAllowed) => {
       const { core, agentId, workflow } = buildControlledHarness();
       const recordSettlement = vi.spyOn(workflow, 'recordSettlement');

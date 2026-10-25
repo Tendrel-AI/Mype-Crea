@@ -292,6 +292,41 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     expect(await repos({ id: tenantId }, { id: userId }).approvals.listHistory(h.conversationId)).toHaveLength(2);
   });
 
+  it('a content_policy failure offers Iterar and Reintentar; Iterar chains onto the failed task with a null anchor (KAN-58)', { timeout: 30_000 }, async () => {
+    const h = await harness();
+    const generated = await h.command({ kind: 'generate' });
+    if (!generated.ok) throw new Error('expected ok');
+    await h.settle(generated.taskId!, {
+      status: 'failed',
+      result: {
+        status: 'failed',
+        taskId: generated.taskId!,
+        error: { kind: 'content_policy', message: 'synthetic' },
+        completedAt: new Date().toISOString() as `${string}T${string}Z`,
+      },
+    });
+    expect(await h.view()).toMatchObject({
+      state: 'failed',
+      lastFailure: { errorCategory: 'content_policy', retryable: false },
+      allowedCommands: ['iterate', 'retry'],
+    });
+    const iterate = await h.command({ kind: 'iterate', observation: 'Sin la mascota, solo letras' });
+    if (!iterate.ok) throw new Error(`iterate rejected: ${iterate.message}`);
+    const row = (await h.tasks()).find((t) => t.id === iterate.taskId)!;
+    expect(row).toMatchObject({
+      parentTaskId: generated.taskId,
+      iterationRootId: generated.taskId,
+      iterationNumber: 2,
+      iterationTrigger: 'failure',
+    });
+    // The CHECK and the guarded insert accept a failure iteration without an anchor.
+    expect(row.requirementsSnapshot.refinement).toEqual({
+      parameterChanges: {},
+      observations: ['Sin la mascota, solo letras'],
+      anchorDeliverableId: null,
+    });
+  });
+
   it('command iterations go through the shared guarded insert: parent, status, anchor and owner checks; numbering from the chain', { timeout: 30_000 }, async () => {
     const h = await harness();
     const other = await harness();

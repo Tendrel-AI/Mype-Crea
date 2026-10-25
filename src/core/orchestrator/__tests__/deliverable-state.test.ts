@@ -1,7 +1,8 @@
 /**
  * deriveDeliverableState — table tests against every row of the KAN-64
  * transition table (pipeline/decisions/KAN-64-dispatch-model.md), including
- * the obsoleto overlay and Reintentar only on `transient` failures.
+ * the obsoleto overlay and the failure recovery commands (KAN-58: every
+ * failure category offers at least one command).
  */
 import { describe, expect, it } from 'vitest';
 import type {
@@ -12,6 +13,7 @@ import type {
 } from '../../contracts';
 import type { DeliverableSpec } from '../agent-registry';
 import {
+  FAILURE_RECOVERY_COMMANDS,
   dependentKindsOf,
   deriveDeliverableStates,
   deriveStaleKinds,
@@ -219,25 +221,25 @@ const LOGO_ROWS: ReadonlyArray<Row> = [
     allowed: ['retry'],
   },
   {
-    name: 'fallido (content_policy) -> no Reintentar',
+    name: 'fallido (content_policy) -> Iterar, Reintentar',
     snap: LOGO_READY,
     facts: facts({ tasks: [task({ id: 't1', status: 'failed', errorCategory: 'content_policy' })] }),
     state: 'failed',
-    allowed: [],
+    allowed: ['iterate', 'retry'],
   },
   {
-    name: 'fallido (permanent_bug) -> no Reintentar',
+    name: 'fallido (permanent_bug) -> Reintentar',
     snap: LOGO_READY,
     facts: facts({ tasks: [task({ id: 't1', status: 'failed', errorCategory: 'permanent_bug' })] }),
     state: 'failed',
-    allowed: [],
+    allowed: ['retry'],
   },
   {
-    name: 'fallido (unclassified) -> no Reintentar',
+    name: 'fallido (unclassified) -> Reintentar',
     snap: LOGO_READY,
     facts: facts({ tasks: [task({ id: 't1', status: 'failed', errorCategory: null })] }),
     state: 'failed',
-    allowed: [],
+    allowed: ['retry'],
   },
   {
     name: 'fallido (transient) but a brief field was reset -> no Reintentar',
@@ -291,6 +293,27 @@ describe('deriveDeliverableState — KAN-64 table (single deliverable)', () => {
     expect(view.state).toBe(row.state);
     expect(view.allowedCommands).toEqual(row.allowed);
     expect(view.stale).toBe(row.stale ?? false);
+  });
+
+  it.each(['transient', 'content_policy', 'permanent_bug', null] as const)(
+    'a %s failure is never a dead end: it offers at least one recovery command',
+    (errorCategory) => {
+      const view = stateOf(LOGO_READY, [LOGO_SPEC], facts({ tasks: [task({ id: 't1', status: 'failed', errorCategory })] }));
+      expect(view.state).toBe('failed');
+      expect(view.allowedCommands).toContain('retry');
+      expect([...view.allowedCommands].sort()).toEqual([...FAILURE_RECOVERY_COMMANDS[errorCategory ?? 'permanent_bug']].sort());
+    },
+  );
+
+  it('offers no recovery command while the brief is incomplete, whatever the category', () => {
+    for (const errorCategory of ['transient', 'content_policy', 'permanent_bug'] as const) {
+      const view = stateOf(
+        LOGO_MISSING_STYLE,
+        [LOGO_SPEC],
+        facts({ tasks: [task({ id: 't1', status: 'failed', errorCategory })] }),
+      );
+      expect(view.allowedCommands).toEqual([]);
+    }
   });
 
   it('reports missing fields, the active task, the failure and the candidates', () => {

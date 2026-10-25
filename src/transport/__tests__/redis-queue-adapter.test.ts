@@ -8,6 +8,7 @@
  * + payload pair so we can assert what was published.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { NOTIFICATION_CONTRACT_VERSION, parseNotification } from '../../core/contracts/notifications';
 import type { Redis as RedisClient } from 'ioredis';
 import {
   RedisQueueAdapter,
@@ -59,10 +60,14 @@ describe('RedisQueueAdapter', () => {
 
     const payload = JSON.parse(publisher.published[0].payload);
     expect(payload).toEqual({
+      v: NOTIFICATION_CONTRACT_VERSION,
+      kind: 'task_dispatch',
       taskId: message.taskId,
       tenantId: message.tenantId,
       agentId: 'logo-agent',
     });
+    // The worker reads it back through the same contract.
+    expect(parseNotification(publisher.published[0].payload, ['task_dispatch'])).toMatchObject({ ok: true });
     // Notification must be a trigger only — no requirements payload leaks through.
     expect(payload).not.toHaveProperty('requirements');
   });

@@ -5,7 +5,17 @@ import { repos } from '../../../../src/repos';
 import { buildDefaultRegistry } from '../../../../src/core/orchestrator/bootstrap-registry';
 import { defaultLifecycleNotifier } from '../../../../src/core/orchestrator/notifiers';
 import { loggerFor } from '../../../../src/services/logger';
+import { exposesTaskFailureDetail } from '../../../../src/services/failure-disclosure';
 import type { ConversationId } from '../../../../src/core/contracts';
+import {
+  DURABLE_NOTIFICATION_KINDS,
+  notification,
+  parseNotification,
+  serializeNotification,
+  toClientNotification,
+  type ClientNotification,
+  type ClientNotificationPolicy,
+} from '../../../../src/core/contracts/notifications';
 import type { AgentTaskProcessingEvent } from '../../../../src/core/orchestrator/agent-lifecycle-notifier';
 
 const log = loggerFor('controller.agents-stream');
@@ -46,6 +56,8 @@ export async function GET(request: NextRequest): Promise<Response> {
     userId: identity.user.id,
     conversationId,
   });
+  // The single failure-disclosure gate, read once per connection at the edge.
+  const policy: ClientNotificationPolicy = { exposeFailureDetail: exposesTaskFailureDetail() };
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -83,10 +95,13 @@ export async function GET(request: NextRequest): Promise<Response> {
         }
         return authCheck;
       };
-      const send = (event: string, payload: unknown): boolean => {
+      // Every frame is a contract notification: `event:` is its kind, `data:` the
+      // serialized client view (failure detail only when the policy allows it).
+      const send = (n: ClientNotification): boolean => {
         if (closed) return false;
+        const data = serializeNotification(toClientNotification(n, policy));
         try {
-          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`));
+          controller.enqueue(encoder.encode(`event: ${n.kind}\ndata: ${data}\n\n`));
           return true;
         } catch {
           closed = true;
@@ -95,7 +110,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       };
       const onProcessing = (event: AgentTaskProcessingEvent): void => {
         void checkMembership().then((isActive) => {
-          if (isActive) send('task_processing', event);
+          if (isActive) send(notification('task_processing', event));
         });
       };
       const lifecycleSubscription = defaultLifecycleNotifier.subscribeProcessing(
@@ -112,10 +127,20 @@ export async function GET(request: NextRequest): Promise<Response> {
           const events = await repository.aiTurns.peekEvents({ conversationId, limit: 50 });
           for (const event of events) {
             if (!await checkMembership()) break;
-            const eventName = event.kind;
+            const parsed = parseNotification(event.payload, DURABLE_NOTIFICATION_KINDS);
+            if (!parsed.ok) {
+              // A row that does not match the contract can never be delivered; ack it so it
+              // does not block the outbox, and log it for review. Reload still restores state.
+              child.warn(
+                { eventId: event.eventId, reason: parsed.reason, detail: parsed.detail },
+                'agents.stream.event_rejected',
+              );
+              await repository.aiTurns.ackEvent({ eventId: event.eventId });
+              continue;
+            }
             // Ack follows enqueue. A disconnect or enqueue failure leaves the event available
             // for the next authorized connection.
-            if (!send(eventName, event.payload)) break;
+            if (!send(parsed.notification)) break;
             await repository.aiTurns.ackEvent({ eventId: event.eventId });
           }
         } catch (error) {

@@ -90,7 +90,11 @@ export interface DeliverableStateView {
   readonly lastFailure: {
     readonly taskId: TaskId;
     readonly errorCategory: TaskErrorCategory | null;
-    /** True only for `transient` failures (KAN-58 classifier). */
+    /**
+     * True only for `transient` failures: an identical retry is expected to
+     * succeed. Reintentar itself is offered for every category (KAN-58); the
+     * recovery commands are in `allowedCommands`.
+     */
     readonly retryable: boolean;
   } | null;
   readonly candidates: ReadonlyArray<DeliverableCandidateView>;

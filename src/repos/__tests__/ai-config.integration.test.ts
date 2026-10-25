@@ -12,12 +12,13 @@ import pg from 'pg';
 import { closePool, getPool } from '../../db/pool';
 import { withTenantTransaction } from '../../db/with-transaction';
 import { withGlobalTransaction } from '../../db/global-transaction';
-import { repos } from '..';
+import { repos, systemRepos } from '..';
 import { assertActivePlatformActor } from '../global-audit';
 import { createBaselineDraft } from '../../services/ai-config/baseline';
 import { AiConfigService } from '../../services/ai-config/service';
 import { canonicalizeManifestJson, freezeManifest, type AiConfigManifestV1, type JsonValue } from '../../services/ai-config/manifest';
 import type { ConversationId, TaskId, UUID } from '../../core/contracts';
+import { parseNotification } from '../../core/contracts/notifications';
 import type { ResolvedIdentity } from '../../auth/resolve-identity';
 
 const RUN_INTEGRATION = Boolean(process.env.APP_DATABASE_URL && process.env.DATABASE_URL);
@@ -569,6 +570,41 @@ SUITE('AI configuration and durable turns (integration)', () => {
     expect(await scoped.deliverables.listByAgentTask(task.id as TaskId)).toHaveLength(1);
     const outbox = await scoped.aiTurns.peekEvents({ conversationId: conversation });
     expect(outbox.filter((event) => event.eventId === `${task.id}:announce_completion`)).toHaveLength(1);
+    // KAN-58: the outbox payload is a task_completed notification of the contract.
+    const completedRow = outbox.find((event) => event.eventId === `${task.id}:announce_completion`)!;
+    expect(completedRow.kind).toBe('artifact');
+    expect(parseNotification(completedRow.payload, ['task_completed'])).toMatchObject({
+      ok: true,
+      notification: { kind: 'task_completed', taskId: task.id, agentId: 'logo-agent', deliverableIds: first.deliverableIds },
+    });
+
+    // A failed task gets one task_failed notice carrying the sanitized detail.
+    const failedTask = await scoped.agentTasks.insertRoot({ conversationId: conversation, agentId: 'logo-agent', agentCardVersion: '0.1.0', idempotencyKey: randomUUID() as UUID, requirementsSnapshot: { business_name: 'synthetic' } });
+    await scoped.agentTasks.claimById(failedTask.id as TaskId);
+    const failedSettlement = {
+      conversationId: conversation,
+      taskId: failedTask.id as TaskId,
+      state: 'failed' as const,
+      deliverableKind: 'logo' as const,
+      artifacts: [],
+      error: { kind: 'content_policy', message: 'blocked\nby Bearer abc123 filter' },
+      errorCategory: 'content_policy' as const,
+    };
+    await scoped.aiTurns.settleTaskAndEnqueue(failedSettlement);
+    await scoped.aiTurns.settleTaskAndEnqueue(failedSettlement);
+    const notices = (await scoped.aiTurns.peekEvents({ conversationId: conversation })).filter(
+      (event) => event.eventId === `${failedTask.id}:announce_failure`,
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0].kind).toBe('notice');
+    expect(parseNotification(notices[0].payload, ['task_failed'])).toMatchObject({
+      ok: true,
+      notification: {
+        kind: 'task_failed',
+        taskId: failedTask.id,
+        detail: { errorCategory: 'content_policy', errorKind: 'content_policy', message: 'blocked by Bearer [redacted] filter' },
+      },
+    });
 
     const turn = await scoped.aiTurns.claimTurn({ conversationId: conversation, requestId: randomUUID() as UUID, inputContent: 'retención sintética' });
     expect(turn.kind).toBe('acquired');
@@ -591,6 +627,33 @@ SUITE('AI configuration and durable turns (integration)', () => {
     // The task outbox event is not linked to the scrubbed turn, so its artifact survives.
     expect((await scoped.aiTurns.peekEvents({ conversationId: conversation })).find((event) => event.eventId === `${task.id}:announce_completion`)?.payload.artifacts)
       .toEqual([expect.objectContaining({ kind: 'image', url: 'https://example.invalid/synthetic.png' })]);
+
+    // Reconcile rebuilds missing notices with the same contract payloads.
+    const before = new Map(
+      (await scoped.aiTurns.peekEvents({ conversationId: conversation }))
+        .filter((event) => event.eventId.startsWith(`${task.id}:`) || event.eventId.startsWith(`${failedTask.id}:`))
+        .map((event) => [event.eventId, event.payload]),
+    );
+    expect(before.size).toBe(2);
+    await owner.query(`DELETE FROM ai_turn_events WHERE tenant_id = $1 AND event_id = ANY($2::text[])`, [tenant.id, [...before.keys()]]);
+    expect(await systemRepos({ id: tenant.id }).aiEvents!.reconcileSettledTasks()).toBeGreaterThanOrEqual(2);
+    const rebuilt = new Map(
+      (await scoped.aiTurns.peekEvents({ conversationId: conversation }))
+        .filter((event) => before.has(event.eventId))
+        .map((event) => [event.eventId, event.payload]),
+    );
+    const failureId = `${failedTask.id}:announce_failure`;
+    const completionId = `${task.id}:announce_completion`;
+    expect(rebuilt.get(failureId)).toEqual(before.get(failureId));
+    // Known bug (docs/agents/known-bugs): a URL deliverable does not store its artifact kind,
+    // so the rebuilt completion carries the deliverable kind instead. Everything else matches.
+    expect(parseNotification(rebuilt.get(completionId), ['task_completed'])).toMatchObject({
+      ok: true,
+      notification: {
+        deliverableIds: first.deliverableIds,
+        artifacts: [{ url: 'https://example.invalid/synthetic.png' }],
+      },
+    });
   });
 
   it('locks shared releases only through the narrow helper without widening tenant or platform privileges', async () => {
