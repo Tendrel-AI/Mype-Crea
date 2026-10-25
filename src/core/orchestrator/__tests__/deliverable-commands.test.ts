@@ -384,6 +384,16 @@ describe('executeDeliverableCommand — Iterar', () => {
     okOf(await h.run({ kind: 'iterate', observation: '🎨'.repeat(500) }));
   });
 
+  it('maps a parent the store refuses (guard past validation) to stale without dispatching', async () => {
+    const h = harness();
+    await h.reviewed();
+    const dispatchedBefore = h.dispatch.mock.calls.length;
+    vi.spyOn(h.workflow, 'createTask').mockResolvedValueOnce({ ok: false, reason: 'parent_unavailable' });
+    const result = await h.run({ kind: 'iterate', observation: 'Más azul' });
+    expect(result).toMatchObject({ ok: false, reason: 'stale', message: COMMAND_MESSAGES.stale });
+    expect(h.dispatch).toHaveBeenCalledTimes(dispatchedBefore);
+  });
+
   it('rejects an anchor that is not a candidate of this deliverable', async () => {
     const h = harness();
     await h.reviewed();

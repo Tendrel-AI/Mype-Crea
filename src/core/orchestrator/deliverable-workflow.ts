@@ -51,7 +51,11 @@ export interface CreateTaskInput {
   /** The command id doubles as the task's idempotency key. */
   readonly commandId: string;
   readonly requirementsSnapshot: Record<string, unknown>;
-  /** Present for Iterar / Reintentar; absent for a root Generar. */
+  /**
+   * Present for Iterar / Reintentar; absent for a root Generar. The Postgres
+   * store derives `iterationRootId` / `iterationNumber` from the parent under
+   * a lock (authoritative); the in-memory store uses the values given.
+   */
   readonly iteration?: {
     readonly parentTaskId: TaskId;
     readonly iterationRootId: TaskId;
@@ -65,7 +69,14 @@ export type CreateTaskResult =
   /** Another task for this (conversation, agent) is pending or in progress. */
   | { readonly ok: false; readonly reason: 'active_task_exists' }
   /** This command id already created a task (concurrent replay). */
-  | { readonly ok: false; readonly reason: 'duplicate_command'; readonly task: WorkflowTask };
+  | { readonly ok: false; readonly reason: 'duplicate_command'; readonly task: WorkflowTask }
+  /**
+   * The iteration's parent (or the refinement anchor) is no longer usable:
+   * not the conversation's own task of this agent, wrong status for the
+   * trigger, or the anchor is not a deliverable of the parent. The command
+   * handler reports it as `stale`.
+   */
+  | { readonly ok: false; readonly reason: 'parent_unavailable' };
 
 export interface RecordSettlementInput {
   readonly conversationId: ConversationId;

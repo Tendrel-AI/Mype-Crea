@@ -221,19 +221,6 @@ export interface AgentTaskRootInsert {
   readonly scheduledFor?: string;
 }
 
-export interface AgentTaskIterationInsert {
-  readonly conversationId: ConversationId;
-  readonly agentId: string;
-  readonly agentCardVersion: string;
-  readonly idempotencyKey: UUID;
-  readonly parentTaskId: TaskId;
-  readonly iterationRootId: TaskId;
-  readonly iterationNumber: number;
-  readonly iterationTrigger: IterationTrigger;
-  readonly requirementsSnapshot: Record<string, unknown>;
-  readonly scheduledFor?: string;
-}
-
 export interface AgentTaskRow {
   readonly id: TaskId;
   readonly conversationId: ConversationId;

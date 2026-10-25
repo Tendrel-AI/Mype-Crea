@@ -15,8 +15,13 @@ import { randomUUID } from 'node:crypto';
 import type { ConversationId, TaskId, UUID } from '../core/contracts';
 import { withTenantTransaction, type Tenant, type TxClient, type User } from '../db/with-transaction';
 import { loggerFor } from '../services/logger';
+import {
+  REFINEMENT_SNAPSHOT_KEY,
+  RefinementValidationError,
+  checkStoredRefinement,
+  type IterationRefinement,
+} from './refinement-rules';
 import type {
-  AgentTaskIterationInsert,
   AgentTaskRootInsert,
   AgentTaskRow,
   AgentTaskStatus,
@@ -127,6 +132,139 @@ async function assertJsonbTenantSafe(tx: TxClient, payload: unknown): Promise<vo
   }
 }
 
+/**
+ * Why a guarded iteration insert refused its parent (KAN-28 / KAN-34). Every
+ * refusal happens before any write.
+ */
+export type IterationTargetRejection =
+  /** Parent missing, of another conversation/agent, or its conversation is not visible to the bound owner. */
+  | 'parent_not_found'
+  /** Iterar (user trigger) needs a completed parent: a candidate to refine. */
+  | 'parent_not_completed'
+  /** Reintentar (`failure` trigger) needs a failed parent. */
+  | 'parent_not_failed'
+  /** The refinement's anchor is not a deliverable of the parent task. */
+  | 'anchor_not_in_parent';
+
+interface GuardedIterationInsert {
+  readonly parentTaskId: TaskId;
+  /** When set, the parent must belong to this conversation and agent. */
+  readonly conversationId?: ConversationId;
+  readonly agentId?: string;
+  readonly trigger: IterationTrigger;
+  readonly idempotencyKey: UUID;
+  /** Defaults to the parent task's card version. */
+  readonly agentCardVersion?: string;
+  /** Requirements to store; `'parent'` copies the parent's snapshot. A `refinement` key in it is always dropped. */
+  readonly baseRequirements: Readonly<Record<string, unknown>> | 'parent';
+  /** Already validated by the caller with the single rule; the DB CHECK is the backstop. */
+  readonly refinement: IterationRefinement | null;
+  readonly scheduledFor?: string;
+}
+
+type GuardedIterationResult =
+  | { readonly ok: true; readonly row: AgentTaskRow }
+  | { readonly ok: false; readonly reason: IterationTargetRejection };
+
+/**
+ * THE iteration insert (KAN-28 Iterar/Reintentar commands and KAN-34
+ * `refinements.createIteration` both go through it). Inside the caller's
+ * transaction, which must bind the conversation owner (`app.user_id`):
+ *   1. the parent exists in this tenant (and, when given, in this
+ *      conversation and agent);
+ *   2. ownership through the conversation: its row must be visible under the
+ *      owner's RLS and is locked `FOR UPDATE`, never updated (the brief stays
+ *      untouched);
+ *   3. the parent is `failed` for a `failure` retry, `completed` otherwise;
+ *   4. a refinement anchor must be a deliverable of the parent task;
+ *   5. the iteration number is max+1 of the chain, computed under a lock on
+ *      the root task, so concurrent iterations get distinct numbers;
+ *   6. the parent's `refinement` key never carries forward; the new one (if
+ *      any) is stored under the reserved key, and the CHECK
+ *      `agent_tasks_refinement_valid` applies the same rule as a backstop.
+ */
+async function insertGuardedIteration(
+  tx: TxClient,
+  tenant: Tenant,
+  input: GuardedIterationInsert,
+): Promise<GuardedIterationResult> {
+  const refuse = (reason: IterationTargetRejection) => ({ ok: false, reason }) as const;
+  const parentRes = await tx.query<AgentTaskRowDb>(
+    `SELECT * FROM agent_tasks WHERE tenant_id = $1 AND id = $2`,
+    [tenant.id, input.parentTaskId],
+  );
+  const parent = parentRes.rows[0];
+  if (!parent) return refuse('parent_not_found');
+  if (input.conversationId !== undefined && parent.conversation_id !== input.conversationId.toLowerCase()) {
+    return refuse('parent_not_found');
+  }
+  if (input.agentId !== undefined && parent.agent_id !== input.agentId) return refuse('parent_not_found');
+
+  const conv = await tx.query(
+    `SELECT 1 FROM conversations WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
+    [tenant.id, parent.conversation_id],
+  );
+  if (conv.rowCount === 0) return refuse('parent_not_found');
+
+  if (input.trigger === 'failure') {
+    if (parent.status !== 'failed') return refuse('parent_not_failed');
+  } else if (parent.status !== 'completed') {
+    return refuse('parent_not_completed');
+  }
+
+  const anchorId = input.refinement?.anchorDeliverableId ?? null;
+  if (anchorId !== null) {
+    const anchor = await tx.query(
+      `SELECT 1 FROM deliverables WHERE tenant_id = $1 AND id = $2 AND agent_task_id = $3`,
+      [tenant.id, anchorId, parent.id],
+    );
+    if (anchor.rowCount === 0) return refuse('anchor_not_in_parent');
+  }
+
+  await tx.query(`SELECT 1 FROM agent_tasks WHERE tenant_id = $1 AND id = $2 FOR UPDATE`, [
+    tenant.id,
+    parent.iteration_root_id,
+  ]);
+  const next = await tx.query<{ n: number }>(
+    `SELECT coalesce(max(iteration_number), 0)::int + 1 AS n
+       FROM agent_tasks WHERE tenant_id = $1 AND iteration_root_id = $2`,
+    [tenant.id, parent.iteration_root_id],
+  );
+  const iterationNumber = Math.max(next.rows[0].n, 2);
+
+  const base: Record<string, unknown> = {
+    ...(input.baseRequirements === 'parent' ? parent.requirements_snapshot : input.baseRequirements),
+  };
+  delete base[REFINEMENT_SNAPSHOT_KEY];
+  const snapshot = input.refinement ? { ...base, [REFINEMENT_SNAPSHOT_KEY]: input.refinement } : base;
+  await assertJsonbTenantSafe(tx, snapshot);
+
+  const res = await tx.query<AgentTaskRowDb>(
+    `INSERT INTO agent_tasks
+       (tenant_id, conversation_id, agent_id, agent_card_version,
+        idempotency_key, iteration_root_id, iteration_number,
+        parent_task_id, iteration_trigger,
+        requirements_snapshot, scheduled_for)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
+             COALESCE($11::timestamptz, now()))
+     RETURNING *`,
+    [
+      tenant.id,
+      parent.conversation_id,
+      parent.agent_id,
+      input.agentCardVersion ?? parent.agent_card_version,
+      input.idempotencyKey,
+      parent.iteration_root_id,
+      iterationNumber,
+      parent.id,
+      input.trigger,
+      JSON.stringify(snapshot),
+      input.scheduledFor ?? null,
+    ],
+  );
+  return { ok: true, row: toDomain(res.rows[0]) };
+}
+
 /** Input of `insertCommandTask` (KAN-28 typed deliverable commands). */
 export interface AgentTaskCommandInsert {
   readonly conversationId: ConversationId;
@@ -139,14 +277,18 @@ export interface AgentTaskCommandInsert {
    * The conversation owner. Binds `app.user_id` for the insert transaction so
    * the JSONB tenant-safety check can see owner-scoped rows referenced by the
    * snapshot (the refinement's `anchorDeliverableId` is a deliverable, whose
-   * RLS is tenant + owner). agent_tasks itself stays tenant-scoped.
+   * RLS is tenant + owner) and the iteration guard can check ownership
+   * through the conversation. Required for iterations (without it the parent
+   * is reported `parent_not_found`). agent_tasks itself stays tenant-scoped.
    */
   readonly owner?: User;
-  /** Present for Iterar / Reintentar; absent for a root Generar. */
+  /**
+   * Present for Iterar / Reintentar; absent for a root Generar. The root and
+   * the iteration number are derived from the parent under a lock (see
+   * `insertGuardedIteration`), never taken from the caller.
+   */
   readonly iteration?: {
     readonly parentTaskId: TaskId;
-    readonly iterationRootId: TaskId;
-    readonly iterationNumber: number;
     readonly trigger: IterationTrigger;
   };
 }
@@ -154,7 +296,9 @@ export interface AgentTaskCommandInsert {
 export type AgentTaskCommandInsertResult =
   | { readonly ok: true; readonly row: AgentTaskRow }
   | { readonly ok: false; readonly reason: 'active_task_exists' }
-  | { readonly ok: false; readonly reason: 'duplicate_command'; readonly row: AgentTaskRow };
+  | { readonly ok: false; readonly reason: 'duplicate_command'; readonly row: AgentTaskRow }
+  /** The iteration's parent (or anchor) is not usable; see `IterationTargetRejection`. */
+  | { readonly ok: false; readonly reason: 'invalid_parent'; readonly detail: IterationTargetRejection };
 
 const UNIQUE_VIOLATION = '23505';
 
@@ -181,9 +325,15 @@ export function agentTasksRepo(tenant: Tenant) {
      *   2. another task of the same (conversation, agent) is pending or in
      *      progress -> `active_task_exists` (no double generation, even when
      *      two commands raced past validation);
-     *   3. otherwise insert the root task or the iteration.
-     * A unique violation on the idempotency key from a path outside the lock
-     * is reported as `duplicate_command` too.
+     *   3. otherwise insert the root task, or the iteration through the
+     *      shared guarded insert (`insertGuardedIteration`: ownership, parent
+     *      status, anchor in parent, numbering under the root lock), which
+     *      refuses with `invalid_parent`.
+     * A refinement in an iteration snapshot is checked with the single rule
+     * (`RefinementValidationError` on failure; the core validates first, so
+     * this is a backstop like the DB CHECK). A unique violation on the
+     * idempotency key from a path outside the lock is reported as
+     * `duplicate_command` too.
      */
     async insertCommandTask(input: AgentTaskCommandInsert): Promise<AgentTaskCommandInsertResult> {
       const child = log.child({
@@ -214,6 +364,35 @@ export function agentTasksRepo(tenant: Tenant) {
           );
           if (active.rows.length > 0) return { ok: false, reason: 'active_task_exists' } as const;
 
+          if (input.iteration) {
+            const { [REFINEMENT_SNAPSHOT_KEY]: rawRefinement, ...requirements } = input.requirementsSnapshot;
+            let refinement: IterationRefinement | null = null;
+            if (rawRefinement !== undefined) {
+              const checked = checkStoredRefinement(rawRefinement);
+              if (!checked.ok) throw new RefinementValidationError(checked.code, checked.message);
+              refinement = checked.value;
+            }
+            const inserted = await insertGuardedIteration(tx, tenant, {
+              parentTaskId: input.iteration.parentTaskId,
+              conversationId: input.conversationId,
+              agentId: input.agentId,
+              trigger: input.iteration.trigger,
+              idempotencyKey: input.idempotencyKey,
+              agentCardVersion: input.agentCardVersion,
+              baseRequirements: requirements,
+              refinement,
+            });
+            if (!inserted.ok) {
+              child.info({ reason: inserted.reason }, 'command iteration refused');
+              return { ok: false, reason: 'invalid_parent', detail: inserted.reason } as const;
+            }
+            child.info(
+              { id: inserted.row.id, iterationNumber: inserted.row.iterationNumber, iterationTrigger: inserted.row.iterationTrigger },
+              'command agent_task inserted',
+            );
+            return { ok: true, row: inserted.row } as const;
+          }
+
           await assertJsonbTenantSafe(tx, input.requirementsSnapshot);
           const id = randomUUID();
           const res = await tx.query<AgentTaskRowDb>(
@@ -221,9 +400,7 @@ export function agentTasksRepo(tenant: Tenant) {
                (id, tenant_id, conversation_id, agent_id, agent_card_version,
                 idempotency_key, iteration_root_id, iteration_number,
                 parent_task_id, iteration_trigger, requirements_snapshot)
-             VALUES ($1, $2, $3, $4, $5,
-                     $6, COALESCE($7::uuid, $1), $8,
-                     $9, $10, $11::jsonb)
+             VALUES ($1, $2, $3, $4, $5, $6, $1, 1, NULL, NULL, $7::jsonb)
              RETURNING *`,
             [
               id,
@@ -232,10 +409,6 @@ export function agentTasksRepo(tenant: Tenant) {
               input.agentId,
               input.agentCardVersion,
               input.idempotencyKey,
-              input.iteration?.iterationRootId ?? null,
-              input.iteration?.iterationNumber ?? 1,
-              input.iteration?.parentTaskId ?? null,
-              input.iteration?.trigger ?? null,
               JSON.stringify(input.requirementsSnapshot),
             ],
           );
@@ -353,56 +526,6 @@ export function agentTasksRepo(tenant: Tenant) {
         );
         const row = toDomain(res.rows[0]);
         child.info({ id: row.id }, 'root agent_task inserted');
-        return row;
-      });
-    },
-
-    /**
-     * Insert an iteration of an existing task. Caller supplies the parent
-     * and iteration_root references; iteration_number is explicit so the
-     * caller controls collision behavior under retries.
-     */
-    async insertIteration(input: AgentTaskIterationInsert): Promise<AgentTaskRow> {
-      const child = log.child({
-        op: 'insertIteration',
-        tenantId: tenant.id,
-        conversationId: input.conversationId,
-        agentId: input.agentId,
-        parentTaskId: input.parentTaskId,
-      });
-      child.debug(
-        { iterationRootId: input.iterationRootId, iterationNumber: input.iterationNumber },
-        'inserting iteration agent_task',
-      );
-      return withTenantTransaction(tenant, undefined, async (tx) => {
-        await assertJsonbTenantSafe(tx, input.requirementsSnapshot);
-        const res = await tx.query<AgentTaskRowDb>(
-          `INSERT INTO agent_tasks
-             (tenant_id, conversation_id, agent_id, agent_card_version,
-              idempotency_key, iteration_root_id, iteration_number,
-              parent_task_id, iteration_trigger,
-              requirements_snapshot, scheduled_for)
-           VALUES ($1, $2, $3, $4,
-                   $5, $6, $7,
-                   $8, $9,
-                   $10::jsonb, COALESCE($11::timestamptz, now()))
-           RETURNING *`,
-          [
-            tenant.id,
-            input.conversationId,
-            input.agentId,
-            input.agentCardVersion,
-            input.idempotencyKey,
-            input.iterationRootId,
-            input.iterationNumber,
-            input.parentTaskId,
-            input.iterationTrigger,
-            JSON.stringify(input.requirementsSnapshot),
-            input.scheduledFor ?? null,
-          ],
-        );
-        const row = toDomain(res.rows[0]);
-        child.info({ id: row.id }, 'iteration agent_task inserted');
         return row;
       });
     },
@@ -555,4 +678,11 @@ export const __test = { extractUuids };
 
 // Shared with repositories that write agent_tasks rows in their own transaction
 // (src/repos/refinements.ts).
-export { assertJsonbTenantSafe, toDomain as agentTaskRowToDomain, type AgentTaskRowDb };
+export {
+  assertJsonbTenantSafe,
+  insertGuardedIteration,
+  toDomain as agentTaskRowToDomain,
+  type AgentTaskRowDb,
+  type GuardedIterationInsert,
+  type GuardedIterationResult,
+};

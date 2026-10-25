@@ -292,6 +292,87 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     expect(await repos({ id: tenantId }, { id: userId }).approvals.listHistory(h.conversationId)).toHaveLength(2);
   });
 
+  it('command iterations go through the shared guarded insert: parent, status, anchor and owner checks; numbering from the chain', { timeout: 30_000 }, async () => {
+    const h = await harness();
+    const other = await harness();
+    const r = repos({ id: tenantId }, { id: userId });
+    const tasksRepo = systemRepos({ id: tenantId }).agentTasks;
+    const generated = await h.command({ kind: 'generate' });
+    const otherGenerated = await other.command({ kind: 'generate' });
+    if (!generated.ok || !otherGenerated.ok) throw new Error('expected ok');
+    await h.settle(generated.taskId!, completed(generated.taskId!));
+    await other.settle(otherGenerated.taskId!, completed(otherGenerated.taskId!));
+    const d1 = await r.deliverables.insert({
+      conversationId: h.conversationId, agentTaskId: generated.taskId!, kind: 'logo', contentUrl: 'https://cdn.test/1.png',
+    });
+    const foreignAnchor = await r.deliverables.insert({
+      conversationId: other.conversationId, agentTaskId: otherGenerated.taskId!, kind: 'logo', contentUrl: 'https://cdn.test/x.png',
+    });
+    const refinement = (anchorDeliverableId: string | null, observations = ['Más azul']) => ({
+      parameterChanges: {}, observations, anchorDeliverableId,
+    });
+    const commandIteration = (over: {
+      parentTaskId?: string; trigger?: 'user_regenerate' | 'failure'; agentId?: string;
+      snapshot?: Record<string, unknown>; owner?: { id: UUID } | undefined;
+    }) =>
+      tasksRepo.insertCommandTask({
+        conversationId: h.conversationId,
+        agentId: over.agentId ?? AGENT_ID,
+        agentCardVersion: '0.0.1',
+        idempotencyKey: randomUUID(),
+        requirementsSnapshot: over.snapshot ?? { business_name: 'Sazón Andino', refinement: refinement(d1.id) },
+        owner: 'owner' in over ? over.owner : { id: userId },
+        iteration: { parentTaskId: (over.parentTaskId ?? generated.taskId!) as never, trigger: over.trigger ?? 'user_regenerate' },
+      });
+    const refused = (detail: string) => ({ ok: false, reason: 'invalid_parent', detail });
+
+    // Parent of another conversation, of another agent, or without the owner bound.
+    expect(await commandIteration({ parentTaskId: otherGenerated.taskId! })).toEqual(refused('parent_not_found'));
+    expect(await commandIteration({ agentId: 'another-agent' })).toEqual(refused('parent_not_found'));
+    expect(await commandIteration({ owner: undefined })).toEqual(refused('parent_not_found'));
+    // Reintentar needs a failed parent; the anchor must be a deliverable of the parent.
+    expect(await commandIteration({ trigger: 'failure', snapshot: { business_name: 'Sazón Andino' } }))
+      .toEqual(refused('parent_not_failed'));
+    expect(await commandIteration({ snapshot: { refinement: refinement(foreignAnchor.id) } }))
+      .toEqual(refused('anchor_not_in_parent'));
+    // The single refinement rule runs before the insert (the DB CHECK is the backstop).
+    await expect(commandIteration({ snapshot: { refinement: refinement(d1.id, Array(6).fill('a')) } }))
+      .rejects.toMatchObject({ name: 'RefinementValidationError', code: 'too_many_observations' });
+    expect(await h.tasks()).toHaveLength(1);
+
+    // The workflow store ignores caller-supplied numbering: root and number come from the chain.
+    const store = new PostgresDeliverableWorkflowStore(tenantId, userId);
+    const created = await store.createTask({
+      conversationId: h.conversationId,
+      agentId: AGENT_ID,
+      agentCardVersion: '0.0.1',
+      commandId: randomUUID(),
+      requirementsSnapshot: { business_name: 'Sazón Andino', refinement: refinement(d1.id) },
+      iteration: {
+        parentTaskId: generated.taskId!,
+        iterationRootId: randomUUID() as never,
+        iterationNumber: 99,
+        trigger: 'user_regenerate',
+      },
+    });
+    if (!created.ok) throw new Error(`expected ok, got ${created.reason}`);
+    expect(created.task).toMatchObject({
+      parentTaskId: generated.taskId,
+      iterationRootId: generated.taskId,
+      iterationNumber: 2,
+      iterationTrigger: 'user_regenerate',
+    });
+    // A stale parent through the port is reported as `parent_unavailable` (the handler answers `stale`).
+    await tasksRepo.cancelPending(h.conversationId, created.task.id);
+    expect(
+      await store.createTask({
+        conversationId: h.conversationId, agentId: AGENT_ID, agentCardVersion: '0.0.1', commandId: randomUUID(),
+        requirementsSnapshot: {},
+        iteration: { parentTaskId: otherGenerated.taskId!, iterationRootId: otherGenerated.taskId!, iterationNumber: 2, trigger: 'user_regenerate' },
+      }),
+    ).toEqual({ ok: false, reason: 'parent_unavailable' });
+  });
+
   it('persisted stale marks reach the state function; replacing an upstream approval marks approved dependents', { timeout: 30_000 }, async () => {
     const h = await harness({ withDependentLabel: true });
     const r = repos({ id: tenantId }, { id: userId });

@@ -8,6 +8,12 @@
  *                    conversation whose owner `startConversation` authorized)
  *   - candidates  -> `repos(tenant, user).deliverables` (tenant + owner RLS)
  *
+ * Iterar / Reintentar rows go through the repository's guarded iteration
+ * insert (shared with KAN-34 `refinements.createIteration`): ownership via
+ * the conversation, parent status, anchor in parent, and the iteration
+ * number computed under a root lock. The core's `iterationNumber` /
+ * `iterationRootId` are therefore not sent; the returned row is authoritative.
+ *
  * Deliverables are written by the agent workers (`aiTurns.settleTaskAndEnqueue`),
  * never here: `recordSettlement` only settles the task row for the
  * non-durable LocalAdapter path, and only while it is still active, so a
@@ -87,12 +93,16 @@ export class PostgresDeliverableWorkflowStore implements IDeliverableWorkflowSto
       idempotencyKey: input.commandId as UUID,
       requirementsSnapshot: input.requirementsSnapshot,
       owner: this.user,
-      iteration: input.iteration,
+      // The repository derives the root and the number from the parent under a lock.
+      iteration: input.iteration
+        ? { parentTaskId: input.iteration.parentTaskId, trigger: input.iteration.trigger }
+        : undefined,
     });
     if (result.ok) return { ok: true, task: toWorkflowTask(result.row) };
     if (result.reason === 'duplicate_command') {
       return { ok: false, reason: 'duplicate_command', task: toWorkflowTask(result.row) };
     }
+    if (result.reason === 'invalid_parent') return { ok: false, reason: 'parent_unavailable' };
     return { ok: false, reason: 'active_task_exists' };
   }
 
