@@ -1,6 +1,6 @@
 'use server';
 
-import { requireGlobalMfa, resolveIdentity, type ResolvedIdentity } from '../../src/auth/resolve-identity';
+import { repositoryActor, requirePlatformStepUp, resolveIdentity, type ResolvedIdentity } from '../../src/auth/resolve-identity';
 import { repos } from '../../src/repos';
 import { AiAdminService } from '../../src/services/ai-config/admin-service';
 import { AiConfigService } from '../../src/services/ai-config/service';
@@ -14,27 +14,22 @@ export interface AiAdminActionResult<T> {
 }
 
 function configService(identity: ResolvedIdentity): AiConfigService {
-  const actor = { workosUserId: identity.workosUserId, platformAdmin: identity.platformAdmin, tenantRole: identity.tenantRole };
-  return new AiConfigService(() => repos(identity.tenant, identity.user, actor).aiConfig);
+  return new AiConfigService(() => repos(identity.tenant, identity.user, repositoryActor(identity)).aiConfig);
 }
 
 function adminService(identity: ResolvedIdentity): AiAdminService {
-  return new AiAdminService(() => repos(identity.tenant, identity.user, {
-    workosUserId: identity.workosUserId,
-    platformAdmin: identity.platformAdmin,
-    tenantRole: identity.tenantRole,
-  }).aiTurns);
+  return new AiAdminService(() => repos(identity.tenant, identity.user, repositoryActor(identity)).aiTurns);
 }
 
 function promptSyncService(identity: ResolvedIdentity): AiPromptSyncService {
-  const actor = { workosUserId: identity.workosUserId, platformAdmin: identity.platformAdmin, tenantRole: identity.tenantRole };
-  return new AiPromptSyncService(() => repos(identity.tenant, identity.user, actor).aiConfig);
+  return new AiPromptSyncService(() => repos(identity.tenant, identity.user, repositoryActor(identity)).aiConfig);
 }
 
 async function action<T>(work: (identity: ResolvedIdentity) => Promise<T>): Promise<AiAdminActionResult<T>> {
   try {
     const identity = await resolveIdentity();
-    if (identity.platformAdmin) await requireGlobalMfa();
+    // A real platform admin needs the step-up even while acting with reduced roles (KAN-79).
+    await requirePlatformStepUp(identity);
     const data = await work(identity);
     return { ok: true, data: JSON.parse(JSON.stringify(data)) as T };
   } catch {
@@ -56,7 +51,7 @@ export async function getAiConfigAdminData() {
     const [releases, sharedReleases, activation, providers, syncEvents, usage, turns] = await Promise.all([
       config.listReleases(identity),
       config.listSharedReleases(identity),
-      repos(identity.tenant, identity.user, { workosUserId: identity.workosUserId, platformAdmin: identity.platformAdmin, tenantRole: identity.tenantRole }).aiConfig.getActivation(),
+      repos(identity.tenant, identity.user, repositoryActor(identity)).aiConfig.getActivation(),
       identity.tenantRole === 'admin' ? config.listProviderAvailability(identity) : Promise.resolve([]),
       identity.tenantRole === 'admin' || identity.platformAdmin ? config.listSyncEvents(identity) : Promise.resolve([]),
       identity.tenantRole === 'admin' ? admin.getUsage(identity) : Promise.resolve(null),
