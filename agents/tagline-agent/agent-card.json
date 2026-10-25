@@ -30,6 +30,10 @@
     "displayOrder": 3,
     "outputPreview": "tagline"
   },
+  "mypes:deliverable": {
+    "kind": "tagline",
+    "dependsOn": []
+  },
   "supportedInterfaces": [
     { "protocol": "local", "module": "agents/tagline-agent/handler.ts" }
   ]

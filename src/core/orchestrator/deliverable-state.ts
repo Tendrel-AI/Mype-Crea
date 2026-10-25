@@ -1,0 +1,290 @@
+/**
+ * MYPES Platform — Pure per-deliverable state function (KAN-28 / KAN-64)
+ * =======================================================================
+ *
+ * The second pure, table-testable artifact of the thesis claim (next to the
+ * planner): same snapshot + same workflow facts ⇒ same states, same allowed
+ * commands, same state tokens. No I/O, no LLM, no clock, no randomness, and
+ * no agent- or field-specific branching: dependencies come from the
+ * declarative map in the Agent Cards (`mypes:deliverable.dependsOn`).
+ *
+ * KAN-64 transition table (identifiers in English, see contracts/deliverables.ts):
+ *
+ *   blocked    required brief fields not filled, or an upstream kind is not
+ *              approved (or its approval is stale)          → no commands
+ *   enabled    preconditions met, no active task, no candidate yet
+ *                                                            → generate
+ *   generating latest task pending / in_progress             → cancel (pending only)
+ *   in_review  ≥1 candidate, none approved                   → iterate, approve
+ *   approved   one approved candidate                        → iterate, approve(other)
+ *   failed     latest task failed                            → retry (transient only)
+ *   stale      overlay on approved: an upstream approval changed after this
+ *              approval                                     → iterate, generate,
+ *                                                              approve(other); never automatic
+ *
+ * Precedence (first match wins): generating, failed, approved, in_review,
+ * enabled, blocked. Canceled tasks are ignored, so Cancelar returns the
+ * deliverable to the state it had before the canceled task.
+ *
+ * Generative commands (generate, iterate, retry) additionally require the
+ * preconditions to hold *now*: a deliverable with candidates whose brief
+ * lost a required field stays `in_review`/`approved`, but Iterar is not
+ * offered until the field is filled again (P0285: every command re-validates
+ * preconditions). Aprobar spends nothing and stays available.
+ */
+
+import {
+  DELIVERABLE_COMMAND_ORDER,
+  type ConversationSnapshot,
+  type DeliverableCandidateView,
+  type DeliverableCommandKind,
+  type DeliverableId,
+  type DeliverableStateKind,
+  type DeliverableStateView,
+} from '../contracts';
+import type { DeliverableSpec } from './agent-registry';
+import type { WorkflowCandidate, WorkflowTask } from './deliverable-workflow';
+
+/** Approval facts for one kind, as read from the approval store. */
+export interface ApprovalFact {
+  readonly deliverableKind: string;
+  readonly deliverableId: string;
+  readonly approvedAt: string;
+}
+
+/** Everything the state function reads besides the snapshot. */
+export interface DeliverableWorkflowFacts {
+  /** All tasks of the conversation (any agent). */
+  readonly tasks: ReadonlyArray<WorkflowTask>;
+  /** All candidates (deliverables) of the conversation (any kind). */
+  readonly candidates: ReadonlyArray<WorkflowCandidate>;
+  /** Current approval per kind. */
+  readonly approvals: ReadonlyArray<ApprovalFact>;
+  /** Kinds a store explicitly marked stale (optional capability). */
+  readonly markedStaleKinds?: ReadonlyArray<string>;
+}
+
+export const EMPTY_WORKFLOW_FACTS: DeliverableWorkflowFacts = Object.freeze({
+  tasks: [],
+  candidates: [],
+  approvals: [],
+});
+
+/**
+ * Pure staleness rule (RF-07 overlay): an approved kind is stale when any
+ * kind it depends on — directly or transitively — was approved *after* it.
+ * Replacing an upstream approval therefore marks every approved dependent
+ * stale; re-approving the dependent clears it. Unioned with any marks the
+ * approval store persisted.
+ */
+export function deriveStaleKinds(
+  specs: ReadonlyArray<DeliverableSpec>,
+  approvals: ReadonlyArray<ApprovalFact>,
+  markedStaleKinds: ReadonlyArray<string> = [],
+): ReadonlySet<string> {
+  const approvedAt = new Map(approvals.map((a) => [a.deliverableKind, a.approvedAt] as const));
+  const dependsOn = new Map(specs.map((s) => [s.deliverableKind, s.dependsOn] as const));
+  const stale = new Set<string>();
+  for (const spec of specs) {
+    const own = approvedAt.get(spec.deliverableKind);
+    if (own === undefined) continue;
+    const upstream = transitiveUpstream(spec.deliverableKind, dependsOn);
+    if ([...upstream].some((kind) => {
+      const at = approvedAt.get(kind);
+      return at !== undefined && at > own;
+    })) {
+      stale.add(spec.deliverableKind);
+    }
+  }
+  for (const kind of markedStaleKinds) {
+    if (approvedAt.has(kind)) stale.add(kind);
+  }
+  return stale;
+}
+
+/**
+ * Every kind that depends on `kind`, directly or transitively, sorted. Used
+ * by the command handler to mark dependents stale after a replacement.
+ */
+export function dependentKindsOf(
+  kind: string,
+  specs: ReadonlyArray<DeliverableSpec>,
+): ReadonlyArray<string> {
+  const out = new Set<string>();
+  const queue = [kind];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const spec of specs) {
+      if (spec.dependsOn.includes(current) && !out.has(spec.deliverableKind) && spec.deliverableKind !== kind) {
+        out.add(spec.deliverableKind);
+        queue.push(spec.deliverableKind);
+      }
+    }
+  }
+  return [...out].sort();
+}
+
+export interface DeriveDeliverableStateInput {
+  readonly spec: DeliverableSpec;
+  readonly facts: DeliverableWorkflowFacts;
+  /** Kinds approved and not stale (upstream gate). */
+  readonly usableApprovedKinds: ReadonlySet<string>;
+  readonly staleKinds: ReadonlySet<string>;
+}
+
+/** Derive the state of one deliverable. Pure. */
+export function deriveDeliverableState(
+  snapshot: ConversationSnapshot,
+  input: DeriveDeliverableStateInput,
+): DeliverableStateView {
+  const { spec, facts } = input;
+  const agentState = snapshot.agentStates[spec.agentId];
+
+  const missingFields = spec.requiredFields
+    .filter((field) => agentState?.requiredFields[field]?.status !== 'filled')
+    .sort();
+  const missingUpstream = spec.dependsOn
+    .filter((kind) => !input.usableApprovedKinds.has(kind))
+    .sort();
+  const preconditionsMet = missingFields.length === 0 && missingUpstream.length === 0;
+
+  const ownTasks = facts.tasks
+    .filter((task) => task.agentId === spec.agentId && task.status !== 'canceled')
+    .slice()
+    .sort(byCreation);
+  const latest = ownTasks.length > 0 ? ownTasks[ownTasks.length - 1] : null;
+
+  const candidates: DeliverableCandidateView[] = facts.candidates
+    .filter((candidate) => candidate.kind === spec.deliverableKind)
+    .slice()
+    .sort((a, b) => compare(a.createdAt, b.createdAt) || compare(a.deliverableId, b.deliverableId))
+    .map((candidate) => ({
+      deliverableId: candidate.deliverableId,
+      taskId: candidate.agentTaskId,
+      contentUrl: candidate.contentUrl,
+      contentInline: candidate.contentInline,
+      createdAt: candidate.createdAt,
+    }));
+
+  const approval = facts.approvals.find((a) => a.deliverableKind === spec.deliverableKind) ?? null;
+  const approvedDeliverableId = (approval?.deliverableId ?? null) as DeliverableId | null;
+  const hasOtherCandidate = candidates.some((c) => c.deliverableId !== approvedDeliverableId);
+
+  let state: DeliverableStateKind;
+  const allowed = new Set<DeliverableCommandKind>();
+
+  if (latest && (latest.status === 'pending' || latest.status === 'in_progress')) {
+    state = 'generating';
+    if (latest.status === 'pending') allowed.add('cancel');
+  } else if (latest && latest.status === 'failed') {
+    state = 'failed';
+    if (latest.errorCategory === 'transient' && preconditionsMet) allowed.add('retry');
+  } else if (approvedDeliverableId !== null) {
+    state = 'approved';
+    if (hasOtherCandidate) allowed.add('approve');
+    if (preconditionsMet) allowed.add('iterate');
+    if (preconditionsMet && input.staleKinds.has(spec.deliverableKind)) allowed.add('generate');
+  } else if (candidates.length > 0) {
+    state = 'in_review';
+    allowed.add('approve');
+    if (preconditionsMet) allowed.add('iterate');
+  } else if (preconditionsMet) {
+    state = 'enabled';
+    allowed.add('generate');
+  } else {
+    state = 'blocked';
+  }
+
+  const stale = state === 'approved' && input.staleKinds.has(spec.deliverableKind);
+  const allowedCommands = DELIVERABLE_COMMAND_ORDER.filter((kind) => allowed.has(kind));
+  const activeTask =
+    latest && (latest.status === 'pending' || latest.status === 'in_progress')
+      ? { taskId: latest.id, status: latest.status }
+      : null;
+  const lastFailure =
+    latest && latest.status === 'failed'
+      ? {
+          taskId: latest.id,
+          errorCategory: latest.errorCategory,
+          retryable: latest.errorCategory === 'transient',
+        }
+      : null;
+
+  const stateToken = tokenOf([
+    'v1',
+    spec.agentId,
+    state,
+    stale ? 'stale' : 'fresh',
+    allowedCommands.join(','),
+    latest ? `${latest.id}:${latest.status}` : '-',
+    approvedDeliverableId ?? '-',
+    candidates.map((c) => c.deliverableId).join(','),
+    missingFields.join(','),
+    missingUpstream.join(','),
+  ]);
+
+  return {
+    agentId: spec.agentId,
+    deliverableKind: spec.deliverableKind,
+    state,
+    stale,
+    allowedCommands,
+    missingFields,
+    missingUpstream,
+    activeTask,
+    lastFailure,
+    candidates,
+    approvedDeliverableId,
+    stateToken,
+  };
+}
+
+/** Derive every registered deliverable's state, sorted by agentId. Pure. */
+export function deriveDeliverableStates(
+  snapshot: ConversationSnapshot,
+  specs: ReadonlyArray<DeliverableSpec>,
+  facts: DeliverableWorkflowFacts = EMPTY_WORKFLOW_FACTS,
+): ReadonlyArray<DeliverableStateView> {
+  const staleKinds = deriveStaleKinds(specs, facts.approvals, facts.markedStaleKinds);
+  const usableApprovedKinds = new Set(
+    facts.approvals.map((a) => a.deliverableKind).filter((kind) => !staleKinds.has(kind)),
+  );
+  return specs
+    .slice()
+    .sort((a, b) => compare(a.agentId, b.agentId))
+    .map((spec) => deriveDeliverableState(snapshot, { spec, facts, usableApprovedKinds, staleKinds }));
+}
+
+function transitiveUpstream(
+  kind: string,
+  dependsOn: ReadonlyMap<string, ReadonlyArray<string>>,
+): ReadonlySet<string> {
+  const out = new Set<string>();
+  const queue = [...(dependsOn.get(kind) ?? [])];
+  while (queue.length > 0) {
+    const next = queue.shift()!;
+    if (out.has(next) || next === kind) continue;
+    out.add(next);
+    queue.push(...(dependsOn.get(next) ?? []));
+  }
+  return out;
+}
+
+function byCreation(a: WorkflowTask, b: WorkflowTask): number {
+  return compare(a.createdAt, b.createdAt) || a.iterationNumber - b.iterationNumber || compare(a.id, b.id);
+}
+
+function compare(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** FNV-1a 32-bit over the joined parts. Deterministic and dependency-free. */
+function tokenOf(parts: ReadonlyArray<string>): string {
+  const text = parts.join('|');
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `ds1-${hash.toString(16).padStart(8, '0')}`;
+}

@@ -30,6 +30,10 @@
     "displayOrder": 2,
     "outputPreview": "logo"
   },
+  "mypes:deliverable": {
+    "kind": "logo",
+    "dependsOn": []
+  },
   "supportedInterfaces": [
     { "protocol": "local", "module": "agents/logo-agent/handler.ts" }
   ]
