@@ -18,7 +18,8 @@ vi.mock('@fal-ai/client', () => ({
   },
 }));
 
-import { FalImageProvider } from '../fal-provider';
+import { classifyFalError, FalImageProvider } from '../fal-provider';
+import { TaskError } from '../../../core/task-errors';
 import { getImageGenerator, resetImageGenerator } from '../index';
 
 describe('FalImageProvider', () => {
@@ -53,6 +54,12 @@ describe('FalImageProvider', () => {
 
   it('throws cleanly when constructed without an API key', () => {
     expect(() => new FalImageProvider('')).toThrow(/FAL_KEY is not set/);
+    expect(() => new FalImageProvider('')).toThrow(expect.objectContaining({ kind: 'config_missing' }));
+  });
+
+  it('throws a config_missing TaskError when FAL_KEY is unset', () => {
+    vi.stubEnv('FAL_KEY', '');
+    expect(() => getImageGenerator()).toThrow(expect.objectContaining({ kind: 'config_missing' }));
   });
 
   it('calls fal.config with the provided API key', () => {
@@ -101,9 +108,48 @@ describe('FalImageProvider', () => {
     await expect(provider.generate({ prompt: 'x' })).rejects.toThrow(/no image URL/);
   });
 
-  it('propagates errors from fal.subscribe', async () => {
-    subscribeSpy.mockRejectedValueOnce(new Error('fal upstream error'));
+  it('propagates untyped errors from fal.subscribe unchanged', async () => {
+    const upstream = new Error('fal upstream error');
+    subscribeSpy.mockRejectedValueOnce(upstream);
     const provider = new FalImageProvider('test-key');
-    await expect(provider.generate({ prompt: 'x' })).rejects.toThrow(/fal upstream error/);
+    await expect(provider.generate({ prompt: 'x' })).rejects.toBe(upstream);
+  });
+
+  it('rethrows a fal HTTP error as a typed TaskError', async () => {
+    subscribeSpy.mockRejectedValueOnce(Object.assign(new Error('Too Many Requests'), { status: 429 }));
+    const provider = new FalImageProvider('test-key');
+    const rejection = provider.generate({ prompt: 'x' });
+    await expect(rejection).rejects.toBeInstanceOf(TaskError);
+    await expect(rejection).rejects.toMatchObject({ kind: 'rate_limited', message: 'Too Many Requests' });
+  });
+});
+
+/** Synthetic stand-in for `@fal-ai/client` ApiError (the module is mocked above). */
+function apiError(status: number, body?: unknown, extra: Record<string, unknown> = {}): Error {
+  return Object.assign(new Error(`HTTP ${status}`), { status, body, ...extra });
+}
+
+describe('classifyFalError', () => {
+  it.each([
+    ['422 content_policy_violation detail', apiError(422, { detail: [{ type: 'content_policy_violation', msg: 'flagged', loc: ['body'] }] }), 'content_policy'],
+    ['400 with an NSFW message in detail', apiError(400, { detail: 'NSFW content detected' }), 'content_policy'],
+    ['429', apiError(429), 'rate_limited'],
+    ['504', apiError(504), 'timeout'],
+    ['408', apiError(408), 'timeout'],
+    ['a fal timeoutType', apiError(500, undefined, { timeoutType: 'infrastructure' }), 'timeout'],
+    ['500', apiError(500), 'provider_unavailable'],
+    ['503', apiError(503), 'provider_unavailable'],
+    ['401', apiError(401), 'provider_rejected'],
+    ['422 field validation', apiError(422, { detail: [{ type: 'missing', msg: 'Field required', loc: ['body', 'prompt'] }] }), 'provider_rejected'],
+    ['a TimeoutError', Object.assign(new Error('The operation timed out'), { name: 'TimeoutError' }), 'timeout'],
+    ['an ETIMEDOUT code', Object.assign(new Error('socket'), { code: 'ETIMEDOUT' }), 'timeout'],
+    ['fetch failed with ECONNRESET cause', Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } }), 'provider_unavailable'],
+  ] as const)('maps %s to %s', (_label, err, kind) => {
+    expect(classifyFalError(err)?.kind).toBe(kind);
+  });
+
+  it('returns null when the error has no usable signal', () => {
+    expect(classifyFalError(new Error('something odd'))).toBeNull();
+    expect(classifyFalError('not an error')).toBeNull();
   });
 });

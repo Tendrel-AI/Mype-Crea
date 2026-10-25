@@ -5,7 +5,7 @@ import type { ConversationId, TaskId, UUID } from '../core/contracts';
 
 import { withTenantAdminTransaction, withTenantTransaction, type Tenant, type TxClient, type User } from '../db/with-transaction';
 
-import type { AiTurnAttempt, DeliverableKind, MessageRow, UsageSummary } from './models';
+import type { AiTurnAttempt, DeliverableKind, ErrorCategory, MessageRow, UsageSummary } from './models';
 
 import type { A2AArtifact } from '../core/agent-types';
 
@@ -893,7 +893,11 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
 
       artifacts: ReadonlyArray<A2AArtifact>;
 
-      errorCategory?: string;
+      /** Failure detail stored in `agent_tasks.error` (failed only). */
+      error?: { readonly kind: string; readonly message: string };
+
+      /** Classified category for `agent_tasks.error_category` (failed only). */
+      errorCategory?: ErrorCategory;
 
     }): Promise<{ deliverableIds: UUID[] }> {
       return withTenantTransaction(tenant, user, async (tx) => {
@@ -961,13 +965,26 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
           }
         }
         if (!['completed', 'failed'].includes(priorStatus)) {
+          // `error` and `error_category` are both set or both null (CHECK on
+          // agent_tasks). Unclassified failures default to permanent_bug.
+          const failed = input.state === 'failed';
           await tx.query(
             `UPDATE agent_tasks
         SET status=$4,
         completed_at=now(),
-        error_category=$5
+        error_category=$5,
+        error=$6::jsonb
         WHERE tenant_id=$1 AND id=$2 AND conversation_id=$3`,
-            [tenant.id, input.taskId, input.conversationId, input.state, input.state === 'failed' ? (input.errorCategory ?? 'permanent_bug') : null],
+            [
+              tenant.id,
+              input.taskId,
+              input.conversationId,
+              input.state,
+              failed ? (input.errorCategory ?? 'permanent_bug') : null,
+              failed
+                ? JSON.stringify(input.error ?? { kind: 'unknown', message: 'No error detail supplied' })
+                : null,
+            ],
           );
 
           await tx.query(

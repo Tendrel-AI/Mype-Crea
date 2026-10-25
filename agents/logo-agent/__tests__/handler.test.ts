@@ -12,6 +12,7 @@ import { buildLogoPrompt, handler } from '../handler';
 import { resetImageGenerator, setImageGenerator } from '../../../src/services/image';
 import type { ImageRequest, ImageResult } from '../../../src/services/image';
 import type { A2AMessage } from '../../../src/core/agent-types';
+import { TaskError } from '../../../src/core/task-errors';
 
 function makeMessage(reqs: Record<string, unknown>): A2AMessage {
   return {
@@ -103,5 +104,25 @@ describe('logo-agent handler', () => {
     });
     expect(withPalette).toContain('Paleta de colores: azul');
     expect(withoutPalette).not.toContain('Paleta de colores');
+  });
+
+  it.each([
+    ['content_policy', new TaskError('content_policy', 'blocked by safety filter')],
+    ['config_missing', new TaskError('config_missing', 'FAL_KEY is not set')],
+    ['timeout', new TaskError('timeout', 'request timed out')],
+    ['handler_threw', new Error('unexpected')],
+  ] as const)('returns a failed result with kind %s when image generation fails (KAN-58)', async (kind, err) => {
+    setImageGenerator({ generate: vi.fn(async () => { throw err; }) });
+
+    const result = await handler(
+      makeMessage({ business_name: 'Café Andino', style_keywords: 'minimalista' }),
+      undefined,
+    );
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      taskId: '11111111-1111-1111-1111-111111111111',
+      error: { kind, message: err.message },
+    });
   });
 });

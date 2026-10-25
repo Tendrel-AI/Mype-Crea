@@ -15,8 +15,14 @@
  * step from prompt-build through generator return is logged with the
  * canonical `taskId` so the lifecycle is auditable end-to-end alongside the
  * worker's logs.
+ *
+ * Failures: an image-generation error is returned as a failed A2ATaskResult
+ * whose `error.kind` is the typed kind from the image service
+ * (`content_policy`, `config_missing`, `rate_limited`, `timeout`, …), or
+ * `handler_threw` when the error carries no kind (architecture §2.5).
  */
 import type { AgentHandler } from '../../src/core/agent-types';
+import { taskErrorFromThrown } from '../../src/core/task-errors';
 import { getImageGenerator } from '../../src/services/image';
 import { loggerFor } from '../../src/services/logger';
 
@@ -76,11 +82,17 @@ export const handler: AgentHandler<undefined> = async (message) => {
     providerId = result.providerId;
     modelId = result.modelId;
   } catch (err) {
+    const error = taskErrorFromThrown(err);
     child.error(
-      { err, durationMs: Date.now() - startedAt },
+      { err, errorKind: error.kind, durationMs: Date.now() - startedAt },
       'agent.logo.image_generation_failed',
     );
-    throw err;
+    return {
+      status: 'failed',
+      taskId: message.taskId,
+      error,
+      completedAt: new Date().toISOString(),
+    };
   }
 
   child.info(

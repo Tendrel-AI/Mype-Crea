@@ -22,6 +22,7 @@ import type {
   TaskState,
 } from '../../core/agent-types';
 import type { AgentId, TaskId } from '../../core/contracts';
+import { TaskError } from '../../core/task-errors';
 import {
   buildAgentTaskRow,
   buildWorkerTestContext,
@@ -96,7 +97,7 @@ describe('logo-agent worker', () => {
     await flushMicrotasks();
     await flushMicrotasks();
 
-    expect(claimById).toHaveBeenCalledWith(row.id);
+    expect(claimById).toHaveBeenCalledWith(row.id, 'logo-agent');
     expect(fakeHandler).toHaveBeenCalledTimes(1);
 
     const handlerCall = (fakeHandler as ReturnType<typeof vi.fn>).mock.calls[0]
@@ -199,20 +200,26 @@ describe('logo-agent worker', () => {
     expect(onTaskSettled).not.toHaveBeenCalled();
   });
 
-  it.fails('does not claim a non-logo task delivered on the logo channel', async () => {
+  it('does not claim a non-logo task delivered on the logo channel', async () => {
     const subscriber = new FakeSubscriber();
+    const registry = new AgentRegistry();
+    const fakeHandler = vi.fn();
+    registry.register(logoCard as AgentCard, fakeHandler as never, undefined);
     const row = buildAgentTaskRow({ agentId: 'tagline-agent' as AgentId, status: 'pending' });
     const findById = vi.fn(async () => row);
     const claimById = vi.fn(async () => ({ ...row, status: 'in_progress' as const }));
+    const onTaskSettled = vi.fn();
 
     await startLogoAgentWorker(
       buildWorkerTestContext({
         subscriber,
+        registry,
         systemReposFor: () =>
           ({
             agentTasks: { findById, claimById } as never,
             llmCalls: {} as never,
           }),
+        onTaskSettled,
       }),
     );
 
@@ -226,8 +233,11 @@ describe('logo-agent worker', () => {
     );
     await flushMicrotasks();
 
+    // The row stays pending for its owner: never claimed, run, or settled here.
     expect(findById).toHaveBeenCalledWith(row.id);
     expect(claimById).not.toHaveBeenCalled();
+    expect(fakeHandler).not.toHaveBeenCalled();
+    expect(onTaskSettled).not.toHaveBeenCalled();
   });
 
   it('awaits async onTaskSettled before finishing message handling', async () => {
@@ -340,5 +350,109 @@ describe('logo-agent worker', () => {
     const [, state] = (onTaskSettled as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(state.status).toBe('failed');
     expect(state.result.error.message).toBe('image provider down');
+  });
+  it('keeps the typed kind when the handler throws a TaskError (KAN-58)', async () => {
+    const subscriber = new FakeSubscriber();
+    const registry = new AgentRegistry();
+    registry.register(logoCard as AgentCard, vi.fn(async () => {
+      throw new TaskError('rate_limited', 'provider throttled');
+    }), undefined);
+    const row = buildAgentTaskRow();
+    const findById = vi.fn(async () => ({ ...row, status: 'pending' as const }));
+    const claimById = vi.fn(async () => row);
+    const onTaskSettled = vi.fn();
+
+    await startLogoAgentWorker(buildWorkerTestContext({
+      subscriber,
+      registry,
+      systemReposFor: () => ({ agentTasks: { findById, claimById } as never, llmCalls: {} as never }),
+      onTaskSettled,
+    }));
+    subscriber.emitMessage(channelForAgent('logo-agent' as AgentId), JSON.stringify({
+      taskId: row.id,
+      tenantId: '66666666-6666-6666-6666-666666666666',
+      agentId: 'logo-agent',
+    }));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    const [, state] = (onTaskSettled as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(state.result.error).toEqual({ kind: 'rate_limited', message: 'provider throttled' });
+  });
+
+  it('durably settles a failure with its error detail and classified category (KAN-58)', async () => {
+    const subscriber = new FakeSubscriber();
+    const registry = new AgentRegistry();
+    registry.register(logoCard as AgentCard, vi.fn(async (message: A2AMessage) => ({
+      status: 'failed' as const,
+      taskId: message.taskId,
+      error: { kind: 'content_policy', message: 'blocked by provider safety filter' },
+      completedAt: '2026-05-04T00:00:01Z',
+    })), undefined);
+    const row = buildAgentTaskRow();
+    const findById = vi.fn(async () => ({ ...row, status: 'pending' as const }));
+    const claimById = vi.fn(async () => row);
+    const settleTaskAndEnqueue = vi.fn(async () => ({ deliverableIds: [] }));
+    const onTaskSettled = vi.fn(async () => undefined);
+
+    await startLogoAgentWorker(buildWorkerTestContext({
+      subscriber,
+      registry,
+      systemReposFor: () => ({ agentTasks: { findById, claimById } as never, llmCalls: {} as never }),
+      settleTaskFor: () => ({ settleTaskAndEnqueue } as never),
+      onTaskSettled,
+    }));
+    subscriber.emitMessage(channelForAgent('logo-agent' as AgentId), JSON.stringify({
+      taskId: row.id,
+      tenantId: '66666666-6666-6666-6666-666666666666',
+      agentId: 'logo-agent',
+    }));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(settleTaskAndEnqueue).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: row.id,
+      state: 'failed',
+      artifacts: [],
+      error: { kind: 'content_policy', message: 'blocked by provider safety filter' },
+      errorCategory: 'content_policy',
+    }));
+    expect(onTaskSettled).toHaveBeenCalledWith(row.id, expect.objectContaining({ status: 'failed' }), [],
+      expect.objectContaining({ durableSettlement: true }));
+  });
+
+  it('contains a failing durable settlement and does not announce it', async () => {
+    const subscriber = new FakeSubscriber();
+    const registry = new AgentRegistry();
+    registry.register(logoCard as AgentCard, vi.fn(async (message: A2AMessage) => ({
+      status: 'completed' as const,
+      taskId: message.taskId,
+      artifacts: [],
+      completedAt: '2026-05-04T00:00:01Z',
+    })), undefined);
+    const row = buildAgentTaskRow();
+    const findById = vi.fn(async () => ({ ...row, status: 'pending' as const }));
+    const claimById = vi.fn(async () => row);
+    const settleTaskAndEnqueue = vi.fn(async () => {
+      throw new Error('database unavailable');
+    });
+    const onTaskSettled = vi.fn(async () => undefined);
+
+    await startLogoAgentWorker(buildWorkerTestContext({
+      subscriber,
+      registry,
+      systemReposFor: () => ({ agentTasks: { findById, claimById } as never, llmCalls: {} as never }),
+      settleTaskFor: () => ({ settleTaskAndEnqueue } as never),
+      onTaskSettled,
+    }));
+    const onMessage = subscriber.listeners('message')[0] as (channel: string, payload: string) => Promise<void>;
+    await expect(onMessage(channelForAgent('logo-agent' as AgentId), JSON.stringify({
+      taskId: row.id,
+      tenantId: '66666666-6666-6666-6666-666666666666',
+      agentId: 'logo-agent',
+    }))).resolves.toBeUndefined();
+
+    expect(settleTaskAndEnqueue).toHaveBeenCalledTimes(1);
+    expect(onTaskSettled).not.toHaveBeenCalled();
   });
 });

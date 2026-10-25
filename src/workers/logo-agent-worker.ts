@@ -10,7 +10,9 @@
  *   1. Receive `{ taskId, tenantId }` on `mypes:agent_task:dispatch:logo-agent`.
  *   2. Re-read the canonical row from Postgres (tenant-scoped via repos).
  *      The notification is a trigger, not a payload — never trusted.
- *   3. Atomically claim the row (`pending` -> `in_progress`); skip if it's
+ *   3. Skip rows addressed to another agent without touching them, so they
+ *      stay `pending` for their owner. Otherwise atomically claim the row
+ *      (`pending` -> `in_progress`, conditional on `agent_id`); skip if it's
  *      already been claimed by a peer worker or moved past pending.
  *   4. Build an A2AMessage from the row, invoke the registry's logo handler.
  *   5. Hand the resulting TaskState back to OrchestratorCoreImpl.onTaskSettled,
@@ -35,6 +37,7 @@ import type {
 import type { AgentId, ConversationId, DeliverableId, TaskId, UUID } from '../core/contracts';
 import { channelForAgent } from '../transport/redis-queue-adapter';
 import type { DispatchNotification } from '../transport/redis-queue-adapter';
+import { classifyTaskError, taskErrorFromThrown } from '../core/task-errors';
 import { loggerFor } from '../services/logger';
 import type { DeliverablesRepoLike, WorkerContext } from './_kit';
 
@@ -113,9 +116,20 @@ export async function startLogoAgentWorker(
       'worker.logo.row_loaded',
     );
 
+    // A task for another agent must stay claimable by its owner: never move
+    // it to in_progress here. The claim below is also conditional on the
+    // agent id, so this holds even if the row changed in between.
+    if (preClaim.agentId !== LOGO_AGENT_ID) {
+      child.warn(
+        { actualAgent: preClaim.agentId },
+        'worker.logo.skip_wrong_agent_on_channel',
+      );
+      return;
+    }
+
     let claimed;
     try {
-      claimed = await repo.claimById(taskId);
+      claimed = await repo.claimById(taskId, LOGO_AGENT_ID);
     } catch (err) {
       child.error({ err }, 'worker.logo.claim_failed');
       return;
@@ -124,13 +138,6 @@ export async function startLogoAgentWorker(
       child.info(
         { statusBeforeClaim: preClaim.status },
         'worker.logo.skip_not_claimable',
-      );
-      return;
-    }
-    if (claimed.agentId !== LOGO_AGENT_ID) {
-      child.warn(
-        { actualAgent: claimed.agentId },
-        'worker.logo.skip_wrong_agent_on_channel',
       );
       return;
     }
@@ -188,10 +195,7 @@ export async function startLogoAgentWorker(
       result = {
         status: 'failed',
         taskId: claimed.id,
-        error: {
-          kind: 'handler_threw',
-          message: err instanceof Error ? err.message : String(err),
-        },
+        error: taskErrorFromThrown(err),
         completedAt: new Date().toISOString(),
       };
     }
@@ -227,16 +231,32 @@ export async function startLogoAgentWorker(
     }
     let durableSettlement = false;
     if (ownerUserId && deps.settleTaskFor) {
-      const settled = await deps.settleTaskFor(tenantId as UUID, ownerUserId).settleTaskAndEnqueue({
-        conversationId: claimed.conversationId,
-        taskId: claimed.id,
-        state: finalState.status,
-        deliverableKind: LOGO_DELIVERABLE_KIND,
-        artifacts: finalState.status === 'completed' ? finalState.result.artifacts : [],
-        ...(finalState.status === 'failed' ? { errorCategory: finalState.result.error.kind } : {}),
-      });
-      deliverableIds = settled.deliverableIds as DeliverableId[];
-      durableSettlement = true;
+      try {
+        const settled = await deps.settleTaskFor(tenantId as UUID, ownerUserId).settleTaskAndEnqueue({
+          conversationId: claimed.conversationId,
+          taskId: claimed.id,
+          state: finalState.status,
+          deliverableKind: LOGO_DELIVERABLE_KIND,
+          artifacts: finalState.status === 'completed' ? finalState.result.artifacts : [],
+          ...(finalState.status === 'failed'
+            ? {
+                error: {
+                  kind: finalState.result.error.kind,
+                  message: finalState.result.error.message,
+                },
+                errorCategory: classifyTaskError(finalState.result.error),
+              }
+            : {}),
+        });
+        deliverableIds = settled.deliverableIds as DeliverableId[];
+        durableSettlement = true;
+      } catch (err) {
+        // Nothing was committed: the row stays in_progress, which is the
+        // operator review signal (architecture §2.5). Do not announce a
+        // settlement that is not durable, and never reject the listener.
+        child.error({ err, status: finalState.status }, 'worker.logo.settlement_failed');
+        return;
+      }
     } else if (
       finalState.status === 'completed' &&
       finalState.result.artifacts.length > 0 &&
