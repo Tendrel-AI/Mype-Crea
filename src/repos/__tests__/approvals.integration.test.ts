@@ -521,6 +521,68 @@ SUITE('KAN-34 approvals, staleness and refinement (integration)', () => {
     expect((await r.approvals.listStale(conv)).map((s) => s.deliverableKind)).toEqual(['label', 'social_pack']);
   });
 
+  it('only the conversation owner approves; a tenant admin reads but cannot approve or mark', async () => {
+    const conv = await newConversation(A.tenant, A.member);
+    const { ids: [logo1, logo2] } = await candidates(A.tenant, A.member, conv, 'logo', 2);
+    const ownerStore = createPostgresApprovalStore(A.tenant, A.member);
+    expect((await ownerStore.approve({
+      conversationId: conv, deliverableKind: 'logo', deliverableId: logo1, expectedApprovedId: null,
+      dependentKinds: ['label'],
+    })).ok).toBe(true);
+
+    // A tenant admin USER (role admin) acting through the product path is not the owner.
+    const adminStore = createPostgresApprovalStore(A.tenant, A.admin);
+    for (const expectedApprovedId of [logo1, null]) {
+      expect(await adminStore.approve({
+        conversationId: conv, deliverableKind: 'logo', deliverableId: logo2, expectedApprovedId,
+        dependentKinds: ['label'],
+      })).toEqual({ ok: false, reason: 'not_found' });
+    }
+    await expect(
+      repos(A.tenant, A.admin).approvals.markStale({ conversationId: conv, deliverableKinds: ['label'] }),
+    ).rejects.toThrow('conversation not found');
+
+    // Tenant-admin context (support read path): reads the trail and the marks...
+    const adminRead = await withTenantAdminTransaction(A.tenant, async (tx) => ({
+      approvals: (await tx.query(`SELECT 1 FROM deliverable_approvals WHERE conversation_id = $1`, [conv])).rowCount,
+      marks: (await tx.query(`SELECT 1 FROM deliverable_stale_marks WHERE conversation_id = $1`, [conv])).rowCount,
+    }));
+    expect(adminRead).toEqual({ approvals: 1, marks: 1 });
+
+    // ...but RLS refuses any approval or mark it tries to write, with or without a user id.
+    const adminInsert = (sql: string, params: unknown[], asUser?: User) =>
+      withTenantAdminTransaction(A.tenant, async (tx) => {
+        if (asUser) await tx.query(`SELECT set_config('app.user_id', $1, true)`, [asUser.id]);
+        return tx.query(sql, params);
+      });
+    const insertApproval = `INSERT INTO deliverable_approvals
+        (tenant_id, conversation_id, user_id, deliverable_kind, deliverable_id, replaced_deliverable_id, approved_by)
+      VALUES ($1, $2, $3, 'logo', $4, $5, $6)`;
+    const insertMark = `INSERT INTO deliverable_stale_marks
+        (tenant_id, conversation_id, user_id, deliverable_kind, marked_by)
+      VALUES ($1, $2, $3, 'label', $4)`;
+    await expect(adminInsert(insertApproval, [A.tenant.id, conv, A.member.id, logo2, logo1, A.member.id]))
+      .rejects.toMatchObject({ code: '42501' });
+    await expect(adminInsert(insertApproval, [A.tenant.id, conv, A.member.id, logo2, logo1, A.admin.id], A.admin))
+      .rejects.toMatchObject({ code: '42501' });
+    await expect(adminInsert(insertMark, [A.tenant.id, conv, A.member.id, A.member.id]))
+      .rejects.toMatchObject({ code: '42501' });
+    await expect(adminInsert(insertMark, [A.tenant.id, conv, A.member.id, A.admin.id], A.admin))
+      .rejects.toMatchObject({ code: '42501' });
+    // The current approval itself (deliverables.selected_at / superseded_by) is owner-only too.
+    await expect(adminInsert(
+      `UPDATE deliverables SET selected_at = now(), superseded_by = NULL WHERE id = $1`, [logo2],
+    )).rejects.toMatchObject({ code: '42501' });
+    await expect(adminInsert(
+      `UPDATE deliverables SET selected_at = NULL, superseded_by = $2 WHERE id = $1`, [logo1, logo2], A.admin,
+    )).rejects.toMatchObject({ code: '42501' });
+
+    // Nothing changed: the owner's approval stands and only the owner wrote rows.
+    expect((await ownerStore.getApproved(conv)).map((a) => a.deliverableId)).toEqual([logo1]);
+    expect((await repos(A.tenant, A.member).approvals.listHistory(conv)).map((h) => h.approvedBy)).toEqual([A.member.id]);
+    expect((await selectedRows(conv, 'logo')).filter((row) => row.selected_at !== null).map((row) => row.id)).toEqual([logo1]);
+  });
+
   it('stores a capped, anchored refinement on the iteration only and never touches the brief', async () => {
     const conv = await newConversation(A.tenant, A.member);
     const brief = { 'logo-agent': { requiredFields: { business_name: { status: 'filled', value: 'Sazón Andino' } } } };
