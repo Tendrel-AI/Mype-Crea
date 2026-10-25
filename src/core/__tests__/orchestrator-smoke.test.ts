@@ -531,6 +531,55 @@ describe('orchestrator smoke (agent-agnostic)', () => {
     await expect(transport.getResult(taskId)).resolves.toMatchObject({ status: 'completed' });
     await expect(transport.waitForSettlement(newTaskId())).rejects.toThrow(/never dispatched/);
   });
+
+  it.each([
+    ['content_policy', 'content_policy'],
+    ['rate_limited', 'transient'],
+    ['config_missing', 'permanent_bug'],
+    ['something_new', 'permanent_bug'],
+  ] as const)(
+    'persists a failed task with kind %s as error_category %s (KAN-58)',
+    async (kind, expectedCategory) => {
+      const { registry, agentId } = buildSingleAgentFixtureRegistry();
+      const store = new InMemoryConversationStore(registry.getFieldSchemas());
+      const markFailed = vi.fn(async () => undefined);
+      const taskId = newTaskId();
+      const core = new OrchestratorCoreImpl({
+        store,
+        registry,
+        transport: {
+          dispatch: async (message) => ({ taskId: message.taskId }),
+          getResult: async (): Promise<TaskState> => ({ status: 'pending' }),
+        },
+        notifier: new InProcessDecisionNotifier(),
+        newTaskId,
+        agentTasksFor: () => ({
+          insertRoot: async () => ({ id: taskId }),
+          markCompleted: vi.fn(async () => undefined),
+          markFailed,
+        }),
+      });
+      const conversationId = randomUUID();
+      await core.startConversation(conversationId, randomUUID(), randomUUID());
+      await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
+
+      await core.onTaskSettled(taskId, {
+        status: 'failed',
+        result: {
+          status: 'failed',
+          taskId,
+          error: { kind, message: 'synthetic failure' },
+          completedAt: new Date().toISOString() as `${string}T${string}Z`,
+        },
+      });
+
+      expect(markFailed).toHaveBeenCalledWith(
+        taskId,
+        { kind, message: 'synthetic failure' },
+        expectedCategory,
+      );
+    },
+  );
 });
 
 /**

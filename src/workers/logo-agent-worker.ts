@@ -37,6 +37,7 @@ import type {
 import type { AgentId, ConversationId, DeliverableId, TaskId, UUID } from '../core/contracts';
 import { channelForAgent } from '../transport/redis-queue-adapter';
 import type { DispatchNotification } from '../transport/redis-queue-adapter';
+import { classifyTaskError, taskErrorFromThrown } from '../core/task-errors';
 import { loggerFor } from '../services/logger';
 import type { DeliverablesRepoLike, WorkerContext } from './_kit';
 
@@ -194,10 +195,7 @@ export async function startLogoAgentWorker(
       result = {
         status: 'failed',
         taskId: claimed.id,
-        error: {
-          kind: 'handler_threw',
-          message: err instanceof Error ? err.message : String(err),
-        },
+        error: taskErrorFromThrown(err),
         completedAt: new Date().toISOString(),
       };
     }
@@ -233,16 +231,32 @@ export async function startLogoAgentWorker(
     }
     let durableSettlement = false;
     if (ownerUserId && deps.settleTaskFor) {
-      const settled = await deps.settleTaskFor(tenantId as UUID, ownerUserId).settleTaskAndEnqueue({
-        conversationId: claimed.conversationId,
-        taskId: claimed.id,
-        state: finalState.status,
-        deliverableKind: LOGO_DELIVERABLE_KIND,
-        artifacts: finalState.status === 'completed' ? finalState.result.artifacts : [],
-        ...(finalState.status === 'failed' ? { errorCategory: finalState.result.error.kind } : {}),
-      });
-      deliverableIds = settled.deliverableIds as DeliverableId[];
-      durableSettlement = true;
+      try {
+        const settled = await deps.settleTaskFor(tenantId as UUID, ownerUserId).settleTaskAndEnqueue({
+          conversationId: claimed.conversationId,
+          taskId: claimed.id,
+          state: finalState.status,
+          deliverableKind: LOGO_DELIVERABLE_KIND,
+          artifacts: finalState.status === 'completed' ? finalState.result.artifacts : [],
+          ...(finalState.status === 'failed'
+            ? {
+                error: {
+                  kind: finalState.result.error.kind,
+                  message: finalState.result.error.message,
+                },
+                errorCategory: classifyTaskError(finalState.result.error),
+              }
+            : {}),
+        });
+        deliverableIds = settled.deliverableIds as DeliverableId[];
+        durableSettlement = true;
+      } catch (err) {
+        // Nothing was committed: the row stays in_progress, which is the
+        // operator review signal (architecture §2.5). Do not announce a
+        // settlement that is not durable, and never reject the listener.
+        child.error({ err, status: finalState.status }, 'worker.logo.settlement_failed');
+        return;
+      }
     } else if (
       finalState.status === 'completed' &&
       finalState.result.artifacts.length > 0 &&

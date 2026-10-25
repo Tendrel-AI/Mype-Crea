@@ -159,6 +159,37 @@ SUITE('agent_tasks repository (integration)', () => {
     expect(owned?.status).toBe('in_progress');
   });
 
+  it('durably settles a failed task with its error detail and classified category (KAN-58)', async () => {
+    const conversationId = await newConversation();
+    const sys = systemRepos({ id: tenantId });
+    const row = await sys.agentTasks.insertRoot({
+      conversationId,
+      agentId: 'logo-agent',
+      agentCardVersion: '1.0.0',
+      idempotencyKey: randomUUID(),
+      requirementsSnapshot: {},
+    });
+    await sys.agentTasks.claimById(row.id, 'logo-agent');
+
+    const settled = await repos({ id: tenantId }, { id: userId }).aiTurns.settleTaskAndEnqueue({
+      conversationId,
+      taskId: row.id,
+      state: 'failed',
+      deliverableKind: 'logo',
+      artifacts: [],
+      error: { kind: 'content_policy', message: 'synthetic safety rejection' },
+      errorCategory: 'content_policy',
+    });
+
+    expect(settled.deliverableIds).toEqual([]);
+    const stored = await sys.agentTasks.findById(row.id);
+    expect(stored).toMatchObject({
+      status: 'failed',
+      errorCategory: 'content_policy',
+      error: { kind: 'content_policy', message: 'synthetic safety rejection' },
+    });
+  });
+
   it('rejects JSONB writes that embed a UUID not visible under the current tenant', async () => {
     const conversationId = await newConversation();
     const sys = systemRepos({ id: tenantId });

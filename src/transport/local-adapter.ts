@@ -33,6 +33,7 @@ import type {
 } from '../core/agent-types';
 import type { TaskId } from '../core/contracts';
 import type { AgentRegistry } from '../core/orchestrator/agent-registry';
+import { taskErrorFromThrown } from '../core/task-errors';
 import { loggerFor } from '../services/logger';
 
 const log = loggerFor('transport.local');
@@ -78,13 +79,11 @@ export class LocalAdapter implements IAgentTransport {
       try {
         result = await entry.handler(message, entry.handlerDeps);
       } catch (err) {
+        // Keep a typed kind (e.g. `rate_limited`) when the thrown error carries one.
         result = {
           status: 'failed',
           taskId,
-          error: {
-            kind: 'handler_threw',
-            message: err instanceof Error ? err.message : String(err),
-          },
+          error: taskErrorFromThrown(err),
           completedAt: new Date().toISOString(),
         };
       }

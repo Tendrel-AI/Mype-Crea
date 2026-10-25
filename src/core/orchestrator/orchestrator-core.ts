@@ -38,6 +38,7 @@ import type {
   UUID,
 } from '../contracts';
 import type { A2AMessage, IAgentTransport, TaskState } from '../agent-types';
+import { classifyTaskError, type TaskErrorCategory } from '../task-errors';
 import { loggerFor } from '../../services/logger';
 import type { AgentRegistry } from './agent-registry';
 import type { TaskSettlementContext } from './runtime-config';
@@ -63,7 +64,7 @@ export interface AgentTasksRepoLike {
   markFailed(
     id: TaskId,
     error: Record<string, unknown>,
-    errorCategory: 'transient' | 'content_policy' | 'permanent_bug',
+    errorCategory: TaskErrorCategory,
   ): Promise<void>;
 }
 
@@ -561,7 +562,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
           await repo.markFailed(
             taskId,
             { kind: state.result.error.kind, message: state.result.error.message },
-            'transient',
+            classifyTaskError(state.result.error),
           );
         }
       } catch (err) {
