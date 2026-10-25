@@ -65,9 +65,11 @@ Details and pending decisions are in
 
 `npm run build` produces `.next/standalone`; `npm start` runs its server. The
 pilot targets Railway (`Tendrel_AI / mype-crea`). The development deployment is
-still being verified, and production is not set up. There is no public health
-endpoint or asset object-storage adapter yet. Do not treat these commands as
-evidence of a deployed pilot. See
+still being verified, and production is not set up. Liveness is
+`GET /api/health` and readiness (PostgreSQL, plus Redis when configured) is
+`GET /api/health/ready`; the suggested Railway healthcheck path is
+`/api/health/ready`. There is no asset object-storage adapter yet. Do not treat
+these commands as evidence of a deployed pilot. See
 [operations, sections 9 and 10](docs/operations.md#9-deployment) and
 [`pipeline/kan-62-topology.md`](pipeline/kan-62-topology.md).
 
