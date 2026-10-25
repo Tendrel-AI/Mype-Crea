@@ -48,7 +48,7 @@ The template with comments is [`.env.example`](../.env.example). Copy it to `.en
 
 | Group | Variables |
 |---|---|
-| Database | `DATABASE_URL` (migrations and admin scripts only), `APP_DATABASE_URL` (runtime, `app_user`) |
+| Database | `DATABASE_URL` (local `npm run migrate:*` and admin scripts only), `APP_DATABASE_URL` (runtime, `app_user`), `MIGRATION_DATABASE_URL` (deployed environments only: admin connection for `npm run migrate:deploy`; app code never reads it; see section 7) |
 | Redis | `REDIS_URL` |
 | Auth | `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_COOKIE_PASSWORD`, `NEXT_PUBLIC_WORKOS_REDIRECT_URI`, `PLATFORM_BOOTSTRAP_SUPERADMIN_WORKOS_USER_ID` (one-time bootstrap; clear after use) |
 | LLM provider | `LLM_PROVIDER`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_EXTRACTOR_MODEL`, `OPENROUTER_RESPONDER_MODEL`, `ANTHROPIC_EXTRACTOR_MODEL`, `ANTHROPIC_RESPONDER_MODEL` |
@@ -123,11 +123,67 @@ destroys local data and is not a routine step.
 
 ## 7. Migrations, build, and start
 
-- Migrations: `npm run migrate:up`. `migrate:create`, `migrate:down`, and `migrate:redo` exist
-  for development. Do not run `migrate:down` against a database with data you need.
+- Local migrations: `npm run migrate:up`. `migrate:create`, `migrate:down`, and `migrate:redo`
+  exist for development. They load `.env.local` and use `DATABASE_URL`. Do not run
+  `migrate:down` against a database with data you need.
 - Build: `npm run build` produces the standalone server in `.next/standalone`.
-- Start: `npm start` runs that server. Set the same runtime variables as in development. With
-  `REDIS_URL` set, the logo worker and the pending-task recovery scan start in this process.
+- Start: `npm start` runs that server with `HOSTNAME=0.0.0.0`, so it listens on all interfaces
+  (see section 9). Set the same runtime variables as in development. With `REDIS_URL` set, the
+  logo worker and the pending-task recovery scan start in this process.
+
+### Automatic migrations on deploy (KAN-83)
+
+Decided (owner, 2026-10-25): migrations apply themselves on every deploy, in development and
+production. [`railway.json`](../railway.json) sets the Railway pre-deploy command to
+`npm run migrate:deploy` ([`scripts/migrate-deploy.mjs`](../scripts/migrate-deploy.mjs)). Railway
+runs it after the build and before the new version starts, in its own container started from the
+built image, with the service variables and the private network (no volumes).
+
+- **Connection.** It reads only `MIGRATION_DATABASE_URL`: the admin (migration owner) role of
+  that environment's PostgreSQL, as a direct connection (not through PgBouncer in transaction
+  mode, which breaks the session advisory lock). It never falls back to `DATABASE_URL`,
+  `APP_DATABASE_URL`, or `.env` files, and app code never reads it. It refuses to run, with a
+  one-line error and a non-zero exit, when the variable is missing or unparsable, names no user,
+  uses `app_user`, or points at the same user, host, port, and database as `APP_DATABASE_URL`.
+- **Run.** It applies pending migrations with node-pg-migrate `up`, using the same `pgmigrations`
+  table, `public` schema, order check, and advisory lock as `npm run migrate:up`. All pending
+  migrations run in one transaction. If another deploy holds the lock, it waits and retries
+  (12 times, 5 seconds apart) and then finds nothing pending. With nothing pending it exits 0
+  right after one connection and one query of the migrations table.
+- **Logs.** The database name, the migration names, any failing SQL statement with its
+  PostgreSQL error, and the duration. Never the URL, the password, or the host.
+- **On failure** (bad variable, unreachable database, failing migration, lock still held after
+  the retries) it exits non-zero, Railway does not retry it and aborts the deploy, and the
+  previous version keeps serving. The single transaction rolls the batch back, unless a
+  migration opts out with `pgm.noTransaction()`. Read the deploy logs, fix forward in a new
+  commit, and deploy again.
+- **A rollback does not undo a migration.** Redeploying an older version keeps the newer schema.
+  That is safe only because migrations are add-only (below). Never run `migrate:down` against a
+  deployed database to "match" a rollback.
+- **No backup is taken by this step.** Recovery from a bad migration relies on Railway's
+  scheduled PostgreSQL backups, which must be enabled in both environments (owner action, see
+  section 9).
+- **Timeout.** Railway gives the pre-deploy command no time limit by default. Set a Pre-deploy
+  Timeout on the service so a migration stuck on a table lock fails the deploy instead of
+  holding it open.
+
+#### Add-only rule
+
+The previous version keeps serving while the new one migrates and starts, so every migration
+must work with the code already running. A migration's `up` may add tables, columns, functions,
+policies, triggers, indexes, and grants. Destructive or renaming changes (`DROP TABLE`, `DROP
+COLUMN`, `DROP FUNCTION`/`POLICY`/`TRIGGER`/`TYPE`, `RENAME`, `ALTER COLUMN ... TYPE`, `SET NOT
+NULL` on an existing column, `TRUNCATE`) go in a **later** deploy, once no running version needs
+the old shape. That file must say so with a marker comment that gives the reason:
+
+```js
+// destructive-ok: column note unused since the KAN-99 deploy
+```
+
+`scripts/__tests__/migrations-add-only.test.ts` (in CI's unit set) scans the `up` body of every
+migration newer than `1792800002400_approval-owner-only` and fails on those statements unless the
+file carries the marker. `down` is exempt. The scan is plain text, so it can flag a safe pattern
+such as `DROP TRIGGER IF EXISTS` before re-creating a trigger; add the marker with the reason.
 
 ## 8. Tests and evals
 
@@ -163,18 +219,45 @@ never runs evals. Tests under `evals/` are excluded from CI and run locally.
 Decided (KAN-15 / KAN-62): the pilot runs on the Railway project `Tendrel_AI / mype-crea`, with
 `development` and `production` environments. The proposed topology is one persistent Next.js
 instance per environment with its embedded logo worker, the existing Railway PostgreSQL and asset
-bucket, and Redis per environment. `APP_DATABASE_URL` must use `app_user`; an admin role is only
-for reviewed migrations. Reviewed source moves from `developer` to `main` before production.
+bucket, and Redis per environment. `APP_DATABASE_URL` must use `app_user`; the admin role is
+used only by the pre-deploy migration step through `MIGRATION_DATABASE_URL`. Reviewed source
+moves from `developer` to `main` before production.
 
-Deploy sequence (proposal, from KAN-62):
+Service settings live in [`railway.json`](../railway.json) (Railway config as code; it overrides
+the dashboard values for each deployment):
 
-1. Back up the target database.
-2. Apply forward migrations with the admin connection. On error, stop the rollout and keep the
-   output.
-3. Deploy the app with the runtime variables from section 4.
-4. Wait for `GET /api/health/ready` to return 200 (Railway does this when the healthcheck path
-   is set; see below), then verify sign-in, a chat turn, and a logo end to end. The probes do
-   not exercise WorkOS, the LLM provider, or fal.ai.
+| Setting | Value |
+|---|---|
+| Build command | `npm run build` |
+| Start command | `HOSTNAME=0.0.0.0 node .next/standalone/server.js` (same as `npm start`; node runs directly so it receives `SIGTERM`) |
+| Pre-deploy command | `npm run migrate:deploy` (section 7) |
+| Healthcheck path | `/api/health/ready` |
+
+Railway announced that config-as-code files (`railway.json`) stop being read on 2026-12-01, and
+that a service cannot be managed by `railway.json` and `.railway/railway.ts` (infrastructure as
+code) at the same time. Before that date these settings must move to `.railway/railway.ts`
+(`preDeploy`, `healthcheck`, `build`, `start`) or to the service dashboard.
+
+**Bind address.** The standalone server listens on `$HOSTNAME`. Railway sets `HOSTNAME` to the
+container id, so without the override the server listened only on that name and Railway's
+healthcheck could not connect: development deploy `9725ac7b` (commit `d0f5cd4`) failed
+`/api/health/ready` with "service unavailable" for 5 minutes while the route never logged a
+request. `npm start` and the Railway start command set `HOSTNAME=0.0.0.0`.
+`scripts/__tests__/deploy-config.test.ts` keeps `package.json` and `railway.json` in agreement.
+
+Deploy sequence (every deploy, automatic):
+
+1. Railway builds the image.
+2. The pre-deploy command applies pending migrations with `MIGRATION_DATABASE_URL`. On error the
+   deploy stops here and the previous version keeps serving (section 7).
+3. The new version starts with the runtime variables from section 4.
+4. Railway waits for `GET /api/health/ready` to return 200 before switching traffic (see below).
+   Then verify sign-in, a chat turn, and a logo end to end. The probes do not exercise WorkOS,
+   the LLM provider, or fal.ai.
+
+The deploy step does not take a database backup. Railway scheduled PostgreSQL backups (the
+**Backups** tab of each PostgreSQL service) must be enabled in development and production; this
+is an owner action and is not verified from the repository.
 
 ### Health and readiness probes
 
@@ -194,7 +277,9 @@ including other paths under `/api/health`, stays protected. Responses carry
 - The body never contains error messages, hostnames, connection strings, or environment values.
   The cause is logged server-side as `health.ready.dependency_failed` (scope `services.health`).
 - Readiness does not prove sign-in, LLM, image generation, or the logo worker. It also does not
-  check that migrations are applied; `SELECT 1` succeeds on an empty database.
+  check that migrations are applied; `SELECT 1` succeeds on an empty database. Migrations are
+  guaranteed by the pre-deploy step instead (section 7): a deploy whose migrations fail never
+  starts.
 
 **Railway healthcheck path: `/api/health/ready`.** Railway calls the healthcheck path only while
 a new deployment starts, and switches traffic once it returns 200. Gating on readiness keeps a
@@ -203,7 +288,9 @@ deployment that cannot reach PostgreSQL as `app_user` (for example, an empty or 
 The probe runs only during deploys, so the load is negligible. Use `/api/health` for external
 uptime monitors or a restart policy that must not depend on the database. If PostgreSQL is down
 during a deploy, the new deployment fails its healthcheck and the previous one keeps serving.
-The healthcheck path is a Railway service setting; it has not been applied to any environment.
+The healthcheck path is set in `railway.json`, so it applies to every deployment of the service
+once that file is deployed. The server must listen on all interfaces for the probe to connect
+(see **Bind address** above).
 
 **Pending:**
 
@@ -211,8 +298,11 @@ The healthcheck path is a Railway service setting; it has not been applied to an
   referenced, but the app has not been redeployed with it. The `APP_DATABASE_URL` reference
   resolves to an empty value, and WorkOS and `FAL_KEY` are not set there.
 - Production is not set up: PostgreSQL runs, but there is no app deployment and no Redis.
-- Deploy trigger and source branch, migration ownership and locking, smoke checks, and who
-  authorizes a rollback.
+- Deploy trigger and source branch, smoke checks, and who authorizes a rollback. (Migration
+  ownership and locking are decided: the pre-deploy step, section 7.)
+- Railway-side setup for KAN-83, per environment: `MIGRATION_DATABASE_URL`, a Pre-deploy
+  Timeout, scheduled PostgreSQL backups, and moving `railway.json` to `.railway/railway.ts`
+  before 2026-12-01.
 - Worker scaling: several replicas may each subscribe and scan; single-instance ownership is not
   reviewed.
 - PR preview environments and their data and secret policy.
@@ -231,7 +321,8 @@ Decided (KAN-18 / KAN-63, reversible local defaults):
 - `in_progress` tasks are never replayed automatically, because the image provider may already
   have accepted the request. They stay visible for an operator.
 - After an environment change, restart the app so service clients are recreated.
-- A source rollback does not undo migrations. Prefer a reviewed forward fix; restore from backup
+- A source rollback does not undo migrations (they apply automatically on deploy and are
+  add-only; section 7). Prefer a reviewed forward fix; restore from backup
   only under the owner-approved procedure.
 - Local services: `npm run services:down` then `npm run services:up` keeps the data volumes.
 
