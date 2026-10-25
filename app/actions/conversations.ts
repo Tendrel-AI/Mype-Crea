@@ -58,9 +58,13 @@ export type ConversationHistoryResult =
         readonly createdAt: string;
       }>;
       readonly deliverables: ReadonlyArray<{
+        readonly id: string;
         readonly kind: string;
         readonly contentUrl: string | null;
         readonly contentInline: Record<string, unknown> | null;
+        /** Set on the approved candidate of its kind (KAN-28 Aprobar), else null. */
+        readonly selectedAt: string | null;
+        readonly createdAt: string;
       }>;
     }
   | {
@@ -110,7 +114,14 @@ export async function loadConversationAction(input: {
         notices: (await repository.aiTurns.listNotices(turn.id)).map(({ code, content }) => ({ code, content })),
         createdAt: turn.createdAt,
       }))),
-      deliverables: deliverables.map(({ kind, contentUrl, contentInline }) => ({ kind, contentUrl, contentInline })),
+      deliverables: deliverables.map(({ id, kind, contentUrl, contentInline, selectedAt, createdAt }) => ({
+        id,
+        kind,
+        contentUrl,
+        contentInline,
+        selectedAt: selectedAt ?? null,
+        createdAt,
+      })),
     };
   } catch {
     return {

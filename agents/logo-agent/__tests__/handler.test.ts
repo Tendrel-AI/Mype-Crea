@@ -106,6 +106,15 @@ describe('logo-agent handler', () => {
     expect(withoutPalette).not.toContain('Paleta de colores');
   });
 
+  it('appends Iterar observations as a quoted, single-line note (KAN-28)', () => {
+    const prompt = buildLogoPrompt(
+      { business_name: 'X', style_keywords: 'y' },
+      { observations: ['Hazlo más "azul"\n y moderno', '   '] },
+    );
+    expect(prompt).toContain(`Ajustes pedidos sobre la versión anterior: "Hazlo más 'azul' y moderno".`);
+    expect(buildLogoPrompt({ business_name: 'X', style_keywords: 'y' }, { observations: [] })).not.toContain('Ajustes');
+  });
+
   it.each([
     ['content_policy', new TaskError('content_policy', 'blocked by safety filter')],
     ['config_missing', new TaskError('config_missing', 'FAL_KEY is not set')],

@@ -1,0 +1,240 @@
+'use server';
+
+/**
+ * Deliverable command controller (KAN-28 / KAN-64 / KAN-65).
+ *
+ * The UI's Generar / Iterar / Aprobar / Reintentar / Cancelar buttons call
+ * `deliverableCommandAction`; the panel reads `loadDeliverableStatesAction`.
+ * This controller only authenticates, authorizes the conversation (owner +
+ * pinned release), checks the input shape, and hands the command to the
+ * core, which re-validates it against a fresh server-derived state. The
+ * buttons the client renders are advisory; nothing here trusts them.
+ *
+ * «Avanzar» is UI navigation only and has no server path.
+ */
+
+import { resolveIdentity, type ResolvedIdentity } from '../../src/auth/resolve-identity';
+import { repos } from '../../src/repos';
+import { buildDefaultRegistry } from '../../src/core/orchestrator/bootstrap-registry';
+import { getOrchestrator } from '../../src/core/orchestrator/runtime';
+import {
+  MAX_ITERATION_OBSERVATION_LENGTH,
+  type ConversationId,
+  type DeliverableCommand,
+  type DeliverableCommandKind,
+  type DeliverableCommandResult,
+  type DeliverableStateKind,
+  type DeliverableStateView,
+  type UUID,
+} from '../../src/core/contracts';
+import { codePointLength } from '../../src/core/refinement';
+import { loggerFor } from '../../src/services/logger';
+
+const log = loggerFor('controller.deliverable-command');
+
+const COMMAND_KINDS: ReadonlyArray<DeliverableCommandKind> = ['generate', 'iterate', 'approve', 'retry', 'cancel'];
+const STATE_KINDS: ReadonlyArray<DeliverableStateKind> = [
+  'blocked',
+  'enabled',
+  'generating',
+  'in_review',
+  'approved',
+  'failed',
+];
+
+export type DeliverableStatesResult =
+  | { readonly ok: true; readonly states: ReadonlyArray<DeliverableStateView> }
+  | { readonly ok: false; readonly code: ControllerFailureCode; readonly message: string };
+
+export type DeliverableCommandActionResult =
+  | DeliverableCommandResult
+  | {
+      readonly ok: false;
+      readonly code: ControllerFailureCode;
+      readonly reason: 'invalid' | 'unavailable';
+      readonly message: string;
+      readonly states: ReadonlyArray<DeliverableStateView>;
+    };
+
+type ControllerFailureCode =
+  | 'invalid_request'
+  | 'identity_unavailable'
+  | 'durability_unavailable'
+  | 'conversation_unavailable'
+  | 'legacy_unversioned'
+  | 'command_failed';
+
+/** Client input: plain JSON from the browser, validated here. */
+export interface DeliverableCommandInput {
+  readonly commandId: string;
+  readonly conversationId: string;
+  readonly agentId: string;
+  readonly kind: string;
+  readonly expectedState: string;
+  readonly stateToken: string;
+  readonly deliverableId?: string | null;
+  readonly expectedApprovedId?: string | null;
+  readonly taskId?: string;
+  readonly failedTaskId?: string;
+  readonly observation?: string;
+}
+
+const MESSAGES = {
+  invalid: 'No pudimos validar esta acción.',
+  observationTooLong: `Tu comentario puede tener hasta ${MAX_ITERATION_OBSERVATION_LENGTH} caracteres.`,
+  identity: 'No pudimos verificar el acceso de tu cuenta. Inténtalo de nuevo.',
+  durability: 'El servicio de tareas duraderas no está disponible. Inténtalo más tarde.',
+  notFound: 'No encontramos esta conversación.',
+  legacy: 'Esta conversación usa una configuración anterior. Inicia una conversación nueva para continuar.',
+  failed: 'No pudimos completar esta acción. Inténtalo de nuevo.',
+  loadFailed: 'No pudimos cargar el estado de tus entregables. Inténtalo de nuevo.',
+} as const;
+
+/** Server-derived states of every deliverable in the conversation. */
+export async function loadDeliverableStatesAction(input: {
+  readonly conversationId: string;
+}): Promise<DeliverableStatesResult> {
+  if (!isUuid(input.conversationId)) return { ok: false, code: 'invalid_request', message: MESSAGES.invalid };
+  const conversationId = input.conversationId as ConversationId;
+  const authorized = await authorize(conversationId, { requireDurability: false });
+  if (!authorized.ok) return authorized;
+  try {
+    return { ok: true, states: await getOrchestrator().getDeliverableStates(conversationId) };
+  } catch (error) {
+    log.error({ conversationId, err: error }, 'deliverableStates.failed');
+    return { ok: false, code: 'command_failed', message: MESSAGES.loadFailed };
+  }
+}
+
+/** Execute one typed deliverable command (re-validated by the core). */
+export async function deliverableCommandAction(
+  input: DeliverableCommandInput,
+): Promise<DeliverableCommandActionResult> {
+  const parsed = parseCommand(input);
+  if (!parsed.ok) {
+    return { ok: false, code: 'invalid_request', reason: 'invalid', message: parsed.message, states: [] };
+  }
+  const command = parsed.command;
+  const authorized = await authorize(command.conversationId, { requireDurability: true });
+  if (!authorized.ok) {
+    return { ok: false, code: authorized.code, reason: 'unavailable', message: authorized.message, states: [] };
+  }
+  try {
+    const result = await getOrchestrator().executeCommand(command);
+    log.info(
+      {
+        conversationId: command.conversationId,
+        agentId: command.agentId,
+        kind: command.kind,
+        commandId: command.commandId,
+        ok: result.ok,
+        reason: result.ok ? undefined : result.reason,
+      },
+      'deliverableCommand.complete',
+    );
+    return result;
+  } catch (error) {
+    log.error(
+      { conversationId: command.conversationId, kind: command.kind, commandId: command.commandId, err: error },
+      'deliverableCommand.failed',
+    );
+    return { ok: false, code: 'command_failed', reason: 'unavailable', message: MESSAGES.failed, states: [] };
+  }
+}
+
+type Authorized = { readonly ok: true; readonly identity: ResolvedIdentity };
+type Unauthorized = { readonly ok: false; readonly code: ControllerFailureCode; readonly message: string };
+
+/** Owner-scoped, pinned conversation; registers its owner with the core. */
+async function authorize(
+  conversationId: ConversationId,
+  options: { readonly requireDurability: boolean },
+): Promise<Authorized | Unauthorized> {
+  let identity: ResolvedIdentity;
+  try {
+    identity = await resolveIdentity();
+  } catch {
+    return { ok: false, code: 'identity_unavailable', message: MESSAGES.identity };
+  }
+  if (options.requireDurability && process.env.NODE_ENV !== 'test' && !process.env.REDIS_URL) {
+    return { ok: false, code: 'durability_unavailable', message: MESSAGES.durability };
+  }
+  try {
+    const registry = buildDefaultRegistry();
+    const pin = await repos(identity.tenant, identity.user).conversations.readPinnedConversation(
+      conversationId,
+      registry.getFieldSchemas(),
+    );
+    if (!pin) return { ok: false, code: 'conversation_unavailable', message: MESSAGES.notFound };
+    if (pin.state !== 'pinned') return { ok: false, code: 'legacy_unversioned', message: MESSAGES.legacy };
+    await getOrchestrator().startConversation(conversationId, identity.tenant.id as UUID, identity.user.id as UUID);
+    return { ok: true, identity };
+  } catch (error) {
+    log.error({ conversationId, err: error }, 'deliverableCommand.authorize_failed');
+    return { ok: false, code: 'conversation_unavailable', message: MESSAGES.notFound };
+  }
+}
+
+type Parsed = { readonly ok: true; readonly command: DeliverableCommand } | { readonly ok: false; readonly message: string };
+
+function parseCommand(input: DeliverableCommandInput): Parsed {
+  const invalid: Parsed = { ok: false, message: MESSAGES.invalid };
+  if (typeof input !== 'object' || input === null) return invalid;
+  const { commandId, conversationId, agentId, kind, expectedState, stateToken } = input;
+  if (!isUuid(commandId) || !isUuid(conversationId)) return invalid;
+  if (typeof agentId !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(agentId)) return invalid;
+  if (!COMMAND_KINDS.includes(kind as DeliverableCommandKind)) return invalid;
+  if (!STATE_KINDS.includes(expectedState as DeliverableStateKind)) return invalid;
+  if (typeof stateToken !== 'string' || stateToken.length === 0 || stateToken.length > 64) return invalid;
+
+  const base = {
+    commandId: commandId as UUID,
+    conversationId: conversationId as ConversationId,
+    agentId,
+    expectedState: expectedState as DeliverableStateKind,
+    stateToken,
+  };
+
+  switch (kind as DeliverableCommandKind) {
+    case 'generate':
+      return { ok: true, command: { ...base, kind: 'generate' } };
+    case 'cancel':
+      if (!isUuid(input.taskId)) return invalid;
+      return { ok: true, command: { ...base, kind: 'cancel', taskId: input.taskId } };
+    case 'retry':
+      if (!isUuid(input.failedTaskId)) return invalid;
+      return { ok: true, command: { ...base, kind: 'retry', failedTaskId: input.failedTaskId } };
+    case 'approve': {
+      if (!isUuid(input.deliverableId)) return invalid;
+      const expectedApprovedId = input.expectedApprovedId ?? null;
+      if (expectedApprovedId !== null && !isUuid(expectedApprovedId)) return invalid;
+      return {
+        ok: true,
+        command: { ...base, kind: 'approve', deliverableId: input.deliverableId, expectedApprovedId },
+      };
+    }
+    case 'iterate': {
+      const deliverableId = input.deliverableId ?? undefined;
+      if (deliverableId !== undefined && !isUuid(deliverableId)) return invalid;
+      const observation = input.observation;
+      if (observation !== undefined && typeof observation !== 'string') return invalid;
+      if (observation !== undefined && codePointLength(observation.trim()) > MAX_ITERATION_OBSERVATION_LENGTH) {
+        return { ok: false, message: MESSAGES.observationTooLong };
+      }
+      // Parameter overrides have no UI yet (KAN-28 open question); they are not accepted here.
+      return {
+        ok: true,
+        command: {
+          ...base,
+          kind: 'iterate',
+          ...(deliverableId ? { deliverableId } : {}),
+          ...(observation !== undefined ? { observation } : {}),
+        },
+      };
+    }
+  }
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}

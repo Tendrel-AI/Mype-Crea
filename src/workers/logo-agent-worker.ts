@@ -38,6 +38,7 @@ import type { AgentId, ConversationId, DeliverableId, TaskId, UUID } from '../co
 import { channelForAgent } from '../transport/redis-queue-adapter';
 import type { DispatchNotification } from '../transport/redis-queue-adapter';
 import { classifyTaskError, taskErrorFromThrown } from '../core/task-errors';
+import { splitRequirementsSnapshot } from '../core/refinement';
 import { loggerFor } from '../services/logger';
 import type { DeliverablesRepoLike, WorkerContext } from './_kit';
 
@@ -169,18 +170,36 @@ export async function startLogoAgentWorker(
     }
     const entry = deps.registry.get(LOGO_AGENT_ID);
 
+    // KAN-28: an «Iterar» task carries its refinement under the reserved
+    // `refinement` key; it goes to `iteration`, never into `requirements`.
+    const { requirements, refinement } = splitRequirementsSnapshot(claimed.requirementsSnapshot);
     const a2a: A2AMessage = {
       taskId: claimed.id,
       tenantId: tenantId as UUID,
       agentId: LOGO_AGENT_ID,
       agentCardVersion: claimed.agentCardVersion,
-      requirements: claimed.requirementsSnapshot,
+      requirements,
+      ...(claimed.parentTaskId
+        ? {
+            iteration: {
+              parentTaskId: claimed.parentTaskId,
+              ...(refinement && Object.keys(refinement.parameterChanges).length > 0
+                ? { parameterChanges: refinement.parameterChanges }
+                : {}),
+              ...(refinement && refinement.observations.length > 0 ? { observations: refinement.observations } : {}),
+              ...(refinement ? { anchorDeliverableId: refinement.anchorDeliverableId } : {}),
+            },
+          }
+        : {}),
       createdAt: claimed.createdAt,
     };
 
     child.info(
       {
-        requirementKeys: Object.keys(claimed.requirementsSnapshot),
+        iterationNumber: claimed.iterationNumber,
+        iterationTrigger: claimed.iterationTrigger,
+        observationCount: refinement?.observations.length ?? 0,
+        requirementKeys: Object.keys(requirements),
         agentCardVersion: claimed.agentCardVersion,
       },
       'worker.logo.handler.start',

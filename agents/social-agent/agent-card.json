@@ -30,6 +30,10 @@
     "displayOrder": 5,
     "outputPreview": "social_pack"
   },
+  "mypes:deliverable": {
+    "kind": "social_pack",
+    "dependsOn": []
+  },
   "supportedInterfaces": [
     { "protocol": "local", "module": "agents/social-agent/handler.ts" }
   ]

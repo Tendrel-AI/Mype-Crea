@@ -31,7 +31,8 @@ export interface OrchestratorCore {
    * Side effects:
    *   - Writes the delta to the conversation history (append-only).
    *   - Updates per-agent requirement fulfillment.
-   *   - May dispatch an agent if its requirements become fully satisfied.
+   *   - Never dispatches an agent (KAN-28): generation starts only through a
+   *     typed deliverable command (`DeliverableCommandPort.executeCommand`).
    *   - May emit a Postgres NOTIFY so subscribed output adapters wake up.
    */
   applyDelta(delta: FieldDelta): Promise<ConversationSnapshot>;

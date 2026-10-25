@@ -8,7 +8,14 @@ import { type BrandAssets, type Tab } from './types';
 import { LandingPageRenderer } from './LandingPageRenderer';
 
 
-export function Dashboard({ assets, processingAgents, step, setActiveTab }: { assets: BrandAssets; processingAgents: Set<string>; step: number; setActiveTab: (tab: Tab) => void }) {
+export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls }: {
+  assets: BrandAssets;
+  processingAgents: Set<string>;
+  step: number;
+  setActiveTab: (tab: Tab) => void;
+  /** KAN-28: server-derived logo state and command buttons (DeliverableCommands). */
+  logoControls?: React.ReactNode;
+}) {
   const landingContent = assets.typedLandingPage ?? assets.landingPage;
   const hasLandingPage = Boolean(assets.typedLandingPage || assets.landingPage);
   const steps = [
@@ -106,6 +113,7 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab }: { as
                     <span className="text-neutral-500 text-sm">Pendiente</span>
                   )}
                 </div>
+                {logoControls}
               </motion.div>
 
               <motion.div

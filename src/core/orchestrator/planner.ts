@@ -28,10 +28,23 @@
  *         `MAX_FIELD_BATCH_SIZE` missing required field names from that
  *         agent.
  *
- *   3. Otherwise — every agent is either fully filled (and dispatched, or
- *      will be dispatched by the orchestrator on the same turn) or already
- *      in-flight, and there is nothing to ask.
+ *   3. A deliverable is ready to generate — lex-first agent whose derived
+ *      state is `enabled` (KAN-64: preconditions met, nothing generated, no
+ *      task in flight)
+ *      -> `[offer_generation]`. The planner never dispatches and neither
+ *         does the core after a merge: generation starts only through a
+ *         typed «Generar» command (`DeliverableCommandPort`). This decision
+ *         only lets the Responder point the user at the button.
+ *
+ *   4. Otherwise — every agent is filled and generated (or generating, or
+ *      waiting for an upstream approval), and there is nothing to ask.
  *      -> `[announce_all_complete]`.
+ *
+ * Rule 3 reads the per-deliverable states the caller derived with the pure
+ * `deriveDeliverableStates` (passed in `context.deliverableStates`). Without
+ * that context (unit tests, legacy callers) it falls back to the snapshot
+ * predicate `findAgentReadyToGenerate`. Both inputs are plain data: same
+ * snapshot + same states → same plan.
  *
  * `announce_dispatch` and `announce_completion` decisions are NOT produced
  * here. The orchestrator core queues them on dispatch / settlement and
@@ -64,6 +77,7 @@ import {
   MAX_FIELD_BATCH_SIZE,
   type AgentId,
   type ConversationSnapshot,
+  type DeliverableStateView,
   type PlannerDecision,
   type RequestFieldEntry,
 } from '../contracts';
@@ -72,9 +86,16 @@ import type { AgentRegistry } from './agent-registry';
 
 const log = loggerFor('orchestrator.planner');
 
+/** Optional, already-derived inputs. Plain data; reading them keeps the planner pure. */
+export interface PlannerContext {
+  /** Output of `deriveDeliverableStates` for the same snapshot. */
+  readonly deliverableStates?: ReadonlyArray<Pick<DeliverableStateView, 'agentId' | 'deliverableKind' | 'state'>>;
+}
+
 export function planNextDecision(
   snapshot: ConversationSnapshot,
   registry: AgentRegistry,
+  context: PlannerContext = {},
 ): ReadonlyArray<PlannerDecision> {
   const child = log.child({
     op: 'planNextDecision',
@@ -183,27 +204,56 @@ export function planNextDecision(
     );
   }
 
-  // Rule 3: nothing pending, no focus agent — every agent is satisfied,
-  // dispatched, or in-flight. Wizard step is done.
+  // Rule 3: a deliverable is ready — offer the «Generar» button. Never
+  // dispatches; generation is a typed command (KAN-64 Option B).
+  const offer = pickGenerationOffer(snapshot, registry, context);
+  if (offer) {
+    return decide(
+      [{ kind: 'offer_generation', agentId: offer.agentId, deliverableKind: offer.deliverableKind }],
+      'offer_generation',
+    );
+  }
+
+  // Rule 4: nothing pending, no focus agent, nothing to offer — every agent
+  // is generated, generating, or waiting on an upstream approval.
   return decide([{ kind: 'announce_all_complete' }], 'all_complete');
 }
 
+function pickGenerationOffer(
+  snapshot: ConversationSnapshot,
+  registry: AgentRegistry,
+  context: PlannerContext,
+): { readonly agentId: AgentId; readonly deliverableKind: string } | null {
+  if (context.deliverableStates) {
+    const enabled = context.deliverableStates
+      .filter((view) => view.state === 'enabled')
+      .filter((view) => !snapshot.agentStates[view.agentId]?.lastDispatchedTaskId)
+      .map((view) => ({ agentId: view.agentId, deliverableKind: view.deliverableKind }))
+      .sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0));
+    return enabled[0] ?? null;
+  }
+  const agentId = findAgentReadyToGenerate(snapshot, registry.getFieldSchemas());
+  if (!agentId) return null;
+  const spec = registry.getDeliverableSpecs().find((s) => s.agentId === agentId);
+  return { agentId, deliverableKind: spec?.deliverableKind ?? agentId };
+}
+
 /**
- * Find any agent whose required slots are all `filled` and that has never
- * been dispatched in this conversation. Lex-tiebreak by `agentId` for stable
- * output.
+ * Snapshot-only fallback for Rule 3: any agent whose required slots are all
+ * `filled` and that has never been dispatched in this conversation.
+ * Lex-tiebreak by `agentId` for stable output.
  *
  * Eligibility:
  *   - skip agents with no required fields (nothing to gate on)
  *   - skip agents currently in flight (`lastDispatchedTaskId` set)
  *   - skip agents that have already been dispatched at least once
- *     (`iterationCount > 0`) — re-runs are user-triggered iterations per
- *     architecture §2.7, never auto-dispatch
+ *     (`iterationCount > 0`)
  *
- * Exposed so the orchestrator core can answer "which agent, if any, should
- * I dispatch right now?" after a merge.
+ * KAN-28: this used to be `findAgentReadyToDispatch`, which the core called
+ * after every merge to auto-dispatch. Nothing dispatches from it anymore; it
+ * only decides whether to *offer* «Generar».
  */
-export function findAgentReadyToDispatch(
+export function findAgentReadyToGenerate(
   snapshot: ConversationSnapshot,
   schemas: ReadonlyArray<{ readonly agentId: AgentId; readonly requiredFields: ReadonlyArray<string> }>,
 ): AgentId | null {

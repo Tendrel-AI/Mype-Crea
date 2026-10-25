@@ -20,9 +20,12 @@ const mocks = vi.hoisted(() => {
   const listNotices = vi.fn(async () => [{ code: 'approved_fallback_used', content: 'Seguimos con una alternativa.' }]);
   const listAttempts = vi.fn(async () => [{ id: 'attempt-1', provider: 'openrouter', model: 'model-a' }]);
   const listByConversation = vi.fn(async (): Promise<Array<{
+    id: string;
     kind: string;
     contentUrl: string | null;
     contentInline: Record<string, unknown> | null;
+    selectedAt: string | null;
+    createdAt: string;
   }>> => []);
   const listMessages = vi.fn(async () => [{ id: 'message-1', role: 'user', content: 'Quiero un logo' }]);
   const getPinnedRelease = vi.fn(async () => ({ id: 'release-1', contentHash: 'hash-1' }));
@@ -82,7 +85,8 @@ describe('conversation actions', () => {
 
   it('loads owner-scoped durable turns and notices', async () => {
     mocks.listByConversation.mockResolvedValueOnce([{
-      kind: 'logo', contentUrl: 'https://assets.example/logo.png', contentInline: null,
+      id: 'deliverable-1', kind: 'logo', contentUrl: 'https://assets.example/logo.png', contentInline: null,
+      selectedAt: '2026-01-01T00:00:05.000Z', createdAt: '2026-01-01T00:00:01.000Z',
     }]);
     const result = await loadConversationAction({ conversationId: 'conversation-1' });
     expect(mocks.readPinnedConversation).toHaveBeenCalledWith('conversation-1', []);
@@ -95,7 +99,10 @@ describe('conversation actions', () => {
     });
     expect(result).toMatchObject({
       ok: true,
-      deliverables: [{ kind: 'logo', contentUrl: 'https://assets.example/logo.png' }],
+      deliverables: [{
+        id: 'deliverable-1', kind: 'logo', contentUrl: 'https://assets.example/logo.png',
+        selectedAt: '2026-01-01T00:00:05.000Z',
+      }],
     });
     expect(mocks.listByConversation).toHaveBeenCalledWith('conversation-1');
   });

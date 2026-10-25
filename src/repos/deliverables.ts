@@ -9,9 +9,9 @@
  *     requires either `content_url` or `content_inline`; we map A2AArtifact
  *     so URL-bearing artifacts populate `content_url` and text/inline ones
  *     populate `content_inline`.
- *   - `selected_at` is left NULL on insert; selection (and `superseded_by`)
- *     is a separate flow when the user picks an option from a multi-artifact
- *     task. Out of scope for this repo today.
+ *   - `selected_at` is left NULL on insert. «Aprobar» (KAN-28 / KAN-65) sets
+ *     it through `approveSelected`, which is TEMPORARY: the KAN-34 approvals
+ *     repository (same columns plus append-only history) replaces it.
  */
 import { randomUUID } from 'node:crypto';
 import type { ConversationId, TaskId, UUID } from '../core/contracts';
@@ -50,8 +50,92 @@ function toDomain(row: DeliverableRowDb): DeliverableRow {
   };
 }
 
+export type ApproveSelectedResult =
+  | { readonly ok: true; readonly selectedAt: string; readonly replacedDeliverableId: UUID | null; readonly unchanged: boolean }
+  | { readonly ok: false; readonly reason: 'stale' | 'not_candidate' | 'not_found' };
+
 export function deliverablesRepo(tenant: Tenant, user: User) {
   return {
+    /**
+     * TEMPORARY (until the KAN-34 approvals repository is wired): make one
+     * deliverable the approved («selected») one of its kind, atomically.
+     * Locks the owner-visible conversation row first, so two approvals of the
+     * same conversation serialize; then:
+     *   - target missing / other conversation      -> `not_found`
+     *   - target of another kind                   -> `not_candidate`
+     *   - current selection != expectedSelectedId  -> `stale`
+     *   - target already selected                  -> ok, `unchanged`
+     *   - otherwise clear the old row (`superseded_by` = target) and stamp the
+     *     target, in that order (partial unique index per conversation+kind).
+     */
+    async approveSelected(input: {
+      conversationId: ConversationId;
+      kind: string;
+      deliverableId: UUID;
+      expectedSelectedId: UUID | null;
+    }): Promise<ApproveSelectedResult> {
+      const child = log.child({
+        op: 'approveSelected',
+        tenantId: tenant.id,
+        userId: user.id,
+        conversationId: input.conversationId,
+        kind: input.kind,
+      });
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const conversation = await tx.query(`SELECT id FROM conversations WHERE id = $1 FOR UPDATE`, [
+          input.conversationId,
+        ]);
+        if (conversation.rows.length === 0) return { ok: false, reason: 'not_found' } as const;
+        const target = await tx.query<DeliverableRowDb>(
+          `SELECT * FROM deliverables WHERE id = $1 AND conversation_id = $2`,
+          [input.deliverableId, input.conversationId],
+        );
+        if (target.rows.length === 0) return { ok: false, reason: 'not_found' } as const;
+        if (target.rows[0].kind !== input.kind) return { ok: false, reason: 'not_candidate' } as const;
+        const current = await tx.query<DeliverableRowDb>(
+          `SELECT * FROM deliverables
+            WHERE conversation_id = $1 AND kind = $2::deliverable_kind AND selected_at IS NOT NULL`,
+          [input.conversationId, input.kind],
+        );
+        const currentId = current.rows[0]?.id ?? null;
+        if (currentId !== input.expectedSelectedId) return { ok: false, reason: 'stale' } as const;
+        if (currentId === input.deliverableId) {
+          return { ok: true, selectedAt: current.rows[0].selected_at!.toISOString(), replacedDeliverableId: null, unchanged: true } as const;
+        }
+        if (currentId) {
+          await tx.query(`UPDATE deliverables SET selected_at = NULL, superseded_by = $2 WHERE id = $1`, [
+            currentId,
+            input.deliverableId,
+          ]);
+        }
+        const stamped = await tx.query<{ selected_at: Date }>(
+          `UPDATE deliverables SET selected_at = clock_timestamp(), superseded_by = NULL
+            WHERE id = $1 RETURNING selected_at`,
+          [input.deliverableId],
+        );
+        child.info({ deliverableId: input.deliverableId, replaced: currentId }, 'deliverable approved (selected)');
+        return {
+          ok: true,
+          selectedAt: stamped.rows[0].selected_at.toISOString(),
+          replacedDeliverableId: currentId,
+          unchanged: false,
+        } as const;
+      });
+    },
+
+    /** TEMPORARY (see approveSelected): the currently selected deliverable per kind. */
+    async listSelected(conversationId: ConversationId): Promise<DeliverableRow[]> {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<DeliverableRowDb>(
+          `SELECT * FROM deliverables
+            WHERE conversation_id = $1 AND selected_at IS NOT NULL
+            ORDER BY kind ASC`,
+          [conversationId],
+        );
+        return res.rows.map(toDomain);
+      });
+    },
+
     /**
      * Insert one deliverable for a completed agent task. Caller is expected
      * to have already persisted the agent_task row (FK target).

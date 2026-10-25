@@ -42,6 +42,9 @@ import type { AgentId, ConversationId, TaskId, UUID } from '../contracts';
 import type { IAgentTransport } from '../agent-types';
 import { buildDefaultRegistry } from './bootstrap-registry';
 import { PostgresConversationStore } from './postgres-store';
+import { PostgresDeliverableWorkflowStore } from './postgres-workflow';
+import { SelectedAtApprovalStore } from './selected-at-approval-store';
+import type { IApprovalStore } from '../approvals';
 import {
   defaultArtifactNotifier,
   defaultDecisionNotifier,
@@ -158,6 +161,16 @@ async function reconcileConfiguredTenantEvents(): Promise<void> {
   }));
 }
 
+/**
+ * The single approval-store wiring point. TEMPORARY: KAN-28 predates the
+ * KAN-34 persistence; replace the body with
+ * `createPostgresApprovalStore({ id: tenantId }, { id: userId })`
+ * (src/repos/approval-store.ts) and delete selected-at-approval-store.ts.
+ */
+function createApprovalStore(tenantId: UUID, userId: UUID): IApprovalStore {
+  return new SelectedAtApprovalStore(tenantId, userId);
+}
+
 function build(): Runtime {
   const registry = buildDefaultRegistry();
   const store = new PostgresConversationStore(registry.getFieldSchemas());
@@ -168,7 +181,8 @@ function build(): Runtime {
     newTaskId: () => randomUUID() as TaskId,
     decisionNotifier: defaultDecisionNotifier,
     artifactNotifier: defaultArtifactNotifier,
-    agentTasksFor: (tenantId: UUID) => systemRepos({ id: tenantId }).agentTasks,
+    workflowFor: (tenantId: UUID, userId: UUID) => new PostgresDeliverableWorkflowStore(tenantId, userId),
+    approvalsFor: createApprovalStore,
     transportFactory: (onTaskSettled) => buildTransport(registry, onTaskSettled),
   });
 }

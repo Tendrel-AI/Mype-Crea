@@ -37,6 +37,10 @@ export interface FixtureCardOptions {
   readonly required?: ReadonlyArray<{ readonly name: string; readonly promptHint?: string }>;
   readonly optional?: ReadonlyArray<{ readonly name: string; readonly promptHint?: string }>;
   readonly tabLabel?: string;
+  /** `mypes:deliverable.kind`; omitted -> the registry defaults it to the agent id. */
+  readonly deliverableKind?: string;
+  /** `mypes:deliverable.dependsOn` (upstream deliverable kinds). */
+  readonly dependsOn?: ReadonlyArray<string>;
 }
 
 export function buildFixtureCard(opts: FixtureCardOptions): AgentCard {
@@ -64,6 +68,14 @@ export function buildFixtureCard(opts: FixtureCardOptions): AgentCard {
       outputPreview: 'inline',
     },
     supportedInterfaces: [{ protocol: 'local', module: `fixture/${opts.id}` }],
+    ...(opts.deliverableKind || opts.dependsOn
+      ? {
+          'mypes:deliverable': {
+            kind: opts.deliverableKind ?? opts.id,
+            dependsOn: [...(opts.dependsOn ?? [])],
+          },
+        }
+      : {}),
   };
 }
 

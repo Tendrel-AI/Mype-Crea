@@ -46,6 +46,17 @@ export interface AgentCard {
     readonly displayOrder: number;
     readonly outputPreview: string;
   };
+  /**
+   * Declarative deliverable spec (KAN-28/KAN-64). `kind` is the
+   * `deliverable_kind` this agent produces; `dependsOn` lists the upstream
+   * deliverable kinds that must be approved (and not stale) before this one
+   * can be generated. Unlocking follows this data, never an `if` in the core.
+   * Optional: when absent, kind = agent id and there are no dependencies.
+   */
+  readonly 'mypes:deliverable'?: {
+    readonly kind: string;
+    readonly dependsOn: ReadonlyArray<string>;
+  };
   readonly supportedInterfaces: ReadonlyArray<
     | { readonly protocol: 'local'; readonly module: string }
     | { readonly protocol: 'bullmq'; readonly queue: string }
@@ -58,6 +69,14 @@ export interface RequirementField {
   readonly type: string;
   readonly promptHint: string;
   readonly enumValues?: ReadonlyArray<string>;
+}
+
+/** What the pure deliverable state function needs to know about one agent. */
+export interface DeliverableSpec {
+  readonly agentId: AgentId;
+  readonly deliverableKind: string;
+  readonly requiredFields: ReadonlyArray<string>;
+  readonly dependsOn: ReadonlyArray<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +134,24 @@ export class AgentRegistry {
       optionalFields: entry.card['mypes:requirements'].optional.map((f) => f.name),
       displayOrder: entry.card['mypes:ui'].displayOrder,
     }));
+  }
+
+  /**
+   * Declarative dependency map: one spec per registered agent, sorted by
+   * agentId. Read from each card's `mypes:deliverable` extension.
+   */
+  getDeliverableSpecs(): ReadonlyArray<DeliverableSpec> {
+    return this.list()
+      .map((entry) => {
+        const declared = entry.card['mypes:deliverable'];
+        return {
+          agentId: entry.card.name,
+          deliverableKind: declared?.kind ?? entry.card.name,
+          requiredFields: entry.card['mypes:requirements'].required.map((f) => f.name),
+          dependsOn: [...(declared?.dependsOn ?? [])].sort(),
+        };
+      })
+      .sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0));
   }
 
   /**
