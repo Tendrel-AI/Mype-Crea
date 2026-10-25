@@ -278,8 +278,11 @@ export function agentTasksRepo(tenant: Tenant) {
      * already in_progress, completed, failed, or doesn't exist under this
      * tenant — never throws on contention. Used by the Redis-pub/sub-driven
      * agent worker after it receives a wake-up notification.
+     *
+     * `agentId`, when given, makes the claim conditional on the row's agent:
+     * a task addressed to another agent is left `pending` (returns null).
      */
-    async claimById(id: TaskId): Promise<AgentTaskRow | null> {
+    async claimById(id: TaskId, agentId?: string): Promise<AgentTaskRow | null> {
       const child = log.child({ op: 'claimById', tenantId: tenant.id, taskId: id });
       return withTenantTransaction(tenant, undefined, async (tx) => {
         const res = await tx.query<AgentTaskRowDb>(
@@ -290,8 +293,9 @@ export function agentTasksRepo(tenant: Tenant) {
                   dispatched_at   = COALESCE(dispatched_at, now())
             WHERE id     = $1
               AND status = 'pending'
+              AND ($2::text IS NULL OR agent_id = $2::text)
             RETURNING *`,
-          [id],
+          [id, agentId ?? null],
         );
         if (res.rows.length === 0) {
           child.debug('task not claimable (missing or not pending)');

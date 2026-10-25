@@ -96,7 +96,7 @@ describe('logo-agent worker', () => {
     await flushMicrotasks();
     await flushMicrotasks();
 
-    expect(claimById).toHaveBeenCalledWith(row.id);
+    expect(claimById).toHaveBeenCalledWith(row.id, 'logo-agent');
     expect(fakeHandler).toHaveBeenCalledTimes(1);
 
     const handlerCall = (fakeHandler as ReturnType<typeof vi.fn>).mock.calls[0]
@@ -199,20 +199,26 @@ describe('logo-agent worker', () => {
     expect(onTaskSettled).not.toHaveBeenCalled();
   });
 
-  it.fails('does not claim a non-logo task delivered on the logo channel', async () => {
+  it('does not claim a non-logo task delivered on the logo channel', async () => {
     const subscriber = new FakeSubscriber();
+    const registry = new AgentRegistry();
+    const fakeHandler = vi.fn();
+    registry.register(logoCard as AgentCard, fakeHandler as never, undefined);
     const row = buildAgentTaskRow({ agentId: 'tagline-agent' as AgentId, status: 'pending' });
     const findById = vi.fn(async () => row);
     const claimById = vi.fn(async () => ({ ...row, status: 'in_progress' as const }));
+    const onTaskSettled = vi.fn();
 
     await startLogoAgentWorker(
       buildWorkerTestContext({
         subscriber,
+        registry,
         systemReposFor: () =>
           ({
             agentTasks: { findById, claimById } as never,
             llmCalls: {} as never,
           }),
+        onTaskSettled,
       }),
     );
 
@@ -226,8 +232,11 @@ describe('logo-agent worker', () => {
     );
     await flushMicrotasks();
 
+    // The row stays pending for its owner: never claimed, run, or settled here.
     expect(findById).toHaveBeenCalledWith(row.id);
     expect(claimById).not.toHaveBeenCalled();
+    expect(fakeHandler).not.toHaveBeenCalled();
+    expect(onTaskSettled).not.toHaveBeenCalled();
   });
 
   it('awaits async onTaskSettled before finishing message handling', async () => {

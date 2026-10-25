@@ -10,7 +10,9 @@
  *   1. Receive `{ taskId, tenantId }` on `mypes:agent_task:dispatch:logo-agent`.
  *   2. Re-read the canonical row from Postgres (tenant-scoped via repos).
  *      The notification is a trigger, not a payload — never trusted.
- *   3. Atomically claim the row (`pending` -> `in_progress`); skip if it's
+ *   3. Skip rows addressed to another agent without touching them, so they
+ *      stay `pending` for their owner. Otherwise atomically claim the row
+ *      (`pending` -> `in_progress`, conditional on `agent_id`); skip if it's
  *      already been claimed by a peer worker or moved past pending.
  *   4. Build an A2AMessage from the row, invoke the registry's logo handler.
  *   5. Hand the resulting TaskState back to OrchestratorCoreImpl.onTaskSettled,
@@ -113,9 +115,20 @@ export async function startLogoAgentWorker(
       'worker.logo.row_loaded',
     );
 
+    // A task for another agent must stay claimable by its owner: never move
+    // it to in_progress here. The claim below is also conditional on the
+    // agent id, so this holds even if the row changed in between.
+    if (preClaim.agentId !== LOGO_AGENT_ID) {
+      child.warn(
+        { actualAgent: preClaim.agentId },
+        'worker.logo.skip_wrong_agent_on_channel',
+      );
+      return;
+    }
+
     let claimed;
     try {
-      claimed = await repo.claimById(taskId);
+      claimed = await repo.claimById(taskId, LOGO_AGENT_ID);
     } catch (err) {
       child.error({ err }, 'worker.logo.claim_failed');
       return;
@@ -124,13 +137,6 @@ export async function startLogoAgentWorker(
       child.info(
         { statusBeforeClaim: preClaim.status },
         'worker.logo.skip_not_claimable',
-      );
-      return;
-    }
-    if (claimed.agentId !== LOGO_AGENT_ID) {
-      child.warn(
-        { actualAgent: claimed.agentId },
-        'worker.logo.skip_wrong_agent_on_channel',
       );
       return;
     }

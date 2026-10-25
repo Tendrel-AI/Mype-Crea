@@ -142,6 +142,23 @@ SUITE('agent_tasks repository (integration)', () => {
     expect(rows.every((row) => Date.parse(row.scheduledFor) <= Date.now())).toBe(true);
   });
 
+  it('claimById with an agent id leaves a task for another agent pending', async () => {
+    const conversationId = await newConversation();
+    const sys = systemRepos({ id: tenantId });
+    const row = await sys.agentTasks.insertRoot({
+      conversationId,
+      agentId: 'tagline-agent',
+      agentCardVersion: '1.0.0',
+      idempotencyKey: randomUUID(),
+      requirementsSnapshot: {},
+    });
+
+    expect(await sys.agentTasks.claimById(row.id, 'logo-agent')).toBeNull();
+    expect((await sys.agentTasks.findById(row.id))?.status).toBe('pending');
+    const owned = await sys.agentTasks.claimById(row.id, 'tagline-agent');
+    expect(owned?.status).toBe('in_progress');
+  });
+
   it('rejects JSONB writes that embed a UUID not visible under the current tenant', async () => {
     const conversationId = await newConversation();
     const sys = systemRepos({ id: tenantId });
