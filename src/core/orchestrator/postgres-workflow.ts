@@ -86,6 +86,7 @@ export class PostgresDeliverableWorkflowStore implements IDeliverableWorkflowSto
       agentCardVersion: input.agentCardVersion,
       idempotencyKey: input.commandId as UUID,
       requirementsSnapshot: input.requirementsSnapshot,
+      owner: this.user,
       iteration: input.iteration,
     });
     if (result.ok) return { ok: true, task: toWorkflowTask(result.row) };

@@ -13,7 +13,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { ConversationId, TaskId, UUID } from '../core/contracts';
-import { withTenantTransaction, type Tenant, type TxClient } from '../db/with-transaction';
+import { withTenantTransaction, type Tenant, type TxClient, type User } from '../db/with-transaction';
 import { loggerFor } from '../services/logger';
 import type {
   AgentTaskIterationInsert,
@@ -135,6 +135,13 @@ export interface AgentTaskCommandInsert {
   /** The command id; doubles as the task's idempotency key. */
   readonly idempotencyKey: UUID;
   readonly requirementsSnapshot: Record<string, unknown>;
+  /**
+   * The conversation owner. Binds `app.user_id` for the insert transaction so
+   * the JSONB tenant-safety check can see owner-scoped rows referenced by the
+   * snapshot (the refinement's `anchorDeliverableId` is a deliverable, whose
+   * RLS is tenant + owner). agent_tasks itself stays tenant-scoped.
+   */
+  readonly owner?: User;
   /** Present for Iterar / Reintentar; absent for a root Generar. */
   readonly iteration?: {
     readonly parentTaskId: TaskId;
@@ -193,7 +200,7 @@ export function agentTasksRepo(tenant: Tenant) {
         return res.rows.length ? toDomain(res.rows[0]) : null;
       };
       try {
-        return await withTenantTransaction(tenant, undefined, async (tx) => {
+        return await withTenantTransaction(tenant, input.owner, async (tx) => {
           await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended('agent_tasks.command:' || $1::text, 0))`, [
             input.conversationId,
           ]);
