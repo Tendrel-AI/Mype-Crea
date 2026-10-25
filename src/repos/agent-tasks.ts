@@ -381,3 +381,7 @@ export type AgentTasksRepo = ReturnType<typeof agentTasksRepo>;
 
 // Exposed for unit testing.
 export const __test = { extractUuids };
+
+// Shared with repositories that write agent_tasks rows in their own transaction
+// (src/repos/refinements.ts).
+export { assertJsonbTenantSafe, toDomain as agentTaskRowToDomain, type AgentTaskRowDb };
