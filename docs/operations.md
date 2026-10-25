@@ -134,7 +134,7 @@ destroys local data and is not a routine step.
 ### Automatic migrations on deploy (KAN-83)
 
 Decided (owner, 2026-10-25): migrations apply themselves on every deploy, in development and
-production. [`railway.json`](../railway.json) sets the Railway pre-deploy command to
+production. The Railway service's pre-deploy command is
 `npm run migrate:deploy` ([`scripts/migrate-deploy.mjs`](../scripts/migrate-deploy.mjs)). Railway
 runs it after the build and before the new version starts, in its own container started from the
 built image, with the service variables and the private network (no volumes).
@@ -223,8 +223,7 @@ bucket, and Redis per environment. `APP_DATABASE_URL` must use `app_user`; the a
 used only by the pre-deploy migration step through `MIGRATION_DATABASE_URL`. Reviewed source
 moves from `developer` to `main` before production.
 
-Service settings live in [`railway.json`](../railway.json) (Railway config as code; it overrides
-the dashboard values for each deployment):
+Service settings (set on each environment's app service, not in this repository):
 
 | Setting | Value |
 |---|---|
@@ -233,17 +232,19 @@ the dashboard values for each deployment):
 | Pre-deploy command | `npm run migrate:deploy` (section 7) |
 | Healthcheck path | `/api/health/ready` |
 
-Railway announced that config-as-code files (`railway.json`) stop being read on 2026-12-01, and
-that a service cannot be managed by `railway.json` and `.railway/railway.ts` (infrastructure as
-code) at the same time. Before that date these settings must move to `.railway/railway.ts`
-(`preDeploy`, `healthcheck`, `build`, `start`) or to the service dashboard.
+The repository deliberately has no `railway.json`. Railway deprecated config as code
+(`railway.json` / `railway.toml`): new services cannot opt in, and existing ones stop being read
+on 2026-12-01. Its replacement, infrastructure as code (`.railway/railway.ts`: `build`, `start`,
+`preDeploy`, `healthcheck`), cannot manage a service that also uses `railway.json`. Until the
+owner adopts `.railway/railway.ts`, these settings are set in the service dashboard.
 
 **Bind address.** The standalone server listens on `$HOSTNAME`. Railway sets `HOSTNAME` to the
 container id, so without the override the server listened only on that name and Railway's
 healthcheck could not connect: development deploy `9725ac7b` (commit `d0f5cd4`) failed
 `/api/health/ready` with "service unavailable" for 5 minutes while the route never logged a
-request. `npm start` and the Railway start command set `HOSTNAME=0.0.0.0`.
-`scripts/__tests__/deploy-config.test.ts` keeps `package.json` and `railway.json` in agreement.
+request. `npm start` sets `HOSTNAME=0.0.0.0`; with no start command on the service, Railpack
+runs `npm start`. If a start command is set on the service, it must include the same prefix.
+`scripts/__tests__/deploy-config.test.ts` checks the `start` script.
 
 Deploy sequence (every deploy, automatic):
 
@@ -288,8 +289,8 @@ deployment that cannot reach PostgreSQL as `app_user` (for example, an empty or 
 The probe runs only during deploys, so the load is negligible. Use `/api/health` for external
 uptime monitors or a restart policy that must not depend on the database. If PostgreSQL is down
 during a deploy, the new deployment fails its healthcheck and the previous one keeps serving.
-The healthcheck path is set in `railway.json`, so it applies to every deployment of the service
-once that file is deployed. The server must listen on all interfaces for the probe to connect
+The healthcheck path is a service setting, so it applies to every deployment of the service.
+The server must listen on all interfaces for the probe to connect
 (see **Bind address** above).
 
 **Pending:**
@@ -301,8 +302,8 @@ once that file is deployed. The server must listen on all interfaces for the pro
 - Deploy trigger and source branch, smoke checks, and who authorizes a rollback. (Migration
   ownership and locking are decided: the pre-deploy step, section 7.)
 - Railway-side setup for KAN-83, per environment: `MIGRATION_DATABASE_URL`, a Pre-deploy
-  Timeout, scheduled PostgreSQL backups, and moving `railway.json` to `.railway/railway.ts`
-  before 2026-12-01.
+  Timeout, the pre-deploy command and healthcheck path (dashboard or `.railway/railway.ts`), and
+  scheduled PostgreSQL backups.
 - Worker scaling: several replicas may each subscribe and scan; single-instance ownership is not
   reviewed.
 - PR preview environments and their data and secret policy.

@@ -68,10 +68,11 @@ all interfaces (`HOSTNAME=0.0.0.0`). The pilot targets Railway
 (`Tendrel_AI / mype-crea`). The development deployment is still being verified,
 and production is not set up. Liveness is `GET /api/health` and readiness
 (PostgreSQL, plus Redis when configured) is `GET /api/health/ready`.
-[`railway.json`](railway.json) declares the build and start commands, the
-`/api/health/ready` healthcheck, and the pre-deploy command
-`npm run migrate:deploy`, which applies pending migrations on every deploy with
-the admin connection in `MIGRATION_DATABASE_URL`. Migrations must be add-only;
+The Railway service runs the pre-deploy command `npm run migrate:deploy`, which
+applies pending migrations on every deploy with the admin connection in
+`MIGRATION_DATABASE_URL`, and gates traffic on the `/api/health/ready`
+healthcheck. Those settings live on the Railway service, not in this repository
+(see [operations, section 9](docs/operations.md#9-deployment)). Migrations must be add-only;
 see [operations, section 7](docs/operations.md#7-migrations-build-and-start).
 There is no asset object-storage adapter yet. Do not treat
 these commands as evidence of a deployed pilot. See
