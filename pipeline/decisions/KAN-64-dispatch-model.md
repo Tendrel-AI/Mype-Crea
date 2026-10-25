@@ -1,6 +1,20 @@
 # KAN-64 — Dispatch model and Phase 1 transitions
 
-Status: proposed — awaiting owner approval
+Status: **approved by the owner on 2026-10-25** (recommendation accepted as drafted)
+
+## Decision (2026-10-25)
+
+The owner approved the recommendation: **Option B**. This answers the open questions below as follows:
+
+1. Auto-dispatch is removed for every deliverable, **including the live logo flow**. Generation
+   starts only from an explicit typed command (Generar, Iterar, Aprobar, Reintentar, Cancelar),
+   re-validated server-side against the pure per-deliverable state function in the table below.
+2. "Avanzar" is UI navigation only. It is not a server transition in Phase 1.
+3. Per-type caps on user retries are deferred to KAN-43 (usage limits).
+4. Option C (a chat «sí» confirms an offered generation) is deferred until there is pilot feedback.
+
+KAN-28 (SYS-03) is unblocked.
+
 
 ## Context
 

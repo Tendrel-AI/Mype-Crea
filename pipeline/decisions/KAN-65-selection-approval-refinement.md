@@ -1,6 +1,22 @@
 # KAN-65 — Selection, approval, and refinement channels
 
-Status: proposed — awaiting owner approval
+Status: **approved by the owner on 2026-10-25** (recommendation accepted as drafted)
+
+## Decision (2026-10-25)
+
+The owner approved the recommendation: **A + R2**. This answers the open questions below as follows:
+
+1. Selection and approval are merged into a single explicit «Aprobar» act per deliverable type.
+   Approving another candidate replaces the current one. Every approval and replacement is
+   recorded in an append-only history, and dependents are marked stale. Nothing is regenerated
+   automatically.
+2. Phase 1 refinement uses panel parameters plus short anchored observations (R2), with a length
+   cap.
+3. Panel parameter overrides are iteration-local, and refinement never writes the brief.
+4. Per-type iteration caps are deferred to KAN-43.
+
+KAN-34 (RF-06) is unblocked. KAN-65 must stay consistent with the KAN-64 command table.
+
 
 ## Context
 

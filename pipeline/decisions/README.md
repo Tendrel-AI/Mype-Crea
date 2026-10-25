@@ -2,14 +2,13 @@
 
 Draft decision proposals for the open `requiere-decision` Jira items. Each file states the
 context (thesis anchors, Jira AC, current code), options, a recommendation, and short questions
-for the owner. **None of these is approved.** A decision is settled only when the owner approves
-it. The file's status line and the Jira issue are then updated. Items that need legal,
+for the owner. A decision is settled only when the owner approves it. The file's status line and the Jira issue are then updated. Items that need legal,
 regulatory, or institutional input say so explicitly.
 
 | Decision | Unblocks | Status | Recommendation (one line) |
 |---|---|---|---|
-| [KAN-64 — Dispatch model and Phase 1 transitions](KAN-64-dispatch-model.md) | KAN-28 (SYS-03) | proposed — awaiting owner approval | Replace auto-dispatch with typed, server-revalidated commands (Generar/Iterar/Aprobar/Reintentar/Cancelar) over a pure per-deliverable state function. "Avanzar" is navigation only. |
-| [KAN-65 — Selection, approval, refinement channels](KAN-65-selection-approval-refinement.md) | KAN-34 (RF-06) | proposed — awaiting owner approval | One explicit "Aprobar" act per type (replaceable, with history and RF-07 staleness). Refinement uses panel parameters plus anchored observations and never writes the brief. |
+| [KAN-64 — Dispatch model and Phase 1 transitions](KAN-64-dispatch-model.md) | KAN-28 (SYS-03) | **approved 2026-10-25** | Replace auto-dispatch with typed, server-revalidated commands (Generar/Iterar/Aprobar/Reintentar/Cancelar) over a pure per-deliverable state function. "Avanzar" is navigation only. |
+| [KAN-65 — Selection, approval, refinement channels](KAN-65-selection-approval-refinement.md) | KAN-34 (RF-06) | **approved 2026-10-25** | One explicit "Aprobar" act per type (replaceable, with history and RF-07 staleness). Refinement uses panel parameters plus anchored observations and never writes the brief. |
 | [KAN-66 — Account operations and roles](KAN-66-account-operations-roles.md) | KAN-41 (SYS-06) | proposed — awaiting owner approval | Tenant admin can provision, list, deactivate, and reactivate members with tenant-scoped audit. Admin grants stay with platform operators. 1:1 WorkOS org ↔ tenant. |
 | [KAN-67 — RPO, RTO, backup scope](KAN-67-rpo-rto-backup-scope.md) | KAN-53 | proposed — awaiting owner approval | Managed backups plus independent encrypted dumps (and pre-migration dumps). RPO ≤ 24 h, RTO ≤ 2 h in operating hours. Assets covered only after KAN-52. Retention needs legal input. |
 | [KAN-68 — Regulatory gate policy](KAN-68-regulatory-gate-policy.md) | KAN-59 (→ KAN-14) | proposed — awaiting owner approval | The deterministic golden set blocks on PR, nightly, and release (P0436). P0773's non-blocking trend applies only to LLM/heavy suites. CI green ≠ legal approval (KAN-54). |
