@@ -90,6 +90,22 @@ const EXTRACTOR_FIELD_SCHEMA_TEMPLATE = {
 
 const RESPONDER_PROMPT_TEMPLATE = `{{persona}}\n\n{{stateHeading}}\n{{decisionsBlock}}{{progressBlock}}\n{{guardrails}}`;
 
+/**
+ * KAN-28 (KAN-64 Option B): generation starts only from typed panel buttons.
+ * These fragments were introduced in `responder.chat-step1.v6`. Frozen
+ * releases created before that do not carry them, so the renderer falls back
+ * to these defaults (`RESPONDER_FRAGMENT_FALLBACKS`): an older release must
+ * still be able to render `offer_generation`, and its users must still be
+ * pointed at the buttons now that chat can no longer start a generation.
+ * They are deliberately NOT part of the required-fragment validation below.
+ */
+const RESPONDER_COMMAND_FRAGMENTS = {
+  offerGenerationDecision: `{{kind}}\nDecisión: el entregable "{{deliverableLabel}}" del agente "{{agentId}}" ya tiene todo lo necesario. La generación NO empieza sola: el usuario debe tocar el botón Generar del panel.\nAcción obligatoria: en UNA sola frase, dile que ya tiene todo listo y que, cuando quiera, toque el botón Generar (por ejemplo "Ya tienes todo listo para tu logo. Cuando quieras, toca el botón Generar."). PROHIBIDO decir que ya empezaste a generar o que estás generando.`,
+  commandGuidanceGuardrail: `- Generar, Iterar, Aprobar, Reintentar y Cancelar son botones del panel. Tú NO puedes ejecutarlos desde el chat: nunca digas que ya generaste, cambiaste, aprobaste o cancelaste algo. Si el usuario pide en el chat un cambio, otra versión o una aprobación de un entregable, guíalo al botón correspondiente, por ejemplo: "Para ajustar este logo, toca el botón Iterar y escribe qué quieres cambiar." o "Si te gusta, toca el botón Aprobar.".`,
+} as const;
+
+export const RESPONDER_FRAGMENT_FALLBACKS: Readonly<Record<string, string>> = RESPONDER_COMMAND_FRAGMENTS;
+
 const RESPONDER_PROMPT_FRAGMENTS: Readonly<Record<string, string>> = {
   persona: `Eres "CreaMype", una estratega de marca peruana que conversa en español neutro latinoamericano, tuteando, cálido y profesional. Hablas con micro y pequeñas empresarias peruanas (MYPEs) que están creando su marca paso a paso.`,
   systemHeading: `Estado actual del orquestador (autoritativo, no lo cuestiones):`,
@@ -103,7 +119,7 @@ const RESPONDER_PROMPT_FRAGMENTS: Readonly<Record<string, string>> = {
   announceDispatchDecision: `{{kind}}\nDecisión: confirmar que el agente "{{agentId}}" empezó su trabajo.\nAcción obligatoria: confirma en UNA cláusula breve que el agente empezó (por ejemplo "ya estoy generando tu logo,"). PROHIBIDO usar "estoy trabajando", "estamos trabajando", "dame un momento", "dame un momentito", "ya casi", "un segundo", "en breve", "enseguida". PROHIBIDO usar saludos.`,
   announceAllCompleteDecision: `{{kind}}\nDecisión: el flujo de este paso está completo.\nAcción obligatoria: en UNA sola frase, indica que terminó este paso e invita al siguiente. NO recapitules valores.`,
   announceCompletionTextDecision: `{{kind}}\nDecisión: presentar las opciones que produjo el agente "{{agentId}}".\nOpciones a presentar (literal, en este orden):\n{{numberedOptions}}\nAcción obligatoria: lista estas opciones EXACTAMENTE como aparecen, numeradas de 1 a {{count}}, y pídele al usuario que elija una. PROHIBIDO inventar opciones adicionales, modificar el texto, o agregar comentarios sobre cada opción.`,
-  announceCompletionVisualDecision: `{{kind}}\nDecisión: anunciar que el agente "{{agentId}}" terminó. El resultado ya está en el panel lateral.\nAcción obligatoria: en UNA sola frase, confirma que el resultado está en el panel lateral e invita al siguiente paso. PROHIBIDO describir el contenido visual.`,
+  announceCompletionVisualDecision: `{{kind}}\nDecisión: anunciar que el agente "{{agentId}}" terminó. El resultado ya está en el panel lateral.\nAcción obligatoria: en UNA sola frase, confirma que el resultado está en el panel lateral e invita al usuario a revisarlo: si le gusta, puede tocar el botón Aprobar; si quiere cambios, el botón Iterar. PROHIBIDO describir el contenido visual.`,
   announceCompletionEmptyDecision: `{{kind}}\nDecisión: anunciar que el agente "{{agentId}}" terminó.\nAcción obligatoria: en UNA sola frase, indica que terminó este paso e invita al siguiente.`,
   guardrails: [
     `Reglas para tu respuesta (estrictas, sin excepciones):`,
@@ -117,6 +133,7 @@ const RESPONDER_PROMPT_FRAGMENTS: Readonly<Record<string, string>> = {
     `- NO menciones nombres, productos, ni valores específicos del usuario salvo que la decisión actual los incluya explícitamente (por ejemplo "Valor pendiente" en confirm_field, u "Opciones a presentar" en announce_completion).`,
     `- Mantén un tono cálido pero directo.`,
   ].join('\n'),
+  ...RESPONDER_COMMAND_FRAGMENTS,
   dispatchRequestGuardrail: `- Cuando combines un anuncio de despacho con una pregunta, escribe UNA sola respuesta de hasta 2 oraciones que primero confirme el despacho en una cláusula breve y luego pivotee a la pregunta del siguiente agente. Ejemplo de pivote: "Ya estoy generando tu logo. Para el slogan, ¿cómo describirías el tono que buscas?".`,
 };
 
@@ -146,7 +163,9 @@ export function createCurrentAdapterBehaviorSnapshot(
       historyPolicyVersion: 'none',
     },
     responder: {
-      promptVersion: 'responder.chat-step1.v5',
+      // v6 (KAN-28): offer_generation, button guidance guardrail, Aprobar/Iterar
+      // invitation on visual completion. Real eval pending owner confirmation.
+      promptVersion: 'responder.chat-step1.v6',
       promptTemplate: RESPONDER_PROMPT_TEMPLATE,
       rendererVersion: 'responder.renderer.v1',
       parserVersion: 'responder.text.v1',

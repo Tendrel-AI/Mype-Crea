@@ -11,7 +11,7 @@ import type { MessageRow } from '../../src/repos/models';
 import type { AgentRequirementState, PlannerDecision } from '../../src/core/contracts';
 import type { ResponderExpectation } from '../evaluators/responder';
 
-export const RESPONDER_DATASET_VERSION = 'responder-cases.v1';
+export const RESPONDER_DATASET_VERSION = 'responder-cases.v2';
 
 type Recent = ReadonlyArray<Pick<MessageRow, 'role' | 'content'>>;
 
@@ -247,6 +247,31 @@ export const responderCases: ReadonlyArray<ResponderCase> = [
     },
     // Listing two numbered options plus the ask needs more than two sentences.
     expected: { mustMention: ['Del campo a tu taza', 'Sabor que nace en los Andes'], maxSentences: 4 },
+  },
+  {
+    id: 'offer-generation',
+    tags: ['offer_generation', 'commands'],
+    inputs: {
+      decisions: [{ kind: 'offer_generation', agentId: 'logo-agent', deliverableKind: 'logo' }],
+      recentMessages: [{ role: 'user', content: 'Rústico, en verde y marrón' }],
+      logoState: { requiredFields: allFilled.requiredFields, optionalFields: allFilled.optionalFields, iterationCount: 0 },
+    },
+    // KAN-28: generation starts only from the Generar button.
+    expected: { mustMention: ['Generar'], mustNotMention: ['Café Andino', 'estoy generando'] },
+  },
+  {
+    id: 'chat-change-request-guided-to-iterar',
+    tags: ['commands', 'change-request'],
+    inputs: {
+      decisions: [{ kind: 'announce_all_complete' }],
+      recentMessages: [
+        { role: 'assistant', content: 'Tu logo está listo en el panel.' },
+        { role: 'user', content: 'Cámbiale el color a azul, porfa' },
+      ],
+      logoState: allFilled,
+    },
+    // KAN-28: chat never changes a deliverable; it points to the Iterar button.
+    expected: { mustMention: ['Iterar'], mustNotMention: ['ya lo cambié', 'ya cambié'] },
   },
   {
     id: 'all-complete',

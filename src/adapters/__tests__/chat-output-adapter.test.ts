@@ -421,6 +421,67 @@ describe('ChatOutputAdapter', () => {
     });
   });
 
+  it('renders offer_generation as a pointer to the Generar button, never as «generating»', async () => {
+    setProvider(provider = makeResponderProvider('Ya tienes todo listo para tu logo. Cuando quieras, toca el botón Generar.'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+
+    await adapter.render({
+      decisions: [{ kind: 'offer_generation', agentId: 'test-fixture-agent', deliverableKind: 'logo' }],
+      recentMessages: [],
+      snapshot: filledSnapshot,
+      llmContext: ctx,
+    });
+
+    const prompt = provider.captured[0].systemPrompt;
+    expect(prompt).toContain('offer_generation');
+    expect(prompt).toContain('botón Generar');
+    expect(prompt).toContain('PROHIBIDO decir que ya empezaste a generar');
+    expect(prompt).not.toContain('Café Andino');
+  });
+
+  it('every prompt guides chat change requests to the panel buttons (KAN-28)', async () => {
+    setProvider(provider = makeResponderProvider('ok'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+    await adapter.render({
+      decisions: [{ kind: 'announce_all_complete' }],
+      recentMessages: [{ role: 'user', content: 'cámbiale el color al logo' }],
+      snapshot: filledSnapshot,
+      llmContext: ctx,
+    });
+    const prompt = provider.captured[0].systemPrompt;
+    expect(prompt).toContain('Para ajustar este logo, toca el botón Iterar y escribe qué quieres cambiar.');
+    expect(prompt).toContain('nunca digas que ya generaste');
+    expect(prompt).toContain('español neutro latinoamericano');
+  });
+
+  it('bumps the responder prompt version for the command guidance', () => {
+    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v6');
+  });
+
+  it('a release frozen before v6 still renders offer_generation through the fragment fallbacks', async () => {
+    setProvider(provider = makeResponderProvider('ok'));
+    const behavior = createCurrentAdapterBehaviorSnapshot();
+    const {
+      offerGenerationDecision: _offer,
+      commandGuidanceGuardrail: _guidance,
+      ...olderFragments
+    } = behavior.responder.promptFragments;
+    const frozen = { ...behavior, responder: { ...behavior.responder, promptFragments: olderFragments } };
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+
+    await adapter.render({
+      decisions: [{ kind: 'offer_generation', agentId: 'test-fixture-agent', deliverableKind: 'logo' }],
+      recentMessages: [],
+      snapshot: filledSnapshot,
+      llmContext: ctx,
+      execution: { model: { ...provider.resolve('responder'), provider: 'openrouter' }, behavior: frozen },
+    });
+
+    const prompt = provider.captured[0].systemPrompt;
+    expect(prompt).toContain('botón Generar');
+    expect(prompt).not.toContain('undefined');
+  });
+
   it('rejects unsupported frozen responder renderers before provider invocation', async () => {
     const provider = makeResponderProvider('ok');
     const behavior = createCurrentAdapterBehaviorSnapshot();

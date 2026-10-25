@@ -33,6 +33,7 @@ import {
   assertResolvedModelPurpose,
   assertSupportedAdapterBehavior,
   createCurrentAdapterBehaviorSnapshot,
+  RESPONDER_FRAGMENT_FALLBACKS,
   type AdapterExecution,
 } from '../services/ai-config/adapter-behavior';
 import { withLlmLogging, type LlmLoggingContext } from '../services/llm-logger';
@@ -125,8 +126,10 @@ function buildResponderSystemPrompt(
   snapshot: ConversationSnapshot,
   registry: AgentRegistry,
   template: string,
-  fragments: Readonly<Record<string, string>>,
+  frozenFragments: Readonly<Record<string, string>>,
 ): string {
+  // Releases frozen before responder v6 lack the KAN-28 command fragments.
+  const fragments = { ...RESPONDER_FRAGMENT_FALLBACKS, ...frozenFragments };
   const statusSummary = describeFieldStatus(snapshot);
   const decisionsBlock = describeDecisions(decisions, registry, fragments);
   const guardrails = buildGuardrails(decisions, fragments);
@@ -196,6 +199,12 @@ function describeDecision(
       return applyPromptTemplate(fragments.requestSelectionDecision, {
         kind: kindTag, agentId: decision.agentId, count: String(decision.candidateDeliverableIds.length),
       });
+    case 'offer_generation':
+      return applyPromptTemplate(fragments.offerGenerationDecision, {
+        kind: kindTag,
+        agentId: decision.agentId,
+        deliverableLabel: deliverableLabelFor(decision.agentId, decision.deliverableKind, registry),
+      });
     case 'announce_dispatch':
       return applyPromptTemplate(fragments.announceDispatchDecision, {
         kind: kindTag, agentId: decision.agentId,
@@ -219,9 +228,20 @@ function buildGuardrails(
 ): string {
   const hasDispatch = decisions.some((d) => d.kind === 'announce_dispatch');
   const hasRequestFields = decisions.some((d) => d.kind === 'request_fields');
-  return hasDispatch && hasRequestFields
-    ? `${fragments.guardrails}\n${fragments.dispatchRequestGuardrail}`
-    : fragments.guardrails;
+  const lines = [fragments.guardrails];
+  if (hasDispatch && hasRequestFields) lines.push(fragments.dispatchRequestGuardrail);
+  // KAN-28: chat never starts, changes or approves a deliverable.
+  lines.push(fragments.commandGuidanceGuardrail);
+  return lines.join('\n');
+}
+
+/** Human label for a deliverable: the Agent Card's tab label, else its kind. */
+function deliverableLabelFor(agentId: string, deliverableKind: string, registry: AgentRegistry): string {
+  try {
+    return registry.get(agentId).card['mypes:ui']?.tabLabel ?? deliverableKind;
+  } catch {
+    return deliverableKind;
+  }
 }
 
 /**
