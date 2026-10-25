@@ -7,7 +7,7 @@ import { Send, Loader2, Sparkles, PlusCircle, Download } from 'lucide-react';
 import { type BrandAssets, type Message } from './types';
 
 
-export function ChatPanel({ assets, processingAgents, conversationId, handleExportConversation, step, setShowRestartModal, messages, isLoading, messagesEndRef, conversationError, retryTurn, submitTurn, inputText, setInputText, handleKeyDown, handleSend, needsNewConversation }: { assets: BrandAssets; processingAgents: Set<string>; conversationId: string; handleExportConversation: () => void; step: number; setShowRestartModal: (open: boolean) => void; messages: Message[]; isLoading: boolean; messagesEndRef: React.RefObject<HTMLDivElement | null>; conversationError: string; retryTurn: { requestId: string; userMessage: string } | null; submitTurn: (text: string, requestId: string) => void; inputText: string; setInputText: (text: string) => void; handleKeyDown: (e: React.KeyboardEvent) => void; handleSend: () => void; needsNewConversation: boolean }) {
+export function ChatPanel({ assets, processingAgents, conversationId, handleExportConversation, step, setShowRestartModal, messages, isLoading, messagesEndRef, conversationError, retryTurn, submitTurn, inputText, setInputText, handleKeyDown, handleSend, needsNewConversation, mobileDeliverablePanel }: { assets: BrandAssets; processingAgents: Set<string>; conversationId: string; handleExportConversation: () => void; step: number; setShowRestartModal: (open: boolean) => void; messages: Message[]; isLoading: boolean; messagesEndRef: React.RefObject<HTMLDivElement | null>; conversationError: string; retryTurn: { requestId: string; userMessage: string } | null; submitTurn: (text: string, requestId: string) => void; inputText: string; setInputText: (text: string) => void; handleKeyDown: (e: React.KeyboardEvent) => void; handleSend: () => void; needsNewConversation: boolean; /** KAN-28: deliverable commands for small screens, where the dashboard is hidden. */ mobileDeliverablePanel?: React.ReactNode }) {
   return (
 <>
           {/* Left Panel: Chat Interface */}
@@ -106,6 +106,11 @@ export function ChatPanel({ assets, processingAgents, conversationId, handleExpo
         </div>
 
         <div className="p-4 bg-white border-t border-neutral-200">
+          {mobileDeliverablePanel && (
+            <div className="md:hidden mb-3 rounded-xl border border-neutral-200 bg-neutral-50 p-3">
+              {mobileDeliverablePanel}
+            </div>
+          )}
           {conversationError && (
             <div role="status" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               {conversationError}

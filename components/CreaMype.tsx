@@ -1,14 +1,17 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Sidebar } from './crea-mype/Sidebar';
 import { type BrandAssets, type Message, type Step } from './crea-mype/types';
 import { RestartModal } from './crea-mype/RestartModal';
 import { ChatPanel } from './crea-mype/ChatPanel';
 import { Dashboard } from './crea-mype/Dashboard';
 import { LandingPreview } from './crea-mype/LandingPreview';
+import { DeliverableCommands, type DeliverableCommandRequest } from './crea-mype/DeliverableCommands';
 import { chatAction } from '../app/actions/chat';
-import { createConversationAction, exportConversationTraceAction, loadConversationAction } from '../app/actions/conversations';
+import { createConversationAction, exportConversationTraceAction } from '../app/actions/conversations';
+import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/actions/deliverable-command';
+import type { DeliverableStateView } from '../src/core/contracts';
 
 interface CreaMypeProps {
   userEmail: string;
@@ -26,6 +29,7 @@ interface CreaMypeProps {
     kind: string;
     contentUrl: string | null;
     contentInline: Record<string, unknown> | null;
+    selectedAt?: string | null;
   }>;
   /** Optional validated-on-render typed v1 landing-page envelope. No live producer exists yet. */
   landingPageContent?: unknown;
@@ -38,6 +42,21 @@ const WELCOME_MESSAGE: Message = {
   text: '¡Hola! Soy tu estratega de marca y diseñador de IA. Vamos a crear tu marca y lanzar tu producto en 5 pasos.\n\n**Paso 1: Nombre del Negocio**\nPara empezar, cuéntame un poco sobre tu idea: ¿En qué industria estás? ¿Cuáles son tus valores principales? ¿A quién va dirigido tu producto?',
   isSystem: true,
 };
+
+const LOGO_AGENT_ID = 'logo-agent';
+
+/** Approved logo first (KAN-28 Aprobar), else the newest candidate. */
+function initialLogoUrl(deliverables: NonNullable<CreaMypeProps['initialDeliverables']>): string {
+  const logos = deliverables.filter((item) => item.kind === 'logo' && item.contentUrl);
+  return (logos.find((item) => item.selectedAt) ?? logos.at(-1))?.contentUrl ?? '';
+}
+
+/** Same preference over the server-derived state. */
+function preferredLogoUrl(view: DeliverableStateView | undefined): string | null {
+  if (!view) return null;
+  const approved = view.candidates.find((c) => c.deliverableId === view.approvedDeliverableId);
+  return (approved ?? view.candidates.at(-1))?.contentUrl ?? null;
+}
 
 const EMPTY_ASSETS: BrandAssets = {
   name: '',
@@ -54,7 +73,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
 
   const [assets, setAssets] = useState<BrandAssets>(() => ({
     ...EMPTY_ASSETS,
-    logoUrl: initialDeliverables.find((item) => item.kind === 'logo' && item.contentUrl)?.contentUrl ?? '',
+    logoUrl: initialLogoUrl(initialDeliverables),
     typedLandingPage: landingPageContent,
   }));
   const [messages, setMessages] = useState<Message[]>(() => initialTurns.length
@@ -88,6 +107,28 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     Boolean(incompleteTurn && ['effects_started', 'uncertain'].includes(incompleteTurn.stage)),
   );
   const [conversationError, setConversationError] = useState(initialError ?? '');
+  // KAN-28: server-derived deliverable states. Buttons are rendered from
+  // `allowedCommands`, but the server re-validates every command.
+  const [deliverableStates, setDeliverableStates] = useState<ReadonlyArray<DeliverableStateView>>([]);
+  const [commandBusy, setCommandBusy] = useState(false);
+  const [commandError, setCommandError] = useState('');
+  const logoView = deliverableStates.find((view) => view.agentId === LOGO_AGENT_ID);
+
+  const applyStates = useCallback((states: ReadonlyArray<DeliverableStateView>) => {
+    setDeliverableStates(states);
+    const url = preferredLogoUrl(states.find((view) => view.agentId === LOGO_AGENT_ID));
+    if (url) setAssets((prev) => (prev.logoUrl === url ? prev : { ...prev, logoUrl: url }));
+  }, []);
+
+  const refreshStates = useCallback(async (forConversation: string) => {
+    if (!forConversation) return;
+    try {
+      const result = await loadDeliverableStatesAction({ conversationId: forConversation });
+      if (result.ok) applyStates(result.states);
+    } catch (error) {
+      console.error('Failed to load deliverable states', error);
+    }
+  }, [applyStates]);
 
   // Step is derived from filled assets (logo arrives via SSE; the other
   // panels stay at "Pendiente" until their sub-agents land). The orchestrator
@@ -111,6 +152,10 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   useEffect(() => {
     scrollToBottom();
   }, [messages, isLoading]);
+
+  useEffect(() => {
+    void refreshStates(conversationId);
+  }, [conversationId, refreshStates]);
 
   // Subscribe to artifact events from the orchestrator. The SSE stream is
   // scoped to the current conversationId; resetting the conversation
@@ -148,6 +193,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
           next.add(event.agentId);
           return next;
         });
+        void refreshStates(conversationId);
       } catch (err) {
         console.error('Failed to parse task_processing event', err);
       }
@@ -167,19 +213,85 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
           next.delete(event.agentId);
           return next;
         });
+        void refreshStates(conversationId);
         const imgUrl = event.artifacts.find((a) => a.kind === 'image')?.url;
         if (!imgUrl) return;
-        if (event.agentId === 'logo-agent') {
+        if (event.agentId === LOGO_AGENT_ID) {
           setAssets((prev) => ({ ...prev, logoUrl: imgUrl }));
         }
       } catch (err) {
         console.error('Failed to parse artifact event', err);
       }
     });
+    // A failed or canceled task arrives as a notice; the panel state changes too.
+    source.addEventListener('notice', (raw: MessageEvent<string>) => {
+      try {
+        const event = JSON.parse(raw.data) as { agentId?: string };
+        if (event.agentId) {
+          setProcessingAgents((prev) => {
+            if (!prev.has(event.agentId!)) return prev;
+            const next = new Set(prev);
+            next.delete(event.agentId!);
+            return next;
+          });
+        }
+      } catch {
+        // Notices without a JSON body still trigger a refresh.
+      }
+      void refreshStates(conversationId);
+    });
     return () => {
       source.close();
     };
-  }, [conversationId]);
+  }, [conversationId, refreshStates]);
+
+  const handleDeliverableCommand = async (agentId: string, view: DeliverableStateView, request: DeliverableCommandRequest) => {
+    if (!conversationId || commandBusy) return;
+    setCommandBusy(true);
+    setCommandError('');
+    try {
+      const base = {
+        commandId: crypto.randomUUID(),
+        conversationId,
+        agentId,
+        expectedState: view.state,
+        stateToken: view.stateToken,
+      };
+      const result = await deliverableCommandAction(
+        request.kind === 'iterate'
+          ? { ...base, kind: 'iterate', deliverableId: request.deliverableId, observation: request.observation }
+          : request.kind === 'approve'
+            ? { ...base, kind: 'approve', deliverableId: request.deliverableId, expectedApprovedId: view.approvedDeliverableId }
+            : request.kind === 'retry'
+              ? { ...base, kind: 'retry', failedTaskId: view.lastFailure?.taskId }
+              : request.kind === 'cancel'
+                ? { ...base, kind: 'cancel', taskId: view.activeTask?.taskId }
+                : { ...base, kind: 'generate' },
+      );
+      if (!result.ok) setCommandError(result.message);
+      if (result.states.length > 0) applyStates(result.states);
+      else await refreshStates(conversationId);
+    } catch (error) {
+      console.error('Deliverable command failed.', error);
+      setCommandError('No pudimos confirmar esta acción. Revisa el panel antes de intentarlo de nuevo.');
+      await refreshStates(conversationId);
+    } finally {
+      setCommandBusy(false);
+    }
+  };
+
+  const renderLogoCommands = (withAdvance: boolean) => (
+    <DeliverableCommands
+      view={logoView}
+      label="logo"
+      busy={commandBusy}
+      error={commandError}
+      onCommand={(request) => { if (logoView) void handleDeliverableCommand(LOGO_AGENT_ID, logoView, request); }}
+      onAdvance={withAdvance
+        ? () => document.getElementById('brand-step-3')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        : undefined}
+    />
+  );
 
   const handleSend = async () => {
     if (!inputText.trim()) return;
@@ -222,6 +334,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       ]);
       setRetryTurn(null);
       setNeedsNewConversation(false);
+      void refreshStates(conversationId);
     } catch (error: unknown) {
       console.error('Chat request failed.', error);
       const text = 'No pudimos confirmar el resultado de esta solicitud. Recarga la conversación antes de continuar.';
@@ -255,6 +368,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
         setNeedsNewConversation(false);
         setConversationError('');
         setProcessingAgents(new Set());
+        setDeliverableStates([]);
+        setCommandError('');
         window.history.pushState({}, '', `/?conversationId=${encodeURIComponent(result.conversationId)}`);
         setShowRestartModal(false);
       } finally {
@@ -290,8 +405,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       <RestartModal showRestartModal={showRestartModal} setShowRestartModal={setShowRestartModal} handleRestart={handleRestart} />
       {activeTab === 'create' && (
         <>
-          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} setShowRestartModal={setShowRestartModal} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} />
-          <Dashboard assets={assets} processingAgents={processingAgents} step={step} setActiveTab={setActiveTab} />
+          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} setShowRestartModal={setShowRestartModal} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={logoView ? renderLogoCommands(false) : undefined} />
+          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands(true)} />
       </>
       )}
 
