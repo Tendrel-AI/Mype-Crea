@@ -580,6 +580,32 @@ describe('orchestrator smoke (agent-agnostic)', () => {
       );
     },
   );
+
+  it('does not retain failed settlements: nothing is announced and nothing stays queued', async () => {
+    const { core, messages, agentId } = buildControlledHarness();
+    const conversationId = randomUUID();
+    await core.startConversation(conversationId, randomUUID(), randomUUID());
+    await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
+    const taskId = messages[0].taskId;
+    await core.getNextDecision(conversationId); // acknowledge the dispatch
+
+    await core.onTaskSettled(taskId, {
+      status: 'failed',
+      result: {
+        status: 'failed',
+        taskId,
+        error: { kind: 'timeout', message: 'synthetic timeout' },
+        completedAt: new Date().toISOString() as `${string}T${string}Z`,
+      },
+    });
+
+    const plan = await core.peekNextDecision(conversationId);
+    expect(plan.some((d) => d.kind === 'announce_completion' || d.kind === 'announce_dispatch')).toBe(false);
+    // The failure is not buffered in memory, so it cannot leak across turns.
+    expect(core['pendingCompletions'].size).toBe(0);
+    const snapshot = await core.getSnapshot(conversationId);
+    expect(snapshot.agentStates[agentId].lastDispatchedTaskId).toBeUndefined();
+  });
 });
 
 /**

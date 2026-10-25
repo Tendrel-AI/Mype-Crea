@@ -143,9 +143,10 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
   >();
 
   /**
-   * Tasks whose completion we've observed but whose announce_completion
-   * decision we have not yet delivered. Cleared when getNextDecision or
-   * applyDelta surfaces the decision.
+   * Completed tasks whose announce_completion decision has not yet been
+   * acknowledged. Cleared by acknowledgeDecisions. Failed tasks are never
+   * queued here: no decision announces them (their failure is persisted on
+   * agent_tasks), so queueing them would only leak memory.
    */
   private readonly pendingCompletions = new Map<ConversationId, PendingCompletion[]>();
 
@@ -288,33 +289,27 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
       }
     }
 
-    // 2. Include completion announcements (failed tasks fall through silently
-    // for now; a future `announce_failure` variant can take their place).
+    // 2. Include completion announcements. Only completed tasks are queued;
+    // failed tasks have no decision yet (a future `announce_failure` variant
+    // is an open product decision).
     const pending = this.pendingCompletions.get(conversationId);
     if (pending && pending.length > 0) {
       for (const next of pending) {
-        if (next.state.status === 'completed') {
-          child.info(
-            {
-              agentId: next.agentId,
-              taskId: next.taskId,
-              artifactCount: next.state.result.artifacts.length,
-            },
-            'orchestrator.decision.announce_completion',
-          );
-          plan.push({
-            kind: 'announce_completion',
+        child.info(
+          {
             agentId: next.agentId,
             taskId: next.taskId,
-            deliverableIds: next.deliverableIds,
-            artifacts: next.state.result.artifacts,
-          });
-        } else {
-          child.warn(
-            { agentId: next.agentId, taskId: next.taskId },
-            'orchestrator.decision.task_failed_falling_through',
-          );
-        }
+            artifactCount: next.artifacts.length,
+          },
+          'orchestrator.decision.announce_completion',
+        );
+        plan.push({
+          kind: 'announce_completion',
+          agentId: next.agentId,
+          taskId: next.taskId,
+          deliverableIds: next.deliverableIds,
+          artifacts: next.artifacts,
+        });
       }
     }
 
@@ -585,9 +580,25 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
       }
     }
 
-    const bucket = this.pendingCompletions.get(owner.conversationId) ?? [];
-    bucket.push({ taskId, agentId: owner.agentId, state, deliverableIds });
-    this.pendingCompletions.set(owner.conversationId, bucket);
+    if (state.status === 'completed') {
+      const bucket = this.pendingCompletions.get(owner.conversationId) ?? [];
+      bucket.push({
+        taskId,
+        agentId: owner.agentId,
+        artifacts: state.result.artifacts,
+        deliverableIds,
+      });
+      this.pendingCompletions.set(owner.conversationId, bucket);
+    } else if (state.status === 'failed') {
+      // Nothing announces a failure, so it is not queued (see pendingCompletions).
+      child.info(
+        {
+          errorKind: state.result.error.kind,
+          errorCategory: classifyTaskError(state.result.error),
+        },
+        'orchestrator.task.failed_not_announced',
+      );
+    }
 
     // Side-channel: surface artifacts to anyone subscribed (the SSE route).
     // Decisions stay pure; transports are responsible for the actual deliverables.
@@ -644,7 +655,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
 interface PendingCompletion {
   readonly taskId: TaskId;
   readonly agentId: AgentId;
-  readonly state: TaskState;
+  readonly artifacts: Extract<TaskState, { status: 'completed' }>['result']['artifacts'];
   readonly deliverableIds: ReadonlyArray<DeliverableId>;
 }
 
