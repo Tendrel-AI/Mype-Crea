@@ -8,6 +8,17 @@ const mocks = vi.hoisted(() => ({
   bootstrapSuperadmin: vi.fn(),
   findByWorkosOrgId: vi.fn(),
   organizationIsActive: vi.fn(),
+  cookieGet: vi.fn<(name: string) => { value: string } | undefined>(() => undefined),
+  logInfo: vi.fn(),
+  // Role checks (users / platform_superadmins) pass; catalog reads return no rows.
+  txQuery: vi.fn(async (sql: string, _params?: readonly unknown[]) => (sql.includes('ai_shared_releases') ? { rows: [], rowCount: 0 } : { rows: [{ ok: 1 }], rowCount: 1 })),
+}));
+
+vi.mock('next/headers', () => ({
+  cookies: async () => ({ get: mocks.cookieGet }),
+}));
+vi.mock('../../db/with-transaction', () => ({
+  withTenantTransaction: vi.fn(async (_tenant: unknown, _user: unknown, callback: (tx: unknown) => unknown) => callback({ query: mocks.txQuery })),
 }));
 
 vi.mock('@workos-inc/authkit-nextjs', () => ({
@@ -27,12 +38,13 @@ vi.mock('../../repos/global', () => ({
 }));
 vi.mock('../../services/logger', () => ({
   loggerFor: () => ({
-    info: vi.fn(),
+    info: mocks.logInfo,
     error: vi.fn(),
   }),
 }));
 
-import { requireGlobalAdmin, requirePlatformAdmin, requireTenantAdmin, resolveIdentity, signMfaPending, signMfaProof, verifyActiveMembership, verifyMfaPending } from '../resolve-identity';
+import { getRoleSwitcherState, repositoryActor, requireGlobalAdmin, requireGlobalMfa, requirePlatformAdmin, requirePlatformStepUp, requireTenantAdmin, resolveIdentity, signMfaPending, signMfaProof, verifyActiveMembership, verifyMfaPending } from '../resolve-identity';
+import { aiConfigRepo } from '../../repos/ai-config';
 
 const originalBootstrapId = process.env.PLATFORM_BOOTSTRAP_SUPERADMIN_WORKOS_USER_ID;
 const originalCookiePassword = process.env.WORKOS_COOKIE_PASSWORD;
@@ -198,5 +210,147 @@ describe('resolveIdentity', () => {
       tenantId: tenantA,
       userId: localUserId,
     })).resolves.toBe(false);
+  });
+});
+
+describe('developer role override (KAN-79)', () => {
+  const originalDevelopment = process.env.DEVELOPMENT;
+  const cookie = (value: string | undefined) => mocks.cookieGet.mockImplementation((name: string) =>
+    name === 'cremype_dev_role_override' && value !== undefined ? { value } : undefined);
+
+  beforeEach(() => {
+    delete process.env.PLATFORM_BOOTSTRAP_SUPERADMIN_WORKOS_USER_ID;
+    process.env.WORKOS_COOKIE_PASSWORD = 'test-session-cookie-password-that-is-long-enough';
+    process.env.DEVELOPMENT = 'TRUE';
+    mocks.auth.mockResolvedValue({ user: { id: userId, email: 'user@example.test' }, organizationId: orgA, sessionId: 'session_1' });
+    mocks.memberships.mockImplementation(({ organizationId }: { organizationId: string }) => activeMembership(organizationId));
+    mocks.resolveMember.mockResolvedValue({ userId: localUserId, role: 'admin' });
+    mocks.isSuperadmin.mockResolvedValue(true);
+    mocks.findByWorkosOrgId.mockResolvedValue({ tenantId: tenantA, status: 'active' });
+    cookie(undefined);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    if (originalDevelopment === undefined) delete process.env.DEVELOPMENT;
+    else process.env.DEVELOPMENT = originalDevelopment;
+    if (originalCookiePassword === undefined) delete process.env.WORKOS_COOKIE_PASSWORD;
+    else process.env.WORKOS_COOKIE_PASSWORD = originalCookiePassword;
+  });
+
+  it('ignores the cookie entirely when DEVELOPMENT is off', async () => {
+    process.env.DEVELOPMENT = 'false';
+    cookie(`v1.${userId}.tenant-member+no-platform-admin`);
+    const identity = await resolveIdentity();
+    expect(identity).toMatchObject({ tenantRole: 'admin', platformAdmin: true });
+    expect(identity.reducedFrom).toBeUndefined();
+    expect(mocks.cookieGet).not.toHaveBeenCalled();
+    await expect(requireTenantAdmin()).resolves.toMatchObject({ tenantRole: 'admin' });
+    await expect(requirePlatformAdmin()).resolves.toMatchObject({ platformAdmin: true });
+    await expect(requireGlobalAdmin()).resolves.toMatchObject({ workosUserId: userId });
+    await expect(getRoleSwitcherState()).resolves.toBeNull();
+  });
+
+  it('applies a tenant downgrade to resolveIdentity and requireTenantAdmin, logging real and effective roles', async () => {
+    cookie(`v1.${userId}.tenant-member`);
+    const identity = await resolveIdentity();
+    expect(identity).toMatchObject({ tenant: { id: tenantA }, user: { id: localUserId }, workosUserId: userId, tenantRole: 'member', platformAdmin: true });
+    expect(identity.reducedFrom).toEqual({ tenantRole: 'admin', platformAdmin: true });
+    await expect(requireTenantAdmin()).rejects.toThrow('No tienes permiso para administrar la configuración de esta organización.');
+    await expect(requirePlatformAdmin()).resolves.toMatchObject({ platformAdmin: true, tenantRole: 'member' });
+    expect(mocks.logInfo).toHaveBeenCalledWith(expect.objectContaining({
+      userId: localUserId,
+      real: { tenantRole: 'admin', platformAdmin: true },
+      effective: { tenantRole: 'member', platformAdmin: true },
+    }), 'auth.role_override.applied');
+  });
+
+  it('applies a platform downgrade to requirePlatformAdmin and the global console gate', async () => {
+    cookie(`v1.${userId}.no-platform-admin`);
+    await expect(resolveIdentity()).resolves.toMatchObject({ tenantRole: 'admin', platformAdmin: false });
+    await expect(requirePlatformAdmin()).rejects.toThrow('No tienes permiso para administrar la configuración de la plataforma.');
+    await expect(requireTenantAdmin()).resolves.toMatchObject({ tenantRole: 'admin' });
+    await expect(requireGlobalAdmin()).rejects.toThrow('No tienes permiso para administrar la plataforma.');
+    await expect(requireGlobalMfa()).rejects.toThrow('No tienes permiso para administrar la plataforma.');
+  });
+
+  it('keeps the platform MFA step-up for a real platform admin acting with reduced roles', async () => {
+    cookie(`v1.${userId}.no-platform-admin`);
+    const reduced = await resolveIdentity();
+    await expect(requirePlatformStepUp(reduced)).rejects.toThrow('Verifica tu código de autenticación para continuar.');
+    const proof = signMfaProof({ workosUserId: userId, sessionId: 'session_1' });
+    mocks.cookieGet.mockImplementation((name: string) => {
+      if (name === 'cremype_dev_role_override') return { value: `v1.${userId}.no-platform-admin` };
+      if (name === 'cremype_platform_mfa') return { value: proof };
+      return undefined;
+    });
+    await expect(requirePlatformStepUp(reduced)).resolves.toBeUndefined();
+
+    mocks.resolveMember.mockResolvedValueOnce({ userId: localUserId, role: 'member' });
+    mocks.isSuperadmin.mockResolvedValue(false);
+    const plainMember = await resolveIdentity();
+    await expect(requirePlatformStepUp(plainMember)).resolves.toBeUndefined();
+  });
+
+  it('selects the tenant (not platform) DB admin context for a reduced platform admin', async () => {
+    cookie(`v1.${userId}.no-platform-admin`);
+    const reduced = await resolveIdentity();
+    await aiConfigRepo(reduced.tenant, reduced.user, repositoryActor(reduced)).listSharedReleases();
+    const statements = mocks.txQuery.mock.calls.map(([sql]) => String(sql));
+    expect(statements.some((sql) => sql.includes('app.is_platform_admin'))).toBe(false);
+    expect(statements.some((sql) => sql.includes('app.platform_actor_workos_user_id'))).toBe(false);
+    expect(statements.some((sql) => sql.includes("role='admin'"))).toBe(true);
+
+    mocks.txQuery.mockClear();
+    cookie(undefined);
+    const real = await resolveIdentity();
+    await aiConfigRepo(real.tenant, real.user, repositoryActor(real)).listSharedReleases();
+    expect(mocks.txQuery.mock.calls.some(([sql]) => String(sql).includes('app.is_platform_admin'))).toBe(true);
+  });
+
+  it('refuses tenant-admin repository access for a reduced tenant admin before querying', async () => {
+    cookie(`v1.${userId}.tenant-member+no-platform-admin`);
+    const reduced = await resolveIdentity();
+    expect(reduced).toMatchObject({ tenantRole: 'member', platformAdmin: false });
+    await expect(aiConfigRepo(reduced.tenant, reduced.user, repositoryActor(reduced)).listSharedReleases()).rejects.toThrow('No tienes permisos para administrar la configuración.');
+    expect(mocks.txQuery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'garbage',
+    `v1.${userId}.tenant-admin`,
+    `v1.${userId}.platform-admin`,
+    `v1.${userId}.no-platform-admin+tenant-member`,
+    `v1.${userId}.tenant-member+tenant-member`,
+    `v2.${userId}.tenant-member`,
+    `v1.user_someoneelse.tenant-member`,
+    `v1.${userId}.`,
+    '',
+  ])('ignores a malformed or foreign cookie: %s', async (value) => {
+    cookie(value);
+    const identity = await resolveIdentity();
+    expect(identity).toMatchObject({ tenantRole: 'admin', platformAdmin: true });
+    expect(identity.reducedFrom).toBeUndefined();
+  });
+
+  it('cannot elevate a member through the cookie: reductions on missing roles are no-ops', async () => {
+    mocks.resolveMember.mockResolvedValue({ userId: localUserId, role: 'member' });
+    mocks.isSuperadmin.mockResolvedValue(false);
+    cookie(`v1.${userId}.tenant-member+no-platform-admin`);
+    const identity = await resolveIdentity();
+    expect(identity).toMatchObject({ tenantRole: 'member', platformAdmin: false });
+    expect(identity.reducedFrom).toBeUndefined();
+  });
+
+  it('reports panel state with real and effective roles only when the flag is on', async () => {
+    cookie(`v1.${userId}.tenant-member`);
+    await expect(getRoleSwitcherState()).resolves.toEqual({
+      real: { tenantRole: 'admin', platformAdmin: true },
+      effective: { tenantRole: 'member', platformAdmin: true },
+      reduced: true,
+    });
+    mocks.resolveMember.mockResolvedValue({ userId: localUserId, role: 'member' });
+    mocks.isSuperadmin.mockResolvedValue(false);
+    await expect(getRoleSwitcherState()).resolves.toBeNull();
   });
 });
