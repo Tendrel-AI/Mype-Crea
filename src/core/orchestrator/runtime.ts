@@ -35,7 +35,7 @@ import { repos, systemRepos } from '../../repos';
 import { globalRepos } from '../../repos/global';
 import { getConversationOwnerUserId } from '../../repos/conversations';
 import { LocalAdapter } from '../../transport/local-adapter';
-import { channelForAgent, RedisQueueAdapter } from '../../transport/redis-queue-adapter';
+import { dispatchWakeUp, RedisQueueAdapter } from '../../transport/redis-queue-adapter';
 import { startLogoAgentWorker } from '../../workers/logo-agent-worker';
 import { getRedisPublisher, getRedisSubscriber } from '../../services/redis';
 import type { AgentId, ConversationId, TaskId, UUID } from '../contracts';
@@ -147,10 +147,10 @@ async function reconcileConfiguredTenantEvents(): Promise<void> {
         agentId: 'logo-agent',
         batchSize: PENDING_RECOVERY_BATCH_SIZE,
         listPending: (input) => tenantRepositories.agentTasks.listPendingDispatches(input),
-        publish: (task, taskTenantId) => publisher.publish(
-          channelForAgent(task.agentId as AgentId),
-          JSON.stringify({ taskId: task.id, tenantId: taskTenantId, agentId: task.agentId }),
-        ),
+        publish: (task, taskTenantId) => {
+          const wakeUp = dispatchWakeUp({ taskId: task.id, tenantId: taskTenantId, agentId: task.agentId as AgentId });
+          return publisher.publish(wakeUp.channel, wakeUp.message);
+        },
       });
       if (republished > 0) {
         log.info({ tenantId, republished, limit: PENDING_RECOVERY_BATCH_SIZE }, 'orchestrator.runtime.pending_tasks_republished');

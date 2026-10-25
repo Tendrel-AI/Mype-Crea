@@ -37,6 +37,7 @@ import type {
 import type { AgentId, ConversationId, DeliverableId, TaskId, UUID } from '../core/contracts';
 import { channelForAgent } from '../transport/redis-queue-adapter';
 import type { DispatchNotification } from '../transport/redis-queue-adapter';
+import { parseNotification } from '../core/contracts/notifications';
 import { classifyTaskError, taskErrorFromThrown } from '../core/task-errors';
 import { splitRequirementsSnapshot } from '../core/refinement';
 import { loggerFor } from '../services/logger';
@@ -74,13 +75,15 @@ export async function startLogoAgentWorker(
       'worker.logo.notification_received',
     );
 
-    let parsed: DispatchNotification;
-    try {
-      parsed = JSON.parse(raw) as DispatchNotification;
-    } catch (err) {
-      log.error({ err, channel: incomingChannel, raw }, 'worker.logo.parse_failed');
+    const wakeUp = parseNotification(raw, ['task_dispatch']);
+    if (!wakeUp.ok) {
+      log.error(
+        { channel: incomingChannel, reason: wakeUp.reason, detail: wakeUp.detail },
+        'worker.logo.parse_failed',
+      );
       return;
     }
+    const parsed: DispatchNotification = wakeUp.notification;
 
     const { taskId, tenantId } = parsed;
     const child = log.child({ tenantId, taskId, agentId: LOGO_AGENT_ID });

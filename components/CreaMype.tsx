@@ -12,6 +12,8 @@ import { chatAction } from '../app/actions/chat';
 import { createConversationAction, exportConversationTraceAction } from '../app/actions/conversations';
 import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/actions/deliverable-command';
 import type { DeliverableStateView } from '../src/core/contracts';
+import { CLIENT_NOTIFICATION_KINDS, parseNotification } from '../src/core/contracts/notifications';
+import { developerFailureChatText } from './crea-mype/failure-copy';
 
 interface CreaMypeProps {
   userEmail: string;
@@ -185,61 +187,56 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
         readyStateName,
       });
     });
-    source.addEventListener('task_processing', (raw: MessageEvent<string>) => {
-      try {
-        const event = JSON.parse(raw.data) as { agentId: string };
-        setProcessingAgents((prev) => {
-          const next = new Set(prev);
-          next.add(event.agentId);
-          return next;
-        });
-        void refreshStates(conversationId);
-      } catch (err) {
-        console.error('Failed to parse task_processing event', err);
+    // Every frame is a notification of the shared contract; the SSE event name
+    // is its kind. One parser, one exhaustive switch.
+    const stopProcessing = (agentId: string) => {
+      setProcessingAgents((prev) => {
+        if (!prev.has(agentId)) return prev;
+        const next = new Set(prev);
+        next.delete(agentId);
+        return next;
+      });
+    };
+    const onNotification = (raw: MessageEvent<string>) => {
+      const parsed = parseNotification(raw.data, CLIENT_NOTIFICATION_KINDS);
+      if (!parsed.ok) {
+        console.error('[SSE] rejected notification', { reason: parsed.reason, detail: parsed.detail });
+        return;
       }
-    });
-    source.addEventListener('artifact', (raw: MessageEvent<string>) => {
-      try {
-        const event = JSON.parse(raw.data) as {
-          agentId: string;
-          artifacts: Array<{ kind: string; url?: string }>;
-        };
-        // Whatever the agent produced, the spinner for that agent should
-        // disappear. Even if there's no image url (text-only artifact), the
-        // task is no longer "processing".
-        setProcessingAgents((prev) => {
-          if (!prev.has(event.agentId)) return prev;
-          const next = new Set(prev);
-          next.delete(event.agentId);
-          return next;
-        });
-        void refreshStates(conversationId);
-        const imgUrl = event.artifacts.find((a) => a.kind === 'image')?.url;
-        if (!imgUrl) return;
-        if (event.agentId === LOGO_AGENT_ID) {
-          setAssets((prev) => ({ ...prev, logoUrl: imgUrl }));
+      const event = parsed.notification;
+      switch (event.kind) {
+        case 'task_processing':
+          setProcessingAgents((prev) => new Set(prev).add(event.agentId));
+          break;
+        case 'task_completed': {
+          // Whatever the agent produced, its spinner disappears.
+          stopProcessing(event.agentId);
+          const imgUrl = event.artifacts.find((a) => a.kind === 'image')?.url;
+          if (imgUrl && event.agentId === LOGO_AGENT_ID) {
+            setAssets((prev) => ({ ...prev, logoUrl: imgUrl }));
+          }
+          break;
         }
-      } catch (err) {
-        console.error('Failed to parse artifact event', err);
-      }
-    });
-    // A failed or canceled task arrives as a notice; the panel state changes too.
-    source.addEventListener('notice', (raw: MessageEvent<string>) => {
-      try {
-        const event = JSON.parse(raw.data) as { agentId?: string };
-        if (event.agentId) {
-          setProcessingAgents((prev) => {
-            if (!prev.has(event.agentId!)) return prev;
-            const next = new Set(prev);
-            next.delete(event.agentId!);
-            return next;
-          });
+        case 'task_failed':
+          stopProcessing(event.agentId);
+          // The server sends the technical detail only in developer mode (KAN-58);
+          // otherwise the card alone shows the failed state and its recovery commands.
+          if (event.detail) {
+            const detail = event.detail;
+            const id = `${event.taskId}:failure-detail`;
+            setMessages((prev) => prev.some((message) => message.id === id)
+              ? prev
+              : [...prev, { id, role: 'model', text: developerFailureChatText(event.agentId, detail), isNotice: true }]);
+          }
+          break;
+        default: {
+          const unhandled: never = event;
+          console.error('[SSE] unhandled notification', unhandled);
         }
-      } catch {
-        // Notices without a JSON body still trigger a refresh.
       }
       void refreshStates(conversationId);
-    });
+    };
+    for (const kind of CLIENT_NOTIFICATION_KINDS) source.addEventListener(kind, onNotification);
     return () => {
       source.close();
     };

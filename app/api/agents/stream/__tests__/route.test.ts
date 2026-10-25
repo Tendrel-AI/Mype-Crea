@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const mocks = vi.hoisted(() => ({
@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
     return { dispose: vi.fn() };
   }),
   verifyActiveMembership: vi.fn(),
+  warn: vi.fn(),
   processingCallback: undefined as ((event: unknown) => void) | undefined,
 }));
 
@@ -36,10 +37,19 @@ vi.mock('../../../../../src/core/orchestrator/notifiers', () => ({
   defaultLifecycleNotifier: { subscribeProcessing: mocks.subscribeProcessing },
 }));
 vi.mock('../../../../../src/services/logger', () => ({
-  loggerFor: () => ({ child: () => ({ warn: vi.fn() }) }),
+  loggerFor: () => ({ child: () => ({ warn: mocks.warn }) }),
 }));
 
 import { GET } from '../route';
+import { notification, notificationToJson } from '../../../../../src/core/contracts/notifications';
+
+const STREAM_URL = 'http://localhost/api/agents/stream?conversationId=00000000-0000-4000-8000-000000000001';
+
+function parseFrame(raw: string): { event: string | undefined; data: unknown; raw: string } {
+  const event = /^event: (.+)$/m.exec(raw)?.[1];
+  const data = /^data: (.+)$/m.exec(raw)?.[1];
+  return { event, data: data ? JSON.parse(data) : undefined, raw };
+}
 
 describe('agents stream route', () => {
   beforeEach(() => {
@@ -78,14 +88,88 @@ describe('agents stream route', () => {
     mocks.peekEvents.mockResolvedValueOnce([{
       eventId: 'task-1:announce_completion',
       kind: 'artifact',
-      payload: { type: 'agent_completed', agentId: 'logo-agent', artifacts: [] },
+      payload: notificationToJson(notification('task_completed', {
+        taskId: 'task-1', agentId: 'logo-agent', deliverableIds: [], artifacts: [],
+      })),
     }]);
-    const response = await GET(new NextRequest('http://localhost/api/agents/stream?conversationId=00000000-0000-4000-8000-000000000001'));
+    const response = await GET(new NextRequest(STREAM_URL));
     const reader = response.body!.getReader();
     await reader.read();
     const frame = await reader.read();
-    expect(new TextDecoder().decode(frame.value)).toContain('event: artifact');
+    expect(new TextDecoder().decode(frame.value)).toContain('event: task_completed');
     expect(mocks.ackEvent).toHaveBeenCalledWith({ eventId: 'task-1:announce_completion' });
+    await reader.cancel();
+  });
+
+  describe('failed-task detail is developer-only (KAN-58)', () => {
+    const failedEvent = () => ({
+      eventId: 'task-2:announce_failure',
+      kind: 'notice',
+      payload: notificationToJson(notification('task_failed', {
+        taskId: 'task-2',
+        agentId: 'logo-agent',
+        detail: { errorCategory: 'content_policy', errorKind: 'content_policy', message: 'fal 422 content_policy_violation' },
+      })),
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    async function firstFrame(): Promise<ReturnType<typeof parseFrame>> {
+      mocks.peekEvents.mockResolvedValueOnce([failedEvent()]);
+      const response = await GET(new NextRequest(STREAM_URL));
+      const reader = response.body!.getReader();
+      await reader.read(); // connected comment
+      const frame = parseFrame(new TextDecoder().decode((await reader.read()).value));
+      await reader.cancel();
+      return frame;
+    }
+
+    it('forwards the technical detail when DEVELOPMENT=TRUE', async () => {
+      vi.stubEnv('DEVELOPMENT', 'TRUE');
+      const frame = await firstFrame();
+      expect(frame.event).toBe('task_failed');
+      expect(frame.data).toMatchObject({
+        kind: 'task_failed',
+        taskId: 'task-2',
+        detail: { errorCategory: 'content_policy', errorKind: 'content_policy', message: 'fal 422 content_policy_violation' },
+      });
+      expect(mocks.ackEvent).toHaveBeenCalledWith({ eventId: 'task-2:announce_failure' });
+    });
+
+    it.each([undefined, 'false', ''])('strips it when DEVELOPMENT=%s, so no technical text reaches the browser', async (value) => {
+      if (value !== undefined) vi.stubEnv('DEVELOPMENT', value);
+      else vi.stubEnv('DEVELOPMENT', undefined as unknown as string);
+      const frame = await firstFrame();
+      expect(frame.event).toBe('task_failed');
+      expect(frame.data).toEqual({ v: 1, kind: 'task_failed', taskId: 'task-2', agentId: 'logo-agent' });
+      expect(frame.raw).not.toContain('content_policy');
+    });
+  });
+
+  it('acks and skips a durable row that does not match the contract, then forwards the next one', async () => {
+    mocks.peekEvents.mockResolvedValueOnce([
+      { eventId: 'legacy:announce_completion', kind: 'artifact', payload: { type: 'agent_completed', agentId: 'logo-agent', artifacts: [] } },
+      {
+        eventId: 'task-3:announce_completion',
+        kind: 'artifact',
+        payload: notificationToJson(notification('task_completed', {
+          taskId: 'task-3', agentId: 'logo-agent', deliverableIds: [], artifacts: [],
+        })),
+      },
+    ]);
+    const response = await GET(new NextRequest(STREAM_URL));
+    const reader = response.body!.getReader();
+    await reader.read();
+    const frame = parseFrame(new TextDecoder().decode((await reader.read()).value));
+    expect(frame.data).toMatchObject({ kind: 'task_completed', taskId: 'task-3' });
+    expect(mocks.ackEvent).toHaveBeenNthCalledWith(1, { eventId: 'legacy:announce_completion' });
+    expect(mocks.ackEvent).toHaveBeenNthCalledWith(2, { eventId: 'task-3:announce_completion' });
+    expect(mocks.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ eventId: 'legacy:announce_completion', reason: 'unsupported_version' }),
+      'agents.stream.event_rejected',
+    );
     await reader.cancel();
   });
 
