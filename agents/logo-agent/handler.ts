@@ -34,7 +34,15 @@ interface LogoRequirements {
   readonly color_palette?: string;
 }
 
-export function buildLogoPrompt(reqs: LogoRequirements): string {
+/**
+ * Build the image prompt. For an «Iterar» task (KAN-28 / KAN-65 R2) the
+ * user's anchored observations are appended as a quoted, flattened note.
+ * They are untrusted text: only quoted as visual guidance, never parsed.
+ */
+export function buildLogoPrompt(
+  reqs: LogoRequirements,
+  refinement?: { readonly observations?: ReadonlyArray<string> },
+): string {
   const parts = [
     `Diseña un logo profesional para el negocio "${reqs.business_name}".`,
     `Estilo: ${reqs.style_keywords}.`,
@@ -42,8 +50,17 @@ export function buildLogoPrompt(reqs: LogoRequirements): string {
   if (reqs.color_palette) {
     parts.push(`Paleta de colores: ${reqs.color_palette}.`);
   }
+  const notes = (refinement?.observations ?? []).map(flattenObservation).filter((note) => note.length > 0);
+  if (notes.length > 0) {
+    parts.push(`Ajustes pedidos sobre la versión anterior: ${notes.map((note) => `"${note}"`).join('; ')}.`);
+  }
   parts.push('Limpio, vectorizado, alta resolución, sin texto adicional.');
   return parts.join(' ');
+}
+
+/** One line, no double quotes, so a note cannot break out of its quotes. */
+function flattenObservation(observation: string): string {
+  return observation.replace(/["“”]/g, "'").replace(/\s+/g, ' ').trim();
 }
 
 export const handler: AgentHandler<undefined> = async (message) => {
@@ -66,7 +83,7 @@ export const handler: AgentHandler<undefined> = async (message) => {
     'agent.logo.start',
   );
 
-  const prompt = buildLogoPrompt(reqs);
+  const prompt = buildLogoPrompt(reqs, message.iteration);
   child.info({ promptLength: prompt.length }, 'agent.logo.prompt_built');
 
   const startedAt = Date.now();

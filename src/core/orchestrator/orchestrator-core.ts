@@ -12,8 +12,15 @@
  *   - the decision notifier (how output adapters wake up)
  *
  * This file is WHERE the pipeline lives. It does not contain business logic;
- * all logic lives in merge.ts and planner.ts. If you find yourself adding an
- * `if` about a specific field or agent here, stop — it belongs somewhere else.
+ * all logic lives in merge.ts, planner.ts, deliverable-state.ts and
+ * deliverable-commands.ts. If you find yourself adding an `if` about a
+ * specific field or agent here, stop — it belongs somewhere else.
+ *
+ * KAN-28 (KAN-64 Option B): the core no longer dispatches after a merge.
+ * `applyDelta` only merges and re-plans; a generation starts exclusively
+ * through `executeCommand` (typed «Generar» / «Iterar» / «Reintentar»), which
+ * re-validates against the pure per-deliverable state function and then
+ * dispatches through `IAgentTransport`.
  *
  * See also:
  *   - contracts.ts                (OrchestratorCore interface)
@@ -23,50 +30,46 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { randomUUID } from 'node:crypto';
 import type {
   AgentId,
   AnnounceDispatchDecision,
   ConversationId,
   ConversationSnapshot,
+  DeliverableCommand,
+  DeliverableCommandPort,
+  DeliverableCommandResult,
   DeliverableId,
+  DeliverableStateView,
   FieldDelta,
-  FieldSlot,
   OrchestratorCore,
   PlannerDecision,
   TaskId,
   UUID,
 } from '../contracts';
 import type { A2AMessage, IAgentTransport, TaskState } from '../agent-types';
-import { classifyTaskError, type TaskErrorCategory } from '../task-errors';
+import { InMemoryApprovalStore, type IApprovalStore } from '../approvals';
+import { classifyTaskError } from '../task-errors';
 import { loggerFor } from '../../services/logger';
 import type { AgentRegistry } from './agent-registry';
 import type { TaskSettlementContext } from './runtime-config';
 import type { IConversationStore } from './in-memory-store';
 import { mergeFieldDelta } from './merge';
-import { findAgentReadyToDispatch, planNextDecision } from './planner';
+import { planNextDecision } from './planner';
 import type { IArtifactNotifier } from './artifact-notifier';
+import type { IterationRefinement } from '../refinement';
+import {
+  InMemoryDeliverableWorkflowStore,
+  type IDeliverableWorkflowStore,
+  type WorkflowTask,
+} from './deliverable-workflow';
+import {
+  deriveStatesFor,
+  executeDeliverableCommand,
+  type DeliverableCommandContext,
+} from './deliverable-commands';
 
-/**
- * Subset of AgentTasksRepo the orchestrator consumes. The orchestrator
- * doesn't need the full repo surface — narrowing the dep surface keeps
- * tests easy to fake.
- */
-export interface AgentTasksRepoLike {
-  insertRoot(input: {
-    conversationId: ConversationId;
-    agentId: string;
-    agentCardVersion: string;
-    idempotencyKey: UUID;
-    requirementsSnapshot: Record<string, unknown>;
-  }): Promise<{ id: TaskId }>;
-  markCompleted(id: TaskId): Promise<void>;
-  markFailed(
-    id: TaskId,
-    error: Record<string, unknown>,
-    errorCategory: TaskErrorCategory,
-  ): Promise<void>;
-}
+/** How many applied command results the in-process replay cache keeps. */
+const COMMAND_REPLAY_CACHE_SIZE = 1000;
 
 
 const log = loggerFor('orchestrator.core');
@@ -114,12 +117,17 @@ export interface OrchestratorCoreDeps {
   /** Factory used for task IDs and conversation creation defaults. Deterministic in tests. */
   readonly newTaskId: () => TaskId;
   /**
-   * Optional factory for the agent_tasks repository, scoped to a tenant. When
-   * provided, dispatchAgent inserts a row and onTaskSettled marks
-   * completed/failed. When omitted (in-memory unit tests), the orchestrator
-   * keeps working off the in-memory taskOwnership map only.
+   * Deliverable workflow store (tasks + candidates), scoped to the
+   * conversation's tenant and owner. Production passes the Postgres adapter
+   * over `agent_tasks` / `deliverables`; omitted -> one shared in-memory
+   * store (unit tests).
    */
-  readonly agentTasksFor?: (tenantId: UUID) => AgentTasksRepoLike;
+  readonly workflowFor?: (tenantId: UUID, userId: UUID) => IDeliverableWorkflowStore;
+  /**
+   * Approval store (KAN-34 port). Omitted -> one shared in-memory store whose
+   * candidates are read from the workflow store.
+   */
+  readonly approvalsFor?: (tenantId: UUID, userId: UUID) => IApprovalStore;
   /**
    * Optional artifact notifier. When provided, onTaskSettled publishes the
    * artifacts produced by a completed task on this channel. The SSE/UI edge
@@ -128,13 +136,25 @@ export interface OrchestratorCoreDeps {
   readonly artifactNotifier?: IArtifactNotifier;
 }
 
-export class OrchestratorCoreImpl implements OrchestratorCore {
+export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableCommandPort {
   /** Conversations the core knows about — tenantId is recorded here so we don't re-ask every call. */
   private readonly conversationTenants = new Map<ConversationId, UUID>();
 
+  /** Owner user per conversation, recorded with the tenant after the store authorized the actor. */
+  private readonly conversationUsers = new Map<ConversationId, UUID>();
+
+  /** Serializes commands per conversation inside this process. */
+  private readonly commandLocks = new Map<ConversationId, Promise<unknown>>();
+
+  /** Applied command results, keyed `${conversationId}:${commandId}` (idempotent replay). */
+  private readonly appliedCommands = new Map<string, DeliverableCommandResult>();
+
+  private readonly defaultWorkflow: InMemoryDeliverableWorkflowStore;
+  private readonly defaultApprovals: InMemoryApprovalStore;
+
   /**
    * Map from taskId to the (conversationId, agentId) pair that dispatched it.
-   * Populated in dispatchAgent, consumed in onTaskSettled. Replaces what a
+   * Populated in dispatchTask, consumed in onTaskSettled. Replaces what a
    * real Postgres implementation would do with a `tasks` table lookup.
    */
   private readonly taskOwnership = new Map<
@@ -158,6 +178,15 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
   private readonly pendingDispatches = new Map<ConversationId, AnnounceDispatchDecision[]>();
 
   constructor(private readonly deps: OrchestratorCoreDeps) {
+    this.defaultWorkflow = new InMemoryDeliverableWorkflowStore(undefined, deps.newTaskId);
+    this.defaultApprovals = new InMemoryApprovalStore({
+      kindOf: async (conversationId, deliverableId) => {
+        const candidates = await this.workflowForConversation(conversationId as ConversationId).listCandidates(
+          conversationId as ConversationId,
+        );
+        return candidates.find((c) => c.deliverableId === deliverableId)?.kind ?? null;
+      },
+    });
     // Wire completion notifications from the transport back into the core.
     // For the LocalAdapter case, this is set via its constructor callback;
     // for distributed transports, a webhook handler calls this method.
@@ -178,6 +207,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     await this.deps.store.getOrCreate(conversationId, tenantId, userId);
     // Cache only after the scoped store call has authorized the actor.
     this.conversationTenants.set(conversationId, tenantId);
+    this.conversationUsers.set(conversationId, userId);
   }
 
   async applyDelta(delta: FieldDelta): Promise<ConversationSnapshot> {
@@ -226,19 +256,11 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
 
     // 1) Merge the delta into state.
     await mergeFieldDelta(delta, this.deps.store, this.deps.registry);
-
-    // 2) Check whether any agent is now ready to dispatch.
     const snapshotAfterMerge = (await this.deps.store.get(delta.conversationId))!;
-    const readyAgentId = findAgentReadyToDispatch(
-      snapshotAfterMerge,
-      this.deps.registry.getFieldSchemas(),
-    );
 
-    if (readyAgentId) {
-      child.info({ agentId: readyAgentId }, 'orchestrator.dispatch.triggered');
-      await this.dispatchAgent(delta.conversationId, readyAgentId);
-      // dispatch will emit announce_dispatch via the notifier.
-    }
+    // 2) No dispatch here (KAN-64 Option B). A merge can only make a
+    // deliverable `enabled`; the planner then offers «Generar» and the user
+    // starts it with a typed command (`executeCommand`).
 
     // 3) Emit the current planner plan so subscribers catch up. We notify
     // per decision so existing IDecisionNotifier subscribers (single-decision
@@ -256,8 +278,6 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
           agentId: 'agentId' in decision ? decision.agentId : undefined,
           fieldName: 'fieldName' in decision ? decision.fieldName : undefined,
         })),
-        dispatched: Boolean(readyAgentId),
-        dispatchedAgent: readyAgentId ?? null,
       },
       'orchestrator.output',
     );
@@ -320,9 +340,121 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
     if (!snapshot) {
       throw new Error(`Unknown conversation: ${conversationId}`);
     }
-    plan.push(...planNextDecision(snapshot, this.deps.registry));
+    const deliverableStates = await this.statesForPlanner(conversationId, snapshot);
+    plan.push(...planNextDecision(snapshot, this.deps.registry, { deliverableStates }));
 
     return plan;
+  }
+
+  /**
+   * Derived per-deliverable states for the planner's Rule 3. Reading them
+   * is I/O, so it happens here and the planner receives plain data. On a
+   * read failure the planner falls back to its snapshot-only predicate.
+   */
+  private async statesForPlanner(
+    conversationId: ConversationId,
+    snapshot: ConversationSnapshot,
+  ): Promise<ReadonlyArray<DeliverableStateView> | undefined> {
+    if (!this.conversationUsers.has(conversationId)) return undefined;
+    try {
+      return await deriveStatesFor(this.commandContext(conversationId, snapshot), conversationId);
+    } catch (err) {
+      log.warn({ err, conversationId }, 'orchestrator.deliverable_states.unavailable');
+      return undefined;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Deliverable commands (KAN-28) — the only path that starts a generation
+  // -------------------------------------------------------------------------
+
+  async getDeliverableStates(conversationId: ConversationId): Promise<ReadonlyArray<DeliverableStateView>> {
+    this.requireStarted(conversationId);
+    return deriveStatesFor(this.commandContext(conversationId), conversationId);
+  }
+
+  async executeCommand(command: DeliverableCommand): Promise<DeliverableCommandResult> {
+    this.requireStarted(command.conversationId);
+    return this.withCommandLock(command.conversationId, async () => {
+      const ctx = this.commandContext(command.conversationId);
+      const cacheKey = `${command.conversationId}:${command.commandId}`;
+      const cached = this.appliedCommands.get(cacheKey);
+      if (cached && cached.kind === command.kind) {
+        return { ...cached, replayed: true, states: await deriveStatesFor(ctx, command.conversationId) };
+      }
+      const result = await executeDeliverableCommand(ctx, command);
+      if (result.ok) this.rememberCommand(cacheKey, result);
+      return result;
+    });
+  }
+
+  private requireStarted(conversationId: ConversationId): void {
+    if (!this.conversationTenants.has(conversationId) || !this.conversationUsers.has(conversationId)) {
+      throw new Error(`Conversation not started: ${conversationId}. Call startConversation() first.`);
+    }
+  }
+
+  private async withCommandLock<T>(conversationId: ConversationId, run: () => Promise<T>): Promise<T> {
+    const previous = this.commandLocks.get(conversationId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(run);
+    this.commandLocks.set(conversationId, next);
+    try {
+      return await next;
+    } finally {
+      if (this.commandLocks.get(conversationId) === next) this.commandLocks.delete(conversationId);
+    }
+  }
+
+  private rememberCommand(key: string, result: DeliverableCommandResult): void {
+    this.appliedCommands.set(key, result);
+    if (this.appliedCommands.size > COMMAND_REPLAY_CACHE_SIZE) {
+      const oldest = this.appliedCommands.keys().next().value;
+      if (oldest !== undefined) this.appliedCommands.delete(oldest);
+    }
+  }
+
+  private workflowForConversation(conversationId: ConversationId): IDeliverableWorkflowStore {
+    const tenantId = this.conversationTenants.get(conversationId);
+    const userId = this.conversationUsers.get(conversationId);
+    if (this.deps.workflowFor && tenantId && userId) return this.deps.workflowFor(tenantId, userId);
+    return this.defaultWorkflow;
+  }
+
+  private approvalsForConversation(conversationId: ConversationId): IApprovalStore {
+    const tenantId = this.conversationTenants.get(conversationId);
+    const userId = this.conversationUsers.get(conversationId);
+    if (this.deps.approvalsFor && tenantId && userId) return this.deps.approvalsFor(tenantId, userId);
+    return this.defaultApprovals;
+  }
+
+  private commandContext(
+    conversationId: ConversationId,
+    knownSnapshot?: ConversationSnapshot,
+  ): DeliverableCommandContext {
+    return {
+      specs: this.deps.registry.getDeliverableSpecs(),
+      workflow: this.workflowForConversation(conversationId),
+      approvals: this.approvalsForConversation(conversationId),
+      loadSnapshot: async (id) => {
+        if (knownSnapshot && id === conversationId) return knownSnapshot;
+        return this.getSnapshot(id);
+      },
+      agentCardVersion: (agentId) => this.deps.registry.get(agentId).card.version,
+      dispatch: (input) => this.dispatchTask(input),
+      onCanceled: async ({ conversationId: id, agentId, taskId }) => {
+        this.taskOwnership.delete(taskId);
+        const queued = this.pendingDispatches.get(id);
+        if (queued) {
+          const remaining = queued.filter((decision) => decision.taskId !== taskId);
+          if (remaining.length) this.pendingDispatches.set(id, remaining);
+          else this.pendingDispatches.delete(id);
+        }
+        const snapshot = await this.deps.store.get(id);
+        if (snapshot?.agentStates[agentId]?.lastDispatchedTaskId === taskId) {
+          await this.deps.store.clearDispatch(id, agentId);
+        }
+      },
+    };
   }
 
   /**
@@ -371,47 +503,23 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
   // Dispatch and completion handling
   // -------------------------------------------------------------------------
 
-  private async dispatchAgent(
-    conversationId: ConversationId,
-    agentId: string,
-  ): Promise<void> {
-    const snapshot = (await this.deps.store.get(conversationId))!;
-    const agentState = snapshot.agentStates[agentId]!;
+  /**
+   * Send a task the command handler has just persisted. Requirements were
+   * built from the current brief by the handler; the refinement (Iterar) is
+   * carried in `A2AMessage.iteration`, never mixed into the requirements.
+   */
+  private async dispatchTask(input: {
+    readonly conversationId: ConversationId;
+    readonly agentId: string;
+    readonly task: WorkflowTask;
+    readonly requirements: Record<string, unknown>;
+    readonly refinement: IterationRefinement | null;
+  }): Promise<void> {
+    const { conversationId, agentId, task, requirements, refinement } = input;
     const tenantId = this.conversationTenants.get(conversationId)!;
     const entry = this.deps.registry.get(agentId);
-    const child = log.child({ op: 'dispatchAgent', tenantId, conversationId, agentId });
-
-    // Build the requirements payload from filled slots.
-    const requirements: Record<string, unknown> = {};
-    for (const [fieldName, slot] of Object.entries(agentState.requiredFields) as Array<
-      [string, FieldSlot]
-    >) {
-      if (slot.status === 'filled') requirements[fieldName] = slot.value;
-    }
-    for (const [fieldName, slot] of Object.entries(agentState.optionalFields) as Array<
-      [string, FieldSlot]
-    >) {
-      if (slot.status === 'filled') requirements[fieldName] = slot.value;
-    }
-
-    // If the agent_tasks repo is wired, the persisted row's id is the source
-    // of truth for taskId. Otherwise fall back to the in-memory id factory
-    // (used by unit tests without a DB).
-    let taskId: TaskId;
-    if (this.deps.agentTasksFor) {
-      const repo = this.deps.agentTasksFor(tenantId);
-      const inserted = await repo.insertRoot({
-        conversationId,
-        agentId,
-        agentCardVersion: entry.card.version,
-        idempotencyKey: randomUUID(),
-        requirementsSnapshot: requirements,
-      });
-      taskId = inserted.id;
-      child.info({ taskId }, 'agent_task row inserted');
-    } else {
-      taskId = this.deps.newTaskId();
-    }
+    const taskId = task.id;
+    const child = log.child({ op: 'dispatchTask', tenantId, conversationId, agentId, taskId });
 
     const message: A2AMessage = {
       taskId,
@@ -419,6 +527,18 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
       agentId,
       agentCardVersion: entry.card.version,
       requirements,
+      ...(task.parentTaskId
+        ? {
+            iteration: {
+              parentTaskId: task.parentTaskId,
+              ...(refinement && Object.keys(refinement.parameterChanges).length > 0
+                ? { parameterChanges: refinement.parameterChanges }
+                : {}),
+              ...(refinement && refinement.observations.length > 0 ? { observations: refinement.observations } : {}),
+              ...(refinement ? { anchorDeliverableId: refinement.anchorDeliverableId } : {}),
+            },
+          }
+        : {}),
       createdAt: new Date().toISOString(),
     };
 
@@ -427,6 +547,8 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
         contract: 'A2AMessage',
         taskId,
         agentCardVersion: message.agentCardVersion,
+        iterationNumber: task.iterationNumber,
+        iterationTrigger: task.iterationTrigger,
         requirementKeys: Object.keys(requirements),
         requirementsPreview: Object.fromEntries(
           Object.entries(requirements).map(([k, v]) => [k, previewValue(v)]),
@@ -437,25 +559,25 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
 
     await this.deps.store.recordDispatch(conversationId, agentId, taskId);
     this.taskOwnership.set(taskId, { conversationId, agentId });
-    await this.deps.transport.dispatch(message);
+
+    // Queue the announcement before the transport can settle the task.
+    const announcement: AnnounceDispatchDecision = { kind: 'announce_dispatch', agentId, taskId };
+    const bucket = this.pendingDispatches.get(conversationId) ?? [];
+    bucket.push(announcement);
+    this.pendingDispatches.set(conversationId, bucket);
+
+    try {
+      await this.deps.transport.dispatch(message);
+    } catch (err) {
+      // The task row is persisted as `pending`; the periodic recovery
+      // republishes pending tasks, and the user can still Cancelar it.
+      child.error({ err }, 'orchestrator.dispatch.transport_failed');
+    }
 
     child.info(
       { contract: 'TaskId', taskId, transport: this.deps.transport.constructor.name },
       'orchestrator.dispatch.output',
     );
-
-    // Queue an announce_dispatch decision so the next getNextDecision call
-    // surfaces it once. Also notify the side-channel notifier immediately so
-    // any subscribers wake up.
-    const announcement: AnnounceDispatchDecision = {
-      kind: 'announce_dispatch',
-      agentId,
-      taskId,
-    };
-    const bucket = this.pendingDispatches.get(conversationId) ?? [];
-    bucket.push(announcement);
-    this.pendingDispatches.set(conversationId, bucket);
-
     this.deps.notifier.notify(conversationId, announcement);
   }
 
@@ -547,32 +669,43 @@ export class OrchestratorCoreImpl implements OrchestratorCore {
       'orchestrator.task_settled.input',
     );
 
-    // Persist the terminal state if the agent_tasks repo is wired.
-    if (this.deps.agentTasksFor && tenantId && !context?.durableSettlement) {
-      const repo = this.deps.agentTasksFor(tenantId);
+    // Persist a non-durable settlement (LocalAdapter path) through the
+    // workflow store. The durable worker path already settled the task,
+    // inserted the deliverables and cleared the in-flight marker in one
+    // transaction (`aiTurns.settleTaskAndEnqueue`).
+    if (!context?.durableSettlement) {
+      let applied = true;
       try {
-        if (state.status === 'completed') {
-          await repo.markCompleted(taskId);
-        } else if (state.status === 'failed') {
-          await repo.markFailed(
-            taskId,
-            { kind: state.result.error.kind, message: state.result.error.message },
-            classifyTaskError(state.result.error),
-          );
-        }
+        const spec = this.deps.registry.getDeliverableSpecs().find((s) => s.agentId === owner.agentId);
+        const recorded = await this.workflowForConversation(owner.conversationId).recordSettlement({
+          conversationId: owner.conversationId,
+          taskId,
+          agentId: owner.agentId,
+          deliverableKind: spec?.deliverableKind ?? owner.agentId,
+          status: state.status === 'completed' ? 'completed' : 'failed',
+          artifacts: state.status === 'completed' ? state.result.artifacts : [],
+          deliverableIds,
+          ...(state.status === 'failed'
+            ? {
+                error: { kind: state.result.error.kind, message: state.result.error.message },
+                errorCategory: classifyTaskError(state.result.error),
+              }
+            : {}),
+        });
+        applied = recorded.applied;
+        if (recorded.deliverableIds.length > 0) deliverableIds = recorded.deliverableIds;
       } catch (err) {
         child.error({ err }, 'orchestrator.task.persist_failed');
       }
-    }
+      if (!applied) {
+        // The task was canceled (or settled elsewhere) before this result
+        // arrived: drop it. The in-flight marker belongs to the cancel path.
+        child.info({}, 'orchestrator.task.settlement_ignored');
+        return;
+      }
 
-    // Clear the in-flight marker on the agent state. Without this, the
-    // planner's Rule 1 ("any agent has a dispatched-but-unsettled task ->
-    // idle: awaiting_dispatch") fires forever after the first dispatch in a
-    // conversation, masking subsequent ready-to-dispatch agents with a stale
-    // "task_in_flight" reason. iterationCount stays incremented so
-    // findAgentReadyToDispatch still treats this agent as already-handled
-    // (re-runs are user-triggered iterations per §2.7, not auto-dispatch).
-    if (!context?.durableSettlement) {
+      // Clear the in-flight marker. iterationCount stays incremented, so the
+      // planner's field-collection focus skips an already-generated agent.
       try {
         await this.deps.store.clearDispatch(owner.conversationId, owner.agentId);
       } catch (err) {

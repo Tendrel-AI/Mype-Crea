@@ -25,6 +25,7 @@ export type PlannerDecision =
   | RequestFieldsDecision
   | ConfirmFieldDecision
   | RequestSelectionDecision
+  | OfferGenerationDecision
   | AnnounceDispatchDecision
   | AnnounceCompletionDecision
   | AnnounceAllCompleteDecision;
@@ -75,6 +76,19 @@ export interface RequestSelectionDecision {
   readonly kind: 'request_selection';
   readonly agentId: AgentId;
   readonly candidateDeliverableIds: ReadonlyArray<DeliverableId>;
+}
+
+/**
+ * Every precondition of a deliverable is met and nothing was generated yet
+ * (state `enabled`, KAN-64). Generation never starts on its own: the
+ * Responder only tells the user that the «Generar» button is ready, e.g.
+ * «Ya tienes todo listo para tu logo. Cuando quieras, toca el botón Generar.»
+ */
+export interface OfferGenerationDecision {
+  readonly kind: 'offer_generation';
+  readonly agentId: AgentId;
+  /** Deliverable kind from the Agent Card's `mypes:deliverable` (e.g. "logo"). */
+  readonly deliverableKind: string;
 }
 
 /** Inform the user (via the adapter) that a sub-agent task has just been dispatched. */
@@ -133,6 +147,9 @@ export function isConfirmField(d: PlannerDecision): d is ConfirmFieldDecision {
 }
 export function isRequestSelection(d: PlannerDecision): d is RequestSelectionDecision {
   return d.kind === 'request_selection';
+}
+export function isOfferGeneration(d: PlannerDecision): d is OfferGenerationDecision {
+  return d.kind === 'offer_generation';
 }
 export function isAnnounceDispatch(d: PlannerDecision): d is AnnounceDispatchDecision {
   return d.kind === 'announce_dispatch';

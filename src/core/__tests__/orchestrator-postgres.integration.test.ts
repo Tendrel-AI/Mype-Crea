@@ -20,6 +20,8 @@ import {
   type ArtifactPublishedEvent,
 } from '../orchestrator/artifact-notifier';
 import { PostgresConversationStore } from '../orchestrator/postgres-store';
+import { PostgresDeliverableWorkflowStore } from '../orchestrator/postgres-workflow';
+import { SelectedAtApprovalStore } from '../orchestrator/selected-at-approval-store';
 import { buildSingleAgentFixtureRegistry } from './_fixtures/registry';
 import { LocalAdapter } from '../../transport/local-adapter';
 import { newTaskId } from '../ids';
@@ -88,7 +90,7 @@ SUITE('orchestrator + Postgres store (integration)', () => {
     await closePool();
   });
 
-  it('persists agent_states JSONB across the FieldDelta -> dispatch roundtrip', { timeout: 30_000 }, async () => {
+  it('persists agent_states JSONB across the FieldDelta -> Generar -> dispatch roundtrip', { timeout: 30_000 }, async () => {
     const { registry, agentId } = buildSingleAgentFixtureRegistry();
     const store = new PostgresConversationStore(registry.getFieldSchemas());
 
@@ -107,7 +109,8 @@ SUITE('orchestrator + Postgres store (integration)', () => {
       notifier,
       artifactNotifier,
       newTaskId,
-      agentTasksFor: (tid) => systemRepos({ id: tid }).agentTasks,
+      workflowFor: (tid, uid) => new PostgresDeliverableWorkflowStore(tid, uid),
+      approvalsFor: (tid, uid) => new SelectedAtApprovalStore(tid, uid),
     });
     coreRef = core;
 
@@ -152,6 +155,23 @@ SUITE('orchestrator + Postgres store (integration)', () => {
     };
     await core.applyDelta(deltaProfile);
 
+    // KAN-28: the merge never dispatches; the planner offers «Generar».
+    expect(observed.some((d) => d.kind === 'announce_dispatch')).toBe(false);
+    expect(await core.peekNextDecision(conversationId)).toEqual([
+      { kind: 'offer_generation', agentId, deliverableKind: agentId },
+    ]);
+    const [enabled] = await core.getDeliverableStates(conversationId);
+    expect(enabled).toMatchObject({ state: 'enabled', allowedCommands: ['generate'] });
+    const generated = await core.executeCommand({
+      kind: 'generate',
+      commandId: randomUUID(),
+      conversationId,
+      agentId,
+      expectedState: enabled.state,
+      stateToken: enabled.stateToken,
+    });
+    expect(generated).toMatchObject({ ok: true, replayed: false });
+
     const dispatchAnnouncement = observed.find((d) => d.kind === 'announce_dispatch');
     expect(dispatchAnnouncement).toMatchObject({
       kind: 'announce_dispatch',
@@ -160,7 +180,7 @@ SUITE('orchestrator + Postgres store (integration)', () => {
     if (dispatchAnnouncement?.kind !== 'announce_dispatch') throw new Error('expected dispatch');
 
     // KAN-78: settlement against Postgres takes several DB round trips
-    // (markCompleted, clearDispatch, snapshot read) before announce_completion
+    // (settleIfActive, clearDispatch, snapshot read) before announce_completion
     // is queued. A single setImmediate is not a settlement barrier; wait for
     // the transport to report that the core settlement hook has finished.
     await transport.waitForSettlement(dispatchAnnouncement.taskId);

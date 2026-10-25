@@ -43,6 +43,15 @@ export interface A2AMessage {
   readonly iteration?: {
     readonly parentTaskId: TaskId;
     readonly parameterChanges?: Readonly<Record<string, unknown>>;
+    /**
+     * Anchored observations from an «Iterar» command (KAN-65 R2; KAN-34
+     * caps: ≤5 × ≤500 code points). Untrusted user text: handlers may add
+     * them to their generation prompt as a quoted note, never parse them
+     * into facts or instructions.
+     */
+    readonly observations?: ReadonlyArray<string>;
+    /** Candidate the observations are anchored to. */
+    readonly anchorDeliverableId?: string | null;
   };
 
   readonly createdAt: ISOTimestamp;

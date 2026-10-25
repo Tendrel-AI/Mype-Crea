@@ -18,6 +18,26 @@ import {
 } from '../contracts';
 import { buildDelta, buildSingleAgentFixtureRegistry } from './_fixtures';
 import type { A2AMessage, IAgentTransport, TaskState } from '../agent-types';
+import { InMemoryDeliverableWorkflowStore } from '../orchestrator/deliverable-workflow';
+
+/**
+ * KAN-28: a merge never dispatches. Generation starts only through the typed
+ * «Generar» command, re-validated against the server-derived state.
+ */
+async function issueGenerate(core: OrchestratorCoreImpl, conversationId: string, agentId: string) {
+  const view = (await core.getDeliverableStates(conversationId)).find((s) => s.agentId === agentId);
+  if (!view) throw new Error(`no deliverable state for ${agentId}`);
+  const result = await core.executeCommand({
+    kind: 'generate',
+    commandId: randomUUID(),
+    conversationId,
+    agentId,
+    expectedState: view.state,
+    stateToken: view.stateToken,
+  });
+  if (!result.ok || !result.taskId) throw new Error(`Generar rejected: ${result.ok ? 'no task' : result.reason}`);
+  return result.taskId;
+}
 
 function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
@@ -68,6 +88,8 @@ function buildHarness(options: { readonly simulatedIo?: boolean } = {}) {
 function buildControlledHarness() {
   const { registry, agentId } = buildSingleAgentFixtureRegistry();
   const store = new InMemoryConversationStore(registry.getFieldSchemas());
+  // Shared like a database would be, so a "restarted" core sees the same tasks.
+  const workflow = new InMemoryDeliverableWorkflowStore(undefined, newTaskId);
   const messages: A2AMessage[] = [];
   const transport: IAgentTransport = {
     dispatch: async (message) => {
@@ -83,8 +105,9 @@ function buildControlledHarness() {
     transport,
     notifier,
     newTaskId,
+    workflowFor: () => workflow,
   });
-  return { core, messages, notifier, agentId, registry, store };
+  return { core, messages, notifier, agentId, registry, store, workflow };
 }
 
 function readyDelta(conversationId: string, agentId: string, source: string) {
@@ -153,7 +176,8 @@ describe('orchestrator smoke (agent-agnostic)', () => {
       },
     ]);
 
-    // 3. Submit business_profile -> all required fields filled -> dispatch.
+    // 3. Submit business_profile -> all required fields filled. Nothing is
+    //    dispatched by the merge (KAN-64): the planner offers «Generar».
     await core.applyDelta(
       buildDelta({
         conversationId,
@@ -169,6 +193,13 @@ describe('orchestrator smoke (agent-agnostic)', () => {
       }),
     );
 
+    expect(observed.some((d) => d.kind === 'announce_dispatch')).toBe(false);
+    expect(await core.getNextDecision(conversationId)).toEqual([
+      { kind: 'offer_generation', agentId, deliverableKind: agentId },
+    ]);
+
+    // 4. The user presses «Generar».
+    await issueGenerate(core, conversationId, agentId);
     const dispatchAnnouncement = observed.find((d) => d.kind === 'announce_dispatch');
     expect(dispatchAnnouncement).toMatchObject({
       kind: 'announce_dispatch',
@@ -181,27 +212,26 @@ describe('orchestrator smoke (agent-agnostic)', () => {
     expect(completion).toBeDefined();
     if (completion?.kind === 'announce_completion') {
       expect(completion.agentId).toBe(agentId);
-      // deliverableIds is only populated when `deliverablesFor` is wired
-      // (production path). The in-memory smoke harness skips persistence,
-      // so the array is empty — the assertion below is just a presence
-      // check to keep the contract shape covered.
-      expect(Array.isArray(completion.deliverableIds)).toBe(true);
+      // The in-memory workflow store stands in for the worker's deliverable
+      // insert: one candidate per artifact.
+      expect(completion.deliverableIds.length).toBe(completion.artifacts.length);
       // The fixture echo handler returns one artifact per filled requirement;
       // those artifacts must reach the decision so the Responder can present
       // them inline.
       expect(completion.artifacts.length).toBeGreaterThan(0);
     }
 
-    // 4. The snapshot reflects the filled slots and the dispatch lifecycle.
-    // After settle, lastDispatchedTaskId is cleared (so the planner's Rule 1
-    // doesn't keep firing on a settled task); iterationCount stays at 1 so
-    // findAgentReadyToDispatch knows this agent has already been handled.
+    // 5. The snapshot reflects the filled slots and the dispatch lifecycle.
+    // After settle, lastDispatchedTaskId is cleared; iterationCount stays at
+    // 1. The deliverable is now in review (Iterar / Aprobar).
     const snapshot = await core.getSnapshot(conversationId);
     const state = snapshot.agentStates[agentId];
     expect(state.requiredFields.business_name.status).toBe('filled');
     expect(state.requiredFields.business_profile.status).toBe('filled');
     expect(state.lastDispatchedTaskId).toBeUndefined();
     expect(state.iterationCount).toBe(1);
+    const [view] = await core.getDeliverableStates(conversationId);
+    expect(view).toMatchObject({ state: 'in_review', allowedCommands: ['iterate', 'approve'] });
 
     subscription.dispose();
   });
@@ -322,6 +352,11 @@ describe('orchestrator smoke (agent-agnostic)', () => {
 
     await first.core.applyDelta(readyDelta(conversationA, first.agentId, 'chat-es'));
     await second.core.applyDelta(readyDelta(conversationB, second.agentId, 'form'));
+    expect(await first.core.getDeliverableStates(conversationA)).toEqual(
+      (await second.core.getDeliverableStates(conversationB)).map((view) => ({ ...view })),
+    );
+    await issueGenerate(first.core, conversationA, first.agentId);
+    await issueGenerate(second.core, conversationB, second.agentId);
 
     const snapshotA = await first.core.getSnapshot(conversationA);
     const snapshotB = await second.core.getSnapshot(conversationB);
@@ -342,6 +377,8 @@ describe('orchestrator smoke (agent-agnostic)', () => {
 
     await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
     await core.applyDelta(readyDelta(conversationId, agentId, 'test-chat'));
+    expect(messages).toHaveLength(0);
+    await issueGenerate(core, conversationId, agentId);
 
     expect(messages).toHaveLength(1);
     expect(messages[0].requirements).toEqual({
@@ -354,12 +391,15 @@ describe('orchestrator smoke (agent-agnostic)', () => {
     expect(snapshot.agentStates['unknown-agent']).toBeUndefined();
   });
 
-  it('does not redispatch while a ready agent is in flight or after it settles', async () => {
+  it('never dispatches from a merge: not when ready, not while in flight, not after it settles', async () => {
     const { core, messages, agentId } = buildControlledHarness();
     const conversationId = randomUUID();
     await core.startConversation(conversationId, randomUUID(), randomUUID());
     await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
-    const taskId = messages[0].taskId;
+    await core.applyDelta(readyDelta(conversationId, agentId, 'test-chat'));
+    expect(messages).toHaveLength(0);
+    const taskId = await issueGenerate(core, conversationId, agentId);
+    expect(messages[0].taskId).toBe(taskId);
 
     await core.applyDelta(readyDelta(conversationId, agentId, 'test-chat'));
     expect(messages).toHaveLength(1);
@@ -382,6 +422,8 @@ describe('orchestrator smoke (agent-agnostic)', () => {
     const conversationId = randomUUID();
     await core.startConversation(conversationId, randomUUID(), randomUUID());
     await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
+    await issueGenerate(core, conversationId, agentId);
+    await core.applyDelta(buildDelta({ conversationId, source: 'test-chat', fields: {} }));
 
     const dispatchPlan = await core.getNextDecision(conversationId);
     expect(dispatchPlan.some((decision) => decision.kind === 'announce_dispatch')).toBe(true);
@@ -392,7 +434,8 @@ describe('orchestrator smoke (agent-agnostic)', () => {
     const conversationId = randomUUID();
     await core.startConversation(conversationId, randomUUID(), randomUUID());
     await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
-    const taskId = messages[0].taskId;
+    const taskId = await issueGenerate(core, conversationId, agentId);
+    expect(messages[0].taskId).toBe(taskId);
     const artifacts = [{ kind: 'text', inline: { value: 'result' } }];
     await core.onTaskSettled(taskId, {
       status: 'completed',
@@ -414,6 +457,7 @@ describe('orchestrator smoke (agent-agnostic)', () => {
     const conversationId = randomUUID();
     await core.startConversation(conversationId, randomUUID(), randomUUID());
     await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
+    await issueGenerate(core, conversationId, agentId);
     const dispatchPlan = await core.peekNextDecision(conversationId);
     const dispatch = dispatchPlan.find((decision) => decision.kind === 'announce_dispatch');
     expect(dispatch).toBeDefined();
@@ -436,13 +480,14 @@ describe('orchestrator smoke (agent-agnostic)', () => {
   });
 
   it('settles a task after restart when trusted persisted context is supplied', async () => {
-    const { core, messages, agentId, registry, store } = buildControlledHarness();
+    const { core, messages, agentId, registry, store, workflow } = buildControlledHarness();
     const conversationId = randomUUID();
     const tenantId = randomUUID();
     const userId = randomUUID();
     await core.startConversation(conversationId, tenantId, userId);
     await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
-    const taskId = messages[0].taskId;
+    const taskId = await issueGenerate(core, conversationId, agentId);
+    expect(messages[0].taskId).toBe(taskId);
 
     const restartedNotifier = new InProcessDecisionNotifier();
     const artifactNotifier = new InProcessArtifactNotifier();
@@ -456,6 +501,7 @@ describe('orchestrator smoke (agent-agnostic)', () => {
       notifier: restartedNotifier,
       artifactNotifier,
       newTaskId,
+      workflowFor: () => workflow,
     });
     // Re-register tenant ownership as bootstrap would after loading the persisted conversation.
     await restartedCore.startConversation(conversationId, tenantId, userId);
@@ -494,6 +540,7 @@ describe('orchestrator smoke (agent-agnostic)', () => {
     await core.startConversation(conversationId, randomUUID(), randomUUID());
 
     await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
+    await issueGenerate(core, conversationId, agentId);
     const dispatch = observed.find((d) => d.kind === 'announce_dispatch');
     if (dispatch?.kind !== 'announce_dispatch') throw new Error('expected dispatch');
 
@@ -533,35 +580,19 @@ describe('orchestrator smoke (agent-agnostic)', () => {
   });
 
   it.each([
-    ['content_policy', 'content_policy'],
-    ['rate_limited', 'transient'],
-    ['config_missing', 'permanent_bug'],
-    ['something_new', 'permanent_bug'],
+    ['content_policy', 'content_policy', []],
+    ['rate_limited', 'transient', ['retry']],
+    ['config_missing', 'permanent_bug', []],
+    ['something_new', 'permanent_bug', []],
   ] as const)(
-    'persists a failed task with kind %s as error_category %s (KAN-58)',
-    async (kind, expectedCategory) => {
-      const { registry, agentId } = buildSingleAgentFixtureRegistry();
-      const store = new InMemoryConversationStore(registry.getFieldSchemas());
-      const markFailed = vi.fn(async () => undefined);
-      const taskId = newTaskId();
-      const core = new OrchestratorCoreImpl({
-        store,
-        registry,
-        transport: {
-          dispatch: async (message) => ({ taskId: message.taskId }),
-          getResult: async (): Promise<TaskState> => ({ status: 'pending' }),
-        },
-        notifier: new InProcessDecisionNotifier(),
-        newTaskId,
-        agentTasksFor: () => ({
-          insertRoot: async () => ({ id: taskId }),
-          markCompleted: vi.fn(async () => undefined),
-          markFailed,
-        }),
-      });
+    'persists a failed task with kind %s as error_category %s; Reintentar offered: %j (KAN-58, KAN-64)',
+    async (kind, expectedCategory, expectedAllowed) => {
+      const { core, agentId, workflow } = buildControlledHarness();
+      const recordSettlement = vi.spyOn(workflow, 'recordSettlement');
       const conversationId = randomUUID();
       await core.startConversation(conversationId, randomUUID(), randomUUID());
       await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
+      const taskId = await issueGenerate(core, conversationId, agentId);
 
       await core.onTaskSettled(taskId, {
         status: 'failed',
@@ -573,11 +604,18 @@ describe('orchestrator smoke (agent-agnostic)', () => {
         },
       });
 
-      expect(markFailed).toHaveBeenCalledWith(
+      expect(recordSettlement).toHaveBeenCalledWith(expect.objectContaining({
         taskId,
-        { kind, message: 'synthetic failure' },
-        expectedCategory,
-      );
+        status: 'failed',
+        error: { kind, message: 'synthetic failure' },
+        errorCategory: expectedCategory,
+      }));
+      const [view] = await core.getDeliverableStates(conversationId);
+      expect(view).toMatchObject({
+        state: 'failed',
+        lastFailure: { taskId, errorCategory: expectedCategory, retryable: expectedCategory === 'transient' },
+        allowedCommands: expectedAllowed,
+      });
     },
   );
 
@@ -586,7 +624,8 @@ describe('orchestrator smoke (agent-agnostic)', () => {
     const conversationId = randomUUID();
     await core.startConversation(conversationId, randomUUID(), randomUUID());
     await core.applyDelta(readyDelta(conversationId, agentId, 'test-form'));
-    const taskId = messages[0].taskId;
+    const taskId = await issueGenerate(core, conversationId, agentId);
+    expect(messages[0].taskId).toBe(taskId);
     await core.getNextDecision(conversationId); // acknowledge the dispatch
 
     await core.onTaskSettled(taskId, {
@@ -613,6 +652,10 @@ describe('orchestrator smoke (agent-agnostic)', () => {
  * `runTurn` mirrors app/actions/chat.ts: apply the delta, peek the plan,
  * durably checkpoint it (here: record it), then acknowledge that exact plan.
  * The confirmation pre-read is a peek, which must never consume or dispatch.
+ *
+ * KAN-28: the confirming turn no longer dispatches; it offers «Generar». The
+ * dispatch happens when the user presses the button between turns, and the
+ * next turn announces it.
  */
 describe('announcement delivery per turn (KAN-55)', () => {
   type Core = OrchestratorCoreImpl;
@@ -693,7 +736,7 @@ describe('announcement delivery per turn (KAN-55)', () => {
     return confirm;
   }
 
-  it('synchronous completion: confirmation pre-reads do not consume or dispatch; the confirming turn announces both once', async () => {
+  it('synchronous completion: confirmation pre-reads do not consume or dispatch; the confirming turn offers Generar; the next turn announces both once', async () => {
     const { core, transport, agentId } = buildHarness();
     const dispatchSpy = vi.spyOn(transport, 'dispatch');
     const conversationId = randomUUID();
@@ -705,15 +748,15 @@ describe('announcement delivery per turn (KAN-55)', () => {
     expect(await core.peekNextDecision(conversationId)).toEqual([confirm]);
     expect(dispatchSpy).not.toHaveBeenCalled();
 
-    const turn2 = await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue), {
-      // The task settles before the controller reads the plan.
-      beforePeek: async () => {
-        expect(dispatchSpy).toHaveBeenCalledTimes(1);
-        await transport.waitForSettlement(dispatchSpy.mock.calls[0][0].taskId);
-      },
-    });
-    const taskId = dispatchSpy.mock.calls[0][0].taskId;
-    expect(announcementsOf(turn2)).toEqual([
+    const turn2 = await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue));
+    expect(turn2).toEqual([{ kind: 'offer_generation', agentId, deliverableKind: agentId }]);
+    expect(dispatchSpy).not.toHaveBeenCalled();
+
+    // «Generar»; the task settles before the next turn reads the plan.
+    const taskId = await issueGenerate(core, conversationId, agentId);
+    await transport.waitForSettlement(taskId);
+    const turn3 = await runTurn(core, emptyDelta(conversationId));
+    expect(announcementsOf(turn3)).toEqual([
       `announce_dispatch:${taskId}`,
       `announce_completion:${taskId}`,
     ]);
@@ -724,15 +767,17 @@ describe('announcement delivery per turn (KAN-55)', () => {
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('asynchronous completion between turns: dispatch is announced by the confirming turn, completion by the next turn, each once', async () => {
+  it('asynchronous completion between turns: dispatch is announced by the turn after Generar, completion by the next turn, each once', async () => {
     const { core, messages, agentId } = buildControlledHarness();
     const conversationId = randomUUID();
     await core.startConversation(conversationId, randomUUID(), randomUUID());
 
     const confirm = await reachConfirmation(core, conversationId, agentId);
-    const turn2 = await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue));
+    await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue));
+    expect(messages).toHaveLength(0);
+    const taskId = await issueGenerate(core, conversationId, agentId);
     expect(messages).toHaveLength(1);
-    const taskId = messages[0].taskId;
+    const turn2 = await runTurn(core, emptyDelta(conversationId));
     expect(announcementsOf(turn2)).toEqual([`announce_dispatch:${taskId}`]);
 
     // Pre-read before the worker settles: nothing left to announce.
@@ -760,13 +805,14 @@ describe('announcement delivery per turn (KAN-55)', () => {
     await core.startConversation(conversationId, randomUUID(), randomUUID());
 
     const confirm = await reachConfirmation(core, conversationId, agentId);
-    const turn2 = await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue), {
+    await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue));
+    const taskId = await issueGenerate(core, conversationId, agentId);
+    const turn2 = await runTurn(core, emptyDelta(conversationId), {
       // The worker settles after the controller peeked but before it checkpointed.
       beforeAcknowledge: async () => {
         await core.onTaskSettled(messages[0].taskId, completedState(messages[0].taskId));
       },
     });
-    const taskId = messages[0].taskId;
     expect(announcementsOf(turn2)).toEqual([`announce_dispatch:${taskId}`]);
 
     expect(announcementsOf(await runTurn(core, emptyDelta(conversationId)))).toEqual([
@@ -783,8 +829,10 @@ describe('announcement delivery per turn (KAN-55)', () => {
     await core.startConversation(conversationId, randomUUID(), randomUUID());
 
     const confirm = await reachConfirmation(core, conversationId, agentId);
-    const turn2 = await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue));
-    const taskId = dispatchSpy.mock.calls[0][0].taskId;
+    await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue));
+    expect(dispatchSpy).not.toHaveBeenCalled();
+    const taskId = await issueGenerate(core, conversationId, agentId);
+    const turn2 = await runTurn(core, emptyDelta(conversationId));
     await transport.waitForSettlement(taskId);
     const turn3 = await runTurn(core, emptyDelta(conversationId));
     const turn4 = await runTurn(core, emptyDelta(conversationId));
