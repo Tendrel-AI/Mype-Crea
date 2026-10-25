@@ -7,6 +7,8 @@
  * use a separately-named factory that explicitly logs access.
  */
 import { agentTasksRepo, type AgentTasksRepo } from './agent-tasks';
+import { approvalsRepo, type ApprovalsRepo } from './approvals';
+import { refinementsRepo, type RefinementsRepo } from './refinements';
 import { conversationsRepo, type ConversationsRepo } from './conversations';
 import { deliverablesRepo, type DeliverablesRepo } from './deliverables';
 import { llmCallsRepo, type LlmCallsRepo } from './llm-calls';
@@ -24,6 +26,8 @@ export interface Repos {
   readonly llmCalls: LlmCallsRepo;
   readonly aiConfig: AiConfigRepo;
   readonly aiTurns: AiTurnsRepo;
+  readonly approvals: ApprovalsRepo;
+  readonly refinements: RefinementsRepo;
 }
 
 export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repos {
@@ -35,6 +39,8 @@ export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repo
     llmCalls: llmCallsRepo(tenant, user),
     aiConfig: aiConfigRepo(tenant, user, actor),
     aiTurns: aiTurnsRepo(tenant, user, actor),
+    approvals: approvalsRepo(tenant, user),
+    refinements: refinementsRepo(tenant, user),
   };
 }
 
