@@ -92,7 +92,7 @@ function candidate(id: string, taskId: string, createdAt: string, kind = 'logo')
 }
 
 function facts(partial: Partial<DeliverableWorkflowFacts>): DeliverableWorkflowFacts {
-  return { tasks: [], candidates: [], approvals: [], ...partial };
+  return { tasks: [], candidates: [], approvals: [], markedStaleKinds: [], ...partial };
 }
 
 function stateOf(
@@ -170,7 +170,7 @@ const LOGO_ROWS: ReadonlyArray<Row> = [
     facts: facts({
       tasks: [DONE, { ...DONE2, status: 'pending' }],
       candidates: [C1],
-      approvals: [{ deliverableKind: 'logo', deliverableId: 'd1', approvedAt: '2026-10-25T00:00:02.500Z' }],
+      approvals: [{ deliverableKind: 'logo', deliverableId: 'd1' }],
     }),
     state: 'generating',
     allowed: ['cancel'],
@@ -195,7 +195,7 @@ const LOGO_ROWS: ReadonlyArray<Row> = [
     facts: facts({
       tasks: [DONE],
       candidates: [C1],
-      approvals: [{ deliverableKind: 'logo', deliverableId: 'd1', approvedAt: '2026-10-25T00:00:05.000Z' }],
+      approvals: [{ deliverableKind: 'logo', deliverableId: 'd1' }],
     }),
     state: 'approved',
     allowed: ['iterate'],
@@ -206,7 +206,7 @@ const LOGO_ROWS: ReadonlyArray<Row> = [
     facts: facts({
       tasks: [DONE, DONE2],
       candidates: [C1, C2],
-      approvals: [{ deliverableKind: 'logo', deliverableId: 'd1', approvedAt: '2026-10-25T00:00:05.000Z' }],
+      approvals: [{ deliverableKind: 'logo', deliverableId: 'd1' }],
     }),
     state: 'approved',
     allowed: ['iterate', 'approve'],
@@ -349,7 +349,7 @@ describe('deriveDeliverableState — dependency map and the obsoleto overlay', (
       facts({
         tasks: [DONE],
         candidates: [C1],
-        approvals: [{ deliverableKind: 'logo', deliverableId: 'd1', approvedAt: '2026-10-25T00:00:05.000Z' }],
+        approvals: [{ deliverableKind: 'logo', deliverableId: 'd1' }],
       }),
       'label-agent',
     );
@@ -357,18 +357,20 @@ describe('deriveDeliverableState — dependency map and the obsoleto overlay', (
     expect(view.allowedCommands).toEqual(['generate']);
   });
 
+  // The logo approval was replaced after the label was approved: the store wrote marks for every
+  // transitive dependent (label, social_pack) in the replacement's transaction.
   const staleFacts = facts({
     tasks: [DONE, DONE2, labelDone],
     candidates: [C1, C2, labelCandidate],
     approvals: [
-      // Logo re-approved (replaced) after the label was approved.
-      { deliverableKind: 'logo', deliverableId: 'd2', approvedAt: '2026-10-25T00:00:09.000Z' },
-      { deliverableKind: 'label', deliverableId: 'dl1', approvedAt: '2026-10-25T00:00:06.000Z' },
-      { deliverableKind: 'social_pack', deliverableId: 'ds1', approvedAt: '2026-10-25T00:00:07.000Z' },
+      { deliverableKind: 'logo', deliverableId: 'd2' },
+      { deliverableKind: 'label', deliverableId: 'dl1' },
+      { deliverableKind: 'social_pack', deliverableId: 'ds1' },
     ],
+    markedStaleKinds: ['label', 'social_pack'],
   });
 
-  it('obsoleto: an approved dependent becomes stale when its upstream approval changes; Generar and Iterar are offered, nothing auto-regenerates', () => {
+  it('obsoleto: an approved dependent marked stale by its upstream approval; Generar and Iterar are offered, nothing auto-regenerates', () => {
     const label = stateOf(ready, specs, staleFacts, 'label-agent');
     expect(label.state).toBe('approved');
     expect(label.stale).toBe(true);
@@ -376,7 +378,7 @@ describe('deriveDeliverableState — dependency map and the obsoleto overlay', (
     expect(label.activeTask).toBeNull();
   });
 
-  it('obsoleto propagates transitively through the dependency map', () => {
+  it('obsoleto reaches the transitive dependents through their own marks', () => {
     const social = stateOf(ready, specs, staleFacts, 'social-agent');
     expect(social.stale).toBe(true);
     expect(social.state).toBe('approved');
@@ -396,21 +398,25 @@ describe('deriveDeliverableState — dependency map and the obsoleto overlay', (
     expect(view.allowedCommands).toEqual(['generate', 'iterate', 'approve']);
   });
 
-  it('re-approving the dependent clears the overlay', () => {
+  it('re-approving the dependent clears the overlay (the store drops its mark)', () => {
     const view = stateOf(
       ready,
       specs,
-      {
-        ...staleFacts,
-        approvals: [
-          staleFacts.approvals[0],
-          { deliverableKind: 'label', deliverableId: 'dl1', approvedAt: '2026-10-25T00:00:11.000Z' },
-        ],
-      },
+      { ...staleFacts, markedStaleKinds: ['social_pack'] },
       'label-agent',
     );
     expect(view.stale).toBe(false);
     expect(view.allowedCommands).toEqual(['iterate']);
+  });
+
+  it('approval order alone never makes a kind obsoleto (no timestamp comparison)', () => {
+    // Same approvals as the stale case, but no marks: e.g. two approvals that raced, or an
+    // upstream approved after its dependent without a replacement. Nothing is obsoleto.
+    const unmarked = { ...staleFacts, markedStaleKinds: [] };
+    for (const agentId of ['logo-agent', 'label-agent', 'social-agent']) {
+      expect(stateOf(ready, specs, unmarked, agentId).stale).toBe(false);
+    }
+    expect(stateOf(ready, specs, unmarked, 'social-agent').missingUpstream).toEqual([]);
   });
 
   it('a store-persisted stale mark is honored for approved kinds only', () => {
@@ -420,7 +426,7 @@ describe('deriveDeliverableState — dependency map and the obsoleto overlay', (
       facts({
         tasks: [DONE],
         candidates: [C1],
-        approvals: [{ deliverableKind: 'logo', deliverableId: 'd1', approvedAt: '2026-10-25T00:00:05.000Z' }],
+        approvals: [{ deliverableKind: 'logo', deliverableId: 'd1' }],
         markedStaleKinds: ['logo', 'label'],
       }),
     );
@@ -435,7 +441,7 @@ describe('deriveDeliverableState — dependency map and the obsoleto overlay', (
       facts({
         tasks: [DONE, labelDone],
         candidates: [C1, labelCandidate],
-        approvals: [{ deliverableKind: 'logo', deliverableId: 'd1', approvedAt: '2026-10-25T00:00:05.000Z' }],
+        approvals: [{ deliverableKind: 'logo', deliverableId: 'd1' }],
         markedStaleKinds: ['label'],
       }),
       'label-agent',
@@ -448,15 +454,16 @@ describe('deriveDeliverableState — dependency map and the obsoleto overlay', (
 describe('deriveStaleKinds / dependentKindsOf', () => {
   const specs = [NAME_SPEC, LOGO_SPEC, LABEL_SPEC, SOCIAL_SPEC];
   const approvals: ApprovalFact[] = [
-    { deliverableKind: 'logo', deliverableId: 'a', approvedAt: '2026-10-25T00:00:03.000Z' },
-    { deliverableKind: 'label', deliverableId: 'b', approvedAt: '2026-10-25T00:00:02.000Z' },
-    { deliverableKind: 'social_pack', deliverableId: 'c', approvedAt: '2026-10-25T00:00:04.000Z' },
+    { deliverableKind: 'logo', deliverableId: 'a' },
+    { deliverableKind: 'label', deliverableId: 'b' },
+    { deliverableKind: 'social_pack', deliverableId: 'c' },
   ];
 
-  it('marks a kind stale when any transitive upstream was approved later', () => {
-    expect([...deriveStaleKinds(specs, approvals)].sort()).toEqual(['label']);
-    const later = [...approvals.slice(0, 2), { ...approvals[2], approvedAt: '2026-10-25T00:00:01.000Z' }];
-    expect([...deriveStaleKinds(specs, later)].sort()).toEqual(['label', 'social_pack']);
+  it('is exactly the explicitly marked kinds that are approved', () => {
+    expect([...deriveStaleKinds(approvals, [])]).toEqual([]);
+    expect([...deriveStaleKinds(approvals, ['label'])].sort()).toEqual(['label']);
+    expect([...deriveStaleKinds(approvals, ['label', 'social_pack', 'tagline'])].sort()).toEqual(['label', 'social_pack']);
+    expect([...deriveStaleKinds([], ['label'])]).toEqual([]);
   });
 
   it('lists transitive dependents, sorted, excluding the kind itself', () => {
@@ -488,9 +495,18 @@ describe('determinism and the state token', () => {
       stateOf(
         LOGO_READY,
         [LOGO_SPEC],
-        { ...base, approvals: [{ deliverableKind: 'logo', deliverableId: 'd1', approvedAt: '2026-10-25T00:00:05.000Z' }] },
+        { ...base, approvals: [{ deliverableKind: 'logo', deliverableId: 'd1' }] },
       ).stateToken,
     ).not.toBe(token);
+  });
+
+  it('the token changes when an explicit stale mark appears or clears on the approved kind', () => {
+    const approved = { ...base, approvals: [{ deliverableKind: 'logo', deliverableId: 'd1' }] };
+    const fresh = stateOf(LOGO_READY, [LOGO_SPEC], approved).stateToken;
+    const stale = stateOf(LOGO_READY, [LOGO_SPEC], { ...approved, markedStaleKinds: ['logo'] }).stateToken;
+    expect(stale).not.toBe(fresh);
+    // A mark on another kind is irrelevant to this view.
+    expect(stateOf(LOGO_READY, [LOGO_SPEC], { ...approved, markedStaleKinds: ['label'] }).stateToken).toBe(fresh);
   });
 
   it('the token ignores irrelevant facts (snapshot timestamp)', () => {

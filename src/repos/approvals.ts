@@ -8,8 +8,10 @@
  *     deliverable ("replaced as approved by"), stamps the new row, and appends a
  *     `deliverable_approvals` history row, all in one transaction;
  *   - staleness (RF-07 / KAN-35) is an append-only `deliverable_stale_marks` event; a kind is
- *     stale while its newest mark is newer (`event_seq`) than its newest approval. Nothing is
- *     regenerated here.
+ *     stale while its newest mark is newer (`event_seq`) than its newest approval. `approve`
+ *     appends the marks of the dependent kinds in the SAME transaction as the approval row, so
+ *     an approval never stands without its marks (and a failed mark rolls the approval back).
+ *     Nothing is regenerated here.
  *
  * Concurrency (KAN-34 AC3): every write path locks the owner-visible conversation row
  * (`SELECT … FOR UPDATE`, the same lock the snapshot mutations use) before reading the current
@@ -18,8 +20,9 @@
  * `expectedApprovedId` no longer matches.
  *
  * RLS: conversations, deliverables and both event tables are tenant + owner scoped, so an
- * ordinary member can only approve inside their own conversations. All access goes through
- * `withTenantTransaction(tenant, user)`.
+ * ordinary member can only approve inside their own conversations. Only the conversation owner
+ * approves; a tenant admin can read the trail but never write it (owner decision 2026-10-25).
+ * All access goes through `withTenantTransaction(tenant, user)`.
  */
 import type { ConversationId, UUID } from '../core/contracts';
 import { withTenantTransaction, type Tenant, type TxClient, type User } from '../db/with-transaction';
@@ -52,6 +55,12 @@ export interface ApproveInput {
   readonly deliverableId: string;
   /** The approved deliverable the user saw (null when none was approved). */
   readonly expectedApprovedId: string | null;
+  /**
+   * Kinds to mark stale in the same transaction when a new approval row is recorded (the
+   * transitive dependents of `deliverableKind`). Nothing is marked on a rejection or on an
+   * idempotent re-approval. Unknown kinds, or the approved kind itself, throw before any write.
+   */
+  readonly dependentKinds: ReadonlyArray<string>;
 }
 
 export type ApproveRejection = 'stale' | 'not_candidate' | 'not_found';
@@ -74,6 +83,8 @@ export type ApproveOutcome =
       readonly kind: 'approved';
       readonly approval: DeliverableApprovalRow;
       readonly replacedDeliverableId: UUID | null;
+      /** The dependents' stale marks, written in the approval's transaction. */
+      readonly staleMarks: StaleMarkRow[];
     }
   /** The deliverable was already the approved one and `expectedApprovedId` matched: no-op. */
   | { readonly kind: 'unchanged'; readonly approval: DeliverableApprovalRow }
@@ -167,6 +178,38 @@ async function lockOwnConversation(
   return res.rows[0]?.user_id ?? null;
 }
 
+/** Distinct dependent kinds; throws on unknown kinds (a programming error, never user input). */
+function validStaleKinds(op: string, kinds: ReadonlyArray<string>): DeliverableKind[] {
+  const unique = [...new Set(kinds)];
+  const unknown = unique.filter((k) => !isDeliverableKind(k));
+  if (unknown.length > 0) {
+    throw new Error(`approvals.${op}: unknown deliverable kinds: ${unknown.join(', ')}`);
+  }
+  return unique as DeliverableKind[];
+}
+
+/** Append one stale mark per kind, in order, inside the caller's transaction. */
+async function insertStaleMarks(
+  tx: TxClient,
+  tenant: Tenant,
+  user: User,
+  conversationId: string,
+  ownerId: UUID,
+  kinds: ReadonlyArray<DeliverableKind>,
+): Promise<StaleMarkRow[]> {
+  if (kinds.length === 0) return [];
+  const res = await tx.query<StaleMarkRowDb>(
+    `INSERT INTO deliverable_stale_marks
+       (tenant_id, conversation_id, user_id, deliverable_kind, marked_by)
+     SELECT $1, $2, $3, k, $4
+       FROM unnest($5::deliverable_kind[]) WITH ORDINALITY AS kinds(k, ord)
+      ORDER BY ord
+     RETURNING id, conversation_id, deliverable_kind, marked_by, marked_at, event_seq`,
+    [tenant.id, conversationId, ownerId, user.id, kinds],
+  );
+  return res.rows.map(staleMarkToDomain);
+}
+
 function rejected(reason: ApproveRejection): ApproveOutcome {
   return { kind: 'rejected', reason };
 }
@@ -179,7 +222,9 @@ function isSelectedIndexViolation(err: unknown): boolean {
 export function approvalsRepo(tenant: Tenant, user: User) {
   return {
     /**
-     * Approve `deliverableId` as the single approved deliverable of its kind, atomically.
+     * Approve `deliverableId` as the single approved deliverable of its kind and mark
+     * `dependentKinds` stale, in ONE transaction: either the approval row, the selection change
+     * and every stale mark commit together, or nothing does.
      * Rejections: `not_found` (conversation or deliverable not visible to this owner),
      * `stale` (`expectedApprovedId` is not the current approval), `not_candidate` (the
      * deliverable belongs to another conversation or kind, or its task is not completed).
@@ -193,6 +238,10 @@ export function approvalsRepo(tenant: Tenant, user: User) {
         deliverableKind: input.deliverableKind,
         deliverableId: input.deliverableId,
       });
+      const dependentKinds = validStaleKinds('approve', input.dependentKinds);
+      if (dependentKinds.includes(input.deliverableKind as DeliverableKind)) {
+        throw new Error(`approvals.approve: a kind cannot depend on itself: ${input.deliverableKind}`);
+      }
       if (!isUuid(input.conversationId) || !isUuid(input.deliverableId)) {
         return { kind: 'rejected', reason: 'not_found' };
       }
@@ -272,15 +321,25 @@ export function approvalsRepo(tenant: Tenant, user: User) {
              RETURNING ${APPROVAL_COLUMNS}`,
             [tenant.id, input.conversationId, ownerId, kind, deliverableId, replaced, user.id],
           );
+          // Same transaction: the marks get a higher event_seq than the approval row, and a
+          // failure here rolls the approval back (KAN-34).
+          const staleMarks = await insertStaleMarks(
+            tx, tenant, user, input.conversationId, ownerId, dependentKinds,
+          );
           return {
             kind: 'approved',
             approval: approvalToDomain(inserted.rows[0]),
             replacedDeliverableId: replaced,
+            staleMarks,
           };
         });
         if (outcome.kind === 'approved') {
           child.info(
-            { approvalId: outcome.approval.id, replacedDeliverableId: outcome.replacedDeliverableId },
+            {
+              approvalId: outcome.approval.id,
+              replacedDeliverableId: outcome.replacedDeliverableId,
+              staleKinds: outcome.staleMarks.map((m) => m.deliverableKind),
+            },
             'deliverable approved',
           );
         } else if (outcome.kind === 'unchanged') {
@@ -336,18 +395,15 @@ export function approvalsRepo(tenant: Tenant, user: User) {
     },
 
     /**
-     * Append a stale mark for each kind (RF-07). Never regenerates anything. Throws when a kind
-     * is unknown or the conversation is not visible to this owner.
+     * Append a stale mark for each kind on its own (RF-07). Never regenerates anything. Throws
+     * when a kind is unknown or the conversation is not visible to this owner. The approval
+     * flow does NOT use this: `approve` writes its marks in its own transaction.
      */
     async markStale(input: {
       readonly conversationId: string;
       readonly deliverableKinds: ReadonlyArray<string>;
     }): Promise<StaleMarkRow[]> {
-      const kinds = [...new Set(input.deliverableKinds)];
-      const unknown = kinds.filter((k) => !isDeliverableKind(k));
-      if (unknown.length > 0) {
-        throw new Error(`approvals.markStale: unknown deliverable kinds: ${unknown.join(', ')}`);
-      }
+      const kinds = validStaleKinds('markStale', input.deliverableKinds);
       if (kinds.length === 0) return [];
       if (!isUuid(input.conversationId)) {
         throw new Error('approvals.markStale: conversation not found');
@@ -355,20 +411,12 @@ export function approvalsRepo(tenant: Tenant, user: User) {
       return withTenantTransaction(tenant, user, async (tx) => {
         const ownerId = await lockOwnConversation(tx, tenant, input.conversationId);
         if (ownerId === null) throw new Error('approvals.markStale: conversation not found');
-        const res = await tx.query<StaleMarkRowDb>(
-          `INSERT INTO deliverable_stale_marks
-             (tenant_id, conversation_id, user_id, deliverable_kind, marked_by)
-           SELECT $1, $2, $3, k, $4
-             FROM unnest($5::deliverable_kind[]) WITH ORDINALITY AS kinds(k, ord)
-            ORDER BY ord
-           RETURNING id, conversation_id, deliverable_kind, marked_by, marked_at, event_seq`,
-          [tenant.id, input.conversationId, ownerId, user.id, kinds],
-        );
+        const marks = await insertStaleMarks(tx, tenant, user, input.conversationId, ownerId, kinds);
         log.info(
           { op: 'markStale', tenantId: tenant.id, conversationId: input.conversationId, kinds },
           'deliverable kinds marked stale',
         );
-        return res.rows.map(staleMarkToDomain);
+        return marks;
       });
     },
 
