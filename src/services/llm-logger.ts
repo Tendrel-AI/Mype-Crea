@@ -5,12 +5,18 @@
  * `llm_calls` row. Controllers must not construct OpenAI client calls
  * outside this wrapper — token counts will be lost.
  *
+ * Every call must state its provenance (`provider`, `purpose`): the provider is
+ * the EFFECTIVE one that served the call (e.g. the fallback profile's provider on
+ * a fallback attempt), taken from the resolved model, never from `LLM_PROVIDER`.
+ * Judge/eval calls are eval cost and do not go through this wrapper.
+ *
  * Persistence failures are swallowed (logged at error level). The
  * `llm_calls` table is append-only audit data; a transient DB hiccup must
  * not break the user-visible response. The architecture skill explicitly
  * tolerates losing rows on transient failure for this table.
  */
 import type { ChatCompletion, ChatRequest, IChatClient, ModelPurpose } from './llm/types';
+import type { ProviderId } from './ai-config/manifest';
 import type { ConversationId, TaskId } from '../core/contracts';
 import type { Tenant, User } from '../db/with-transaction';
 import { systemRepos, repos } from '../repos';
@@ -27,14 +33,21 @@ export interface LlmLoggingContext {
   readonly promptVersion: string;
   /** Optional caller-provided revision string; defaults to 'unknown'. */
   readonly modelRevision?: string;
-  readonly provider?: 'openrouter' | 'anthropic';
-  readonly purpose?: ModelPurpose;
 }
+
+/** Per-call provenance; required so llm_calls rows reflect what actually ran. */
+export interface LlmCallProvenance {
+  /** Effective provider of the resolved model that serves this call. */
+  readonly provider: ProviderId;
+  readonly purpose: ModelPurpose;
+}
+
+export type LlmCallContext = LlmLoggingContext & LlmCallProvenance;
 
 export async function withLlmLogging(
   client: IChatClient,
   params: ChatRequest,
-  ctx: LlmLoggingContext,
+  ctx: LlmCallContext,
 ): Promise<ChatCompletion> {
   const child = log.child({
     tenantId: ctx.tenant.id,
@@ -42,8 +55,8 @@ export async function withLlmLogging(
     conversationId: ctx.conversationId,
     agentTaskId: ctx.agentTaskId,
     model: params.model,
-    provider: ctx.provider ?? (process.env.LLM_PROVIDER === 'anthropic' ? 'anthropic' : 'openrouter'),
-    purpose: ctx.purpose ?? 'responder',
+    provider: ctx.provider,
+    purpose: ctx.purpose,
   });
 
   child.info('llm.request.start');
@@ -86,6 +99,8 @@ export async function withLlmLogging(
     await repo.record({
       conversationId: ctx.conversationId,
       agentTaskId: ctx.agentTaskId,
+      provider: ctx.provider,
+      purpose: ctx.purpose,
       model: completion.model ?? params.model,
       modelRevision: ctx.modelRevision ?? 'unknown',
       promptVersion: ctx.promptVersion,

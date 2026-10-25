@@ -3,6 +3,8 @@
  *
  * Per docs/agents/database.md:
  *   - llm_calls RLS is tenant-scoped only; user_id may be NULL for unattributed calls.
+ *   - provider and purpose are required on every new row (KAN-69; enforced by the
+ *     NOT VALID llm_calls_provenance_required check). Legacy rows may hold NULL.
  *   - Every method runs in withTenantTransaction with the GUCs set.
  *   - There is no findById exposed here — analytics belongs in a separate admin repo.
  */
@@ -25,6 +27,8 @@ export function llmCallsRepo(tenant: Tenant, user: User | undefined) {
         tenantId: tenant.id,
         userId: user?.id,
         conversationId: input.conversationId,
+        provider: input.provider,
+        purpose: input.purpose,
         model: input.model,
       });
       child.debug(
@@ -39,15 +43,18 @@ export function llmCallsRepo(tenant: Tenant, user: User | undefined) {
         const res = await tx.query<{ id: UUID }>(
           `INSERT INTO llm_calls
              (tenant_id, conversation_id, user_id, agent_task_id,
+              provider, purpose,
               model, model_revision, prompt_version,
               input_tokens, output_tokens, latency_ms)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
            RETURNING id`,
           [
             tenant.id,
             input.conversationId ?? null,
             user?.id ?? null,
             input.agentTaskId ?? null,
+            input.provider,
+            input.purpose,
             input.model,
             input.modelRevision,
             input.promptVersion,
