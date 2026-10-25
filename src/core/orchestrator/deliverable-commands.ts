@@ -62,6 +62,7 @@ export const COMMAND_MESSAGES = {
   cancelTooLate: 'La generación ya empezó y no se puede cancelar.',
   approveNotCandidate: 'Esta propuesta no está disponible para aprobar.',
   approveStale: 'La aprobación cambió mientras decidías. Revisa la propuesta aprobada actual e inténtalo de nuevo.',
+  iterateNeedsChange: 'Cuéntanos qué quieres cambiar para intentarlo de nuevo.',
 } as const;
 
 /** Everything the handler needs, already scoped to one conversation's tenant/user. */
@@ -279,6 +280,25 @@ export async function executeDeliverableCommand(
         if (view.lastFailure?.taskId !== command.failedTaskId) return reject('stale', COMMAND_MESSAGES.stale, states);
         const failed = facts.tasks.find((t) => t.id === command.failedTaskId)!;
         iteration = chainIteration(facts.tasks, failed, 'failure');
+      } else if (command.kind === 'iterate' && view.state === 'failed') {
+        // KAN-58: Iterar on a failed deliverable changes the failed request.
+        // It chains onto the failed task (trigger `failure`, like Reintentar)
+        // with the refinement and no anchor: a failed task has no candidate.
+        if (!view.lastFailure) return reject('stale', COMMAND_MESSAGES.stale, states);
+        if (command.deliverableId != null) return reject('invalid', COMMAND_MESSAGES.invalid, states);
+        const failed = facts.tasks.find((t) => t.id === view.lastFailure!.taskId)!;
+        const built = buildIterationRefinement({
+          observation: command.observation,
+          parameterChanges: command.parameterChanges,
+          anchorDeliverableId: null,
+        });
+        if (!built.ok) return reject('invalid', built.message, states);
+        if (built.value.observations.length === 0 && Object.keys(built.value.parameterChanges).length === 0) {
+          // An unchanged request is a Reintentar, not an Iterar.
+          return reject('invalid', COMMAND_MESSAGES.iterateNeedsChange, states);
+        }
+        iteration = chainIteration(facts.tasks, failed, 'failure');
+        refinement = built.value;
       } else if (command.kind === 'iterate') {
         const anchorId = command.deliverableId ?? view.approvedDeliverableId ?? view.candidates.at(-1)?.deliverableId;
         const anchor = view.candidates.find((c) => c.deliverableId === anchorId);

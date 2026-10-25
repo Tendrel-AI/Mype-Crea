@@ -17,7 +17,9 @@
  *   generating latest task pending / in_progress             → cancel (pending only)
  *   in_review  ≥1 candidate, none approved                   → iterate, approve
  *   approved   one approved candidate                        → iterate, approve(other)
- *   failed     latest task failed                            → retry (transient only)
+ *   failed     latest task failed                            → FAILURE_RECOVERY_COMMANDS
+ *              by category (KAN-58: never a dead end): retry for every
+ *              category, plus iterate for content_policy
  *   stale      overlay on approved: an upstream approval changed after this
  *              approval                                     → iterate, generate,
  *                                                              approve(other); never automatic
@@ -42,8 +44,31 @@ import {
   type DeliverableStateKind,
   type DeliverableStateView,
 } from '../contracts';
+import type { TaskErrorCategory } from '../task-errors';
 import type { DeliverableSpec } from './agent-registry';
 import type { WorkflowCandidate, WorkflowTask } from './deliverable-workflow';
+
+/**
+ * Recovery commands a failed deliverable offers, per failure category
+ * (KAN-58: a failed deliverable is never a dead end). Like every generative
+ * command they also need the preconditions to hold now.
+ *
+ *   transient      Reintentar — the same request is expected to succeed later.
+ *   content_policy Reintentar + Iterar — retrying the identical request will
+ *                  likely be blocked again, so Iterar lets the user change it
+ *                  (an iteration of the failed task carrying an observation).
+ *   permanent_bug  Reintentar — changing the request does not fix a
+ *                  configuration or provider bug, but a retry succeeds once
+ *                  the operator fixes it.
+ *
+ * A failed task without a category (legacy rows) is treated as permanent_bug.
+ * Retry caps are deferred to KAN-43.
+ */
+export const FAILURE_RECOVERY_COMMANDS: Readonly<Record<TaskErrorCategory, ReadonlyArray<DeliverableCommandKind>>> = {
+  transient: ['retry'],
+  content_policy: ['retry', 'iterate'],
+  permanent_bug: ['retry'],
+};
 
 /** Approval facts for one kind, as read from the approval store. */
 export interface ApprovalFact {
@@ -178,7 +203,9 @@ export function deriveDeliverableState(
     if (latest.status === 'pending') allowed.add('cancel');
   } else if (latest && latest.status === 'failed') {
     state = 'failed';
-    if (latest.errorCategory === 'transient' && preconditionsMet) allowed.add('retry');
+    if (preconditionsMet) {
+      for (const command of FAILURE_RECOVERY_COMMANDS[latest.errorCategory ?? 'permanent_bug']) allowed.add(command);
+    }
   } else if (approvedDeliverableId !== null) {
     state = 'approved';
     if (hasOtherCandidate) allowed.add('approve');

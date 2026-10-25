@@ -1,7 +1,8 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { DeliverableCommands } from '../DeliverableCommands';
+import { DeliverableCommands, iterateSubmission } from '../DeliverableCommands';
+import { developerFailureChatText, failedCardMessage } from '../failure-copy';
 import { Dashboard } from '../Dashboard';
 import type { DeliverableStateView } from '../../../src/core/contracts';
 import type { BrandAssets } from '../types';
@@ -102,18 +103,46 @@ describe('DeliverableCommands (KAN-28)', () => {
     expect(buttons(markup)).toEqual(['Generar', 'Iterar']);
   });
 
-  it('failed: Reintentar only for transient failures', () => {
-    const transient = render(
-      view({ state: 'failed', allowedCommands: ['retry'], lastFailure: { taskId: candidate(1).taskId, errorCategory: 'transient', retryable: true } }),
-    );
-    expect(transient).toContain('Puedes reintentar.');
-    expect(buttons(transient)).toEqual(['Reintentar']);
+  const failedView = (errorCategory: 'transient' | 'content_policy' | 'permanent_bug' | null, allowedCommands: DeliverableStateView['allowedCommands']) =>
+    view({
+      state: 'failed',
+      allowedCommands,
+      lastFailure: { taskId: candidate(1).taskId, errorCategory, retryable: errorCategory === 'transient' },
+    });
 
-    const permanent = render(
-      view({ state: 'failed', allowedCommands: [], lastFailure: { taskId: candidate(1).taskId, errorCategory: 'permanent_bug', retryable: false } }),
-    );
-    expect(permanent).toContain('No pudimos generar tu logo.');
-    expect(buttons(permanent)).toEqual([]);
+  it.each([
+    ['transient', ['retry'], ['Reintentar'], 'Fue un problema temporal: toca Reintentar.'],
+    ['content_policy', ['iterate', 'retry'], ['Iterar', 'Reintentar'], 'Toca Iterar para cambiar lo que pediste'],
+    ['permanent_bug', ['retry'], ['Reintentar'], 'Toca Reintentar para probar otra vez.'],
+    [null, ['retry'], ['Reintentar'], 'Toca Reintentar para probar otra vez.'],
+  ] as const)('failed (%s): «Falló», plain copy and a recovery button (KAN-58)', (category, allowed, expectedButtons, copy) => {
+    const markup = render(failedView(category, [...allowed]));
+    expect(markup).toContain('Falló');
+    expect(markup).toContain('No pudimos generar tu logo.');
+    expect(markup).toContain(copy);
+    expect(buttons(markup)).toEqual(expectedButtons);
+    // No technical detail on the card, ever.
+    expect(markup).not.toMatch(/transient|content_policy|permanent_bug|error|Categoría|Modo desarrollo/i);
+  });
+
+  it('failed with the brief incomplete: no button, and the copy says how to unblock it', () => {
+    const markup = render(failedView('permanent_bug', []));
+    expect(buttons(markup)).toEqual([]);
+    expect(markup).toContain('Completa la información en el chat para volver a intentarlo.');
+  });
+
+  it('Iterar after a failure: no anchor, and an empty change cannot be sent', () => {
+    const failed = failedView('content_policy', ['iterate', 'retry']);
+    expect(iterateSubmission(failed, '   ')).toBeNull();
+    expect(iterateSubmission(failed, '  Sin la mascota  ')).toEqual({
+      kind: 'iterate',
+      deliverableId: null,
+      observation: 'Sin la mascota',
+    });
+    expect(iterateSubmission(failed, 'é'.repeat(501))).toBeNull();
+    // In review, the anchor is the newest candidate and a blank observation is allowed.
+    const review = view({ state: 'in_review', allowedCommands: ['iterate', 'approve'], candidates: [candidate(1), candidate(2)] });
+    expect(iterateSubmission(review, ' ')).toEqual({ kind: 'iterate', deliverableId: candidate(2).deliverableId, observation: '' });
   });
 
   it('shows the server rejection message', () => {
@@ -127,10 +156,21 @@ describe('DeliverableCommands (KAN-28)', () => {
       render(view({ state: 'blocked' })),
       render(view({ state: 'blocked', missingUpstream: ['logo'] })),
       render(view({ state: 'enabled', allowedCommands: ['generate'] })),
-      render(view({ state: 'failed', lastFailure: { taskId: candidate(1).taskId, errorCategory: 'transient', retryable: true }, allowedCommands: ['retry'] })),
+      render(failedView('transient', ['retry'])),
+      render(failedView('content_policy', ['iterate', 'retry'])),
+      render(failedView('permanent_bug', ['retry'])),
+      render(failedView('permanent_bug', [])),
+      failedCardMessage(failedView(null, ['retry']), 'logo'),
+      developerFailureChatText('logo-agent', { errorCategory: 'transient', errorKind: 'timeout', message: 'x' }),
       render(view({ state: 'approved', stale: true, candidates: [candidate(1)], approvedDeliverableId: candidate(1).deliverableId })),
     ].join(' ');
     expect(all).not.toMatch(/\b(vos|sos|tenés|querés|podés|tocá|revisá|completá|aprobá)\b/i);
+  });
+
+  it('developer failure chat text carries the category, kind and message', () => {
+    expect(
+      developerFailureChatText('logo-agent', { errorCategory: 'content_policy', errorKind: 'content_policy', message: 'blocked' }),
+    ).toBe('[Modo desarrollo] Falló la tarea de logo-agent. Categoría: content_policy. Tipo: content_policy. Detalle: blocked');
   });
 
   it('Dashboard renders the logo controls slot inside the logo card', () => {
