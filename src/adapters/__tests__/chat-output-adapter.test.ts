@@ -402,7 +402,7 @@ describe('ChatOutputAdapter', () => {
       recentMessages: [{ role: 'user', content: 'must not be included' }],
       snapshot: emptySnapshot,
       llmContext: ctx,
-      execution: { model: { ...provider.resolve('responder'), provider: 'openrouter' }, behavior: frozen },
+      execution: { model: { ...provider.resolve('responder'), provider: 'anthropic', modelId: 'claude-sonnet-5-5' }, behavior: frozen },
     });
 
     expect(provider.create).toHaveBeenCalledTimes(1);
@@ -410,6 +410,15 @@ describe('ChatOutputAdapter', () => {
     expect(provider.captured[0].systemPrompt).toContain('español neutro latinoamericano');
     expect(provider.captured[0].messageCount).toBe(1);
     expect((provider.create.mock.calls[0][0] as any).temperature).toBe(0.7);
+    // KAN-69 A6: the llm_calls row carries the execution's effective provenance.
+    expect(recordSpy).toHaveBeenCalledTimes(1);
+    expect((recordSpy.mock.calls[0] as any[])[0]).toMatchObject({
+      provider: 'anthropic',
+      purpose: 'responder',
+      model: 'claude-sonnet-5-5',
+      inputTokens: 50,
+      outputTokens: 30,
+    });
   });
 
   it('rejects unsupported frozen responder renderers before provider invocation', async () => {

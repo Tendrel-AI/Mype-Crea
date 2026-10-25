@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
+
+// withLlmLogging persists through the repos factory; keep it off the database.
+const recordSpy = vi.fn(async () => 'fake-llm-call-id');
+vi.mock('../../../repos', () => ({
+  repos: () => ({ llmCalls: { record: recordSpy } }),
+  systemRepos: () => ({ llmCalls: { record: recordSpy } }),
+}));
+
 import type { ResolvedIdentity } from '../../../auth/resolve-identity';
 import type { ChatCompletion, ChatRequest, ILLMProvider, ResolvedModel } from '../../llm/types';
-import { ProviderCallError } from '../../llm/provider-error';
+import { ProviderCallError, type ProviderFailureCategory } from '../../llm/provider-error';
+import { withLlmLogging } from '../../llm-logger';
 import { createCurrentAdapterBehaviorSnapshot } from '../adapter-behavior';
 import { AiConfigRuntime, type AttemptWriter, type RuntimeRepositories } from '../execution';
 import { freezeManifest } from '../manifest';
@@ -33,7 +42,7 @@ function frozenManifest(fallbackProfileIds: readonly string[] = ['anthropic-extr
   });
 }
 
-function harness(options: { enabled?: Record<string, boolean>; providerFailures?: Set<string>; failEvidence?: boolean; failFinishAfterCall?: boolean; releaseStatus?: 'frozen' | 'retired'; completionMode?: 'normal' | 'refusal' | 'truncated' | 'missing_tool' | 'malformed_tool' | 'secret'; noFallback?: boolean } = {}) {
+function harness(options: { enabled?: Record<string, boolean>; providerFailures?: Set<string>; providerFailureCategory?: ProviderFailureCategory; failEvidence?: boolean; failFinishAfterCall?: boolean; releaseStatus?: 'frozen' | 'retired'; completionMode?: 'normal' | 'refusal' | 'truncated' | 'missing_tool' | 'malformed_tool' | 'secret'; noFallback?: boolean } = {}) {
   const frozen = frozenManifest(options.noFallback ? [] : undefined);
   const requests: Array<{ provider: string; request: ChatRequest }> = [];
   const finishes: Array<Record<string, unknown>> = [];
@@ -48,7 +57,7 @@ function harness(options: { enabled?: Record<string, boolean>; providerFailures?
         chat: { completions: { create: vi.fn(async (request: ChatRequest): Promise<ChatCompletion> => {
           requests.push({ provider, request });
           callsByPurpose.set(purpose, (callsByPurpose.get(purpose) ?? 0) + 1);
-          if (options.providerFailures?.has(provider)) throw new ProviderCallError('ambiguous');
+          if (options.providerFailures?.has(provider)) throw new ProviderCallError(options.providerFailureCategory ?? 'ambiguous');
           const mode = options.completionMode ?? 'normal';
           return {
             id: 'completion-id',
@@ -133,6 +142,43 @@ describe('AiConfigRuntime', () => {
     expect(finishes[0]).toMatchObject({ outcome: 'failed', failureCategory: 'provider_disabled' });
     expect(finishes[1]).toMatchObject({ outcome: 'succeeded', usage: { promptTokens: 12, completionTokens: 4 } });
     expect(notices[0]).toMatchObject({ code: 'approved_fallback_used' });
+  });
+
+  it('records the effective fallback provider, model, purpose and tokens in llm_calls (KAN-69 A6)', async () => {
+    recordSpy.mockClear();
+    const prior = process.env.LLM_PROVIDER;
+    process.env.LLM_PROVIDER = 'openrouter';
+    const { runtime, requests, finishes } = harness({ providerFailures: new Set(['openrouter']), providerFailureCategory: 'provider_unavailable' });
+    try {
+      // Mirrors the adapters: provenance comes from the resolved execution model.
+      const result = await runtime.runPurpose(identity, { conversationId: 'conversation-a', turnId: 'turn-provenance', ownerToken: 'owner-a', purpose: 'extractor' }, async (execution) => {
+        const provider = execution.model.provider;
+        if (!provider) throw new Error('frozen execution must carry its provider');
+        return withLlmLogging(execution.model.client, {
+          model: execution.model.modelId,
+          messages: [{ role: 'user', content: 'hola' }],
+          temperature: execution.behavior.extractor.temperature,
+          max_tokens: execution.behavior.extractor.maxTokens,
+          tools: [{ type: 'function', function: { name: execution.behavior.extractor.toolName, parameters: {} } }],
+          tool_choice: execution.behavior.extractor.toolChoice,
+        }, { tenant: identity.tenant, user: identity.user, conversationId: 'conversation-a' as never, promptVersion: 'unit.v1', modelRevision: execution.model.modelRevision, provider, purpose: 'extractor' });
+      });
+      expect(result.effectiveProfileId).toBe('anthropic-extractor');
+    } finally {
+      if (prior === undefined) delete process.env.LLM_PROVIDER;
+      else process.env.LLM_PROVIDER = prior;
+    }
+    expect(requests.map((request) => request.provider)).toEqual(['openrouter', 'anthropic']);
+    expect(finishes[0]).toMatchObject({ outcome: 'failed', failureCategory: 'provider_unavailable' });
+    // The failed primary attempt stays in ai_turn_attempts; only the served call is billed.
+    expect(recordSpy).toHaveBeenCalledTimes(1);
+    expect((recordSpy.mock.calls[0] as unknown[])[0]).toMatchObject({
+      provider: 'anthropic',
+      purpose: 'extractor',
+      model: 'claude-haiku-5-5',
+      inputTokens: 12,
+      outputTokens: 4,
+    });
   });
 
   it('does not fall back or exceed a frozen one-attempt ceiling when no alternate is approved', async () => {

@@ -155,6 +155,10 @@ export interface UsageSummary {
 export interface LlmCallInsert {
   readonly conversationId?: ConversationId;
   readonly agentTaskId?: TaskId;
+  /** Effective provider that served the call (never inferred from env). */
+  readonly provider: ProviderId;
+  /** Model purpose of the call. Judge/eval calls never reach llm_calls. */
+  readonly purpose: Purpose;
   readonly model: string;
   readonly modelRevision: string;
   readonly promptVersion: string;

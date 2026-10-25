@@ -334,12 +334,21 @@ describe('ChatInputAdapter', () => {
       conversationId,
       userMessage: 'hola',
       llmContext: ctx,
-      execution: { model: { ...provider.resolve('extractor'), provider: 'openrouter' }, behavior: frozen },
+      execution: { model: { ...provider.resolve('extractor'), provider: 'anthropic', modelId: 'claude-haiku-5-5' }, behavior: frozen },
     });
 
     expect(provider.create).toHaveBeenCalledTimes(1);
     expect(provider.captured[0].systemPrompt).toContain('Frozen template marker.');
     expect((provider.create.mock.calls[0][0] as any).temperature).toBe(0);
+    // KAN-69 A6: the llm_calls row carries the execution's effective provenance.
+    expect(recordSpy).toHaveBeenCalledTimes(1);
+    expect((recordSpy.mock.calls[0] as any[])[0]).toMatchObject({
+      provider: 'anthropic',
+      purpose: 'extractor',
+      model: 'claude-haiku-5-5',
+      inputTokens: 5,
+      outputTokens: 10,
+    });
   });
 
   it('rejects a frozen field schema that differs from the runtime registry before provider invocation', async () => {

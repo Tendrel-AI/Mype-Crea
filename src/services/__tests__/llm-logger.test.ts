@@ -4,6 +4,8 @@
  *
  * Verifies:
  *   - response.usage is extracted into the recorded llm_calls row
+ *   - the effective provider and the purpose of each call are recorded
+ *     (KAN-69 A6), and LLM_PROVIDER never overrides the call's provider
  *   - latency_ms is captured (>= 0)
  *   - a persist failure is logged but does NOT propagate to the caller
  *   - the LLM client failure DOES propagate
@@ -45,6 +47,8 @@ describe('withLlmLogging', () => {
     user: { id: '00000000-0000-0000-0000-000000000002' },
     conversationId: '00000000-0000-0000-0000-000000000003',
     promptVersion: 'unit.v1',
+    provider: 'openrouter' as const,
+    purpose: 'responder' as const,
   };
 
   it('captures token counts and persists the row', async () => {
@@ -62,8 +66,65 @@ describe('withLlmLogging', () => {
     expect(arg.outputTokens).toBe(22);
     expect(arg.model).toBe('served-model-revision');
     expect(arg.promptVersion).toBe('unit.v1');
+    expect(arg.provider).toBe('openrouter');
+    expect(arg.purpose).toBe('responder');
     expect(typeof arg.latencyMs).toBe('number');
     expect(arg.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it.each([
+    { purpose: 'extractor' as const, provider: 'openrouter' as const, model: 'google/gemini-2.5-flash' },
+    { purpose: 'extractor' as const, provider: 'anthropic' as const, model: 'claude-haiku-5-5' },
+    { purpose: 'responder' as const, provider: 'openrouter' as const, model: 'google/gemini-2.5-pro' },
+    { purpose: 'responder' as const, provider: 'anthropic' as const, model: 'claude-sonnet-5-5' },
+  ])('records provider, model, purpose and tokens for a $purpose call on $provider', async ({ purpose, provider, model }) => {
+    recordSpy.mockClear();
+    const client = fakeClient('success');
+    await withLlmLogging(client as any, { model, messages: [] }, { ...ctx, provider, purpose });
+    expect(recordSpy).toHaveBeenCalledTimes(1);
+    expect((recordSpy.mock.calls[0] as any[])[0]).toMatchObject({
+      provider,
+      purpose,
+      model: 'served-model-revision',
+      inputTokens: 11,
+      outputTokens: 22,
+    });
+  });
+
+  it('records the provider passed by the call, never LLM_PROVIDER', async () => {
+    recordSpy.mockClear();
+    const prior = process.env.LLM_PROVIDER;
+    process.env.LLM_PROVIDER = 'anthropic';
+    try {
+      await withLlmLogging(
+        fakeClient('success') as any,
+        { model: 'google/gemini-2.5-flash', messages: [] },
+        { ...ctx, provider: 'openrouter', purpose: 'extractor' },
+      );
+    } finally {
+      if (prior === undefined) delete process.env.LLM_PROVIDER;
+      else process.env.LLM_PROVIDER = prior;
+    }
+    expect((recordSpy.mock.calls[0] as any[])[0]).toMatchObject({ provider: 'openrouter', purpose: 'extractor' });
+  });
+
+  it('falls back to the requested model and zero tokens when the response omits them', async () => {
+    recordSpy.mockClear();
+    const client = {
+      chat: {
+        completions: {
+          create: vi.fn(async () => ({ id: 'x', choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] })),
+        },
+      },
+    };
+    await withLlmLogging(client as any, { model: 'claude-haiku-5-5', messages: [] }, { ...ctx, provider: 'anthropic', purpose: 'extractor' });
+    expect((recordSpy.mock.calls[0] as any[])[0]).toMatchObject({
+      provider: 'anthropic',
+      purpose: 'extractor',
+      model: 'claude-haiku-5-5',
+      inputTokens: 0,
+      outputTokens: 0,
+    });
   });
 
   it('returns the completion even if persistence fails', async () => {
