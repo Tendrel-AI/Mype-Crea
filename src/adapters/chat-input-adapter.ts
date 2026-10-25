@@ -32,11 +32,13 @@
  *        - yes, field not restated (or restated with the pending value)
  *          → the pending value is confirmed;
  *        - the field restated with a DIFFERENT value (after a yes or a no)
- *          → the pending value is never confirmed; the new value is kept
- *          when it clears STORE_AND_CONFIRM, otherwise the field is reset;
+ *          → the pending value is never confirmed: the field is reset, and
+ *          the new value rides in the same delta when it clears
+ *          STORE_AND_CONFIRM;
  *        - no, without a usable replacement → the field is reset.
- *      A correction is emitted as a value WITHOUT a `reset_field` intent:
- *      merge applies intents after fields, so a reset would erase it.
+ *      Merge applies `reset_field` before field values, so reset + new value
+ *      means "replace": the correction wins even when it is less confident
+ *      than the pending value it replaces.
  *      Extra facts follow the normal extraction rules; unknown fields are
  *      stripped by the parser and rejected by merge, as for any turn.
  *
@@ -231,13 +233,15 @@ function dropField(fields: MutableFieldValues, fieldName: string, owners: Readon
  * returns the intents to emit. Every other extracted field is left as is.
  *
  * - polarity 'none': no yes/no cue → plain extraction, nothing changes.
- * - The field restated with a value other than the pending one (after a yes
- *   or a no) → a correction: the pending value is NOT confirmed. The new
- *   value stays when it cleared STORE_AND_CONFIRM; otherwise the field is
- *   reset. No reset is emitted alongside a kept value, because merge applies
- *   intents after fields and would erase it.
  * - yes, no contradiction → the pending value is confirmed at 1.0.
- * - no, no usable replacement (or the same value restated) → reset.
+ * - Anything else resets the field. The pending value is never confirmed.
+ *   - The field restated with a value other than the pending one (after a
+ *     yes or a no) is a correction: its value, if it cleared
+ *     STORE_AND_CONFIRM, stays next to the reset. Merge applies resets
+ *     before values, so the correction replaces the pending value whatever
+ *     its confidence.
+ *   - A no that restates the pending value (or nothing) drops that value, so
+ *     the denial wins.
  */
 function resolveCompoundConfirmation(
   pending: PendingConfirmation,
@@ -255,22 +259,21 @@ function resolveCompoundConfirmation(
 
   const restated = mentioned[fieldName];
   const contradicted = restated !== undefined && !sameFieldValue(restated, decision.pendingValue);
-  const correctionKept =
-    contradicted && owners.some((agentId) => fields[agentId]?.[fieldName] !== undefined);
 
-  if (correctionKept) {
-    logger.info({ fieldName, polarity, outcome: 'corrected' }, 'extractor.confirm.resolved');
-    return [];
-  }
   if (polarity === 'affirm' && !contradicted) {
     confirmPendingValue(fields, decision, owners, rawInput);
     logger.info({ fieldName, polarity, outcome: 'confirmed' }, 'extractor.confirm.resolved');
     return [];
   }
-  // A no, or a yes contradicted by a value too uncertain to keep: the pending
-  // value must not survive, and nothing usable replaces it.
-  dropField(fields, fieldName, owners);
-  logger.info({ fieldName, polarity, contradicted, outcome: 'reset' }, 'extractor.confirm.resolved');
+  // From here the pending value must not survive. A different value restated
+  // in the reply (if it cleared STORE_AND_CONFIRM) replaces it; the same value
+  // restated after a no is dropped so the denial wins.
+  if (!contradicted) dropField(fields, fieldName, owners);
+  const correctionKept = owners.some((agentId) => fields[agentId]?.[fieldName] !== undefined);
+  logger.info(
+    { fieldName, polarity, contradicted, outcome: correctionKept ? 'corrected' : 'reset' },
+    'extractor.confirm.resolved',
+  );
   return resetIntents(decision, owners);
 }
 

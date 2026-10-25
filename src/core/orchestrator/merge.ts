@@ -12,9 +12,27 @@
  *   - confidence >= STORE_AND_CONFIRM -> slot becomes 'pending_confirmation'
  *   - confidence <  STORE_AND_CONFIRM -> slot left untouched (we will re-ask)
  *
- * Conflict policy (same field already filled):
+ * Conflict policy (same field already filled or pending):
  *   - If incoming confidence >= existing confidence -> overwrite
  *   - Else -> no-op (we trust the existing stronger signal)
+ *   - Unless the same delta reset that field (see order below): a reset slot
+ *     is empty, so the incoming value has nothing to conflict with.
+ *
+ * Application order within one delta (deterministic, independent of the
+ * order of `fields` vs `intents` in the payload):
+ *   1. `reset_field` intents, in delta order. Each one empties its slot.
+ *   2. Field values, in delta order, under the rules above.
+ *   3. Every other intent (`select_deliverable`, `request_iteration`,
+ *      `cancel_task`). None of them touches field slots, so their position
+ *      after the values changes nothing they do today.
+ * Resets go first so that `reset_field(F)` + `F = X` in one delta means
+ * "replace F with X", whatever X's confidence is relative to the old value.
+ * A reset with no value (or with a value below STORE_AND_CONFIRM) leaves F
+ * empty, which is what a reset alone means.
+ *
+ * Unknown agents and unknown fields are rejected the same way for values and
+ * for `reset_field`: no store write, and the rejection is reported in the
+ * returned `MergeResult` and the `merger.output` log.
  *
  * This function does NOT dispatch agents. Dispatch is the orchestrator's
  * responsibility, triggered AFTER merge completes.
@@ -28,14 +46,15 @@ import {
   CONFIDENCE_THRESHOLDS,
   type FieldDelta,
   type FieldSlot,
+  type UserIntent,
 } from '../contracts';
 import { loggerFor } from '../../services/logger';
 import type { AgentRegistry } from './agent-registry';
-import type { IConversationStore } from './in-memory-store';
+import type { AgentFieldSchema, IConversationStore } from './in-memory-store';
 
 const log = loggerFor('orchestrator.merge');
 
-type FieldOutcome =
+export type FieldOutcome =
   | 'filled'
   | 'pending_confirmation'
   | 'rejected_low_confidence'
@@ -43,16 +62,50 @@ type FieldOutcome =
   | 'rejected_unknown_field'
   | 'conflict_kept_existing';
 
+export type IntentOutcome =
+  | 'reset'
+  | 'rejected_unknown_agent'
+  | 'rejected_unknown_field'
+  | 'noop'
+  | 'deferred_to_dispatch';
+
+export interface MergeFieldOutcome {
+  readonly agentId: string;
+  readonly fieldName: string;
+  readonly outcome: FieldOutcome;
+  readonly confidence?: number;
+}
+
+export interface MergeIntentOutcome {
+  readonly kind: UserIntent['kind'];
+  readonly agentId?: string;
+  readonly fieldName?: string;
+  readonly outcome: IntentOutcome;
+}
+
+/** What one merge did. Callers may ignore it; it exists for audit and tests. */
+export interface MergeResult {
+  readonly mutationsApplied: number;
+  readonly fieldOutcomes: ReadonlyArray<MergeFieldOutcome>;
+  readonly intentOutcomes: ReadonlyArray<MergeIntentOutcome>;
+}
+
+type FieldResolution =
+  | { readonly kind: 'unknown_agent' }
+  | { readonly kind: 'unknown_field' }
+  | { readonly kind: 'known'; readonly isRequired: boolean };
+
 export async function mergeFieldDelta(
   delta: FieldDelta,
   store: IConversationStore,
   registry: AgentRegistry,
-): Promise<void> {
+): Promise<MergeResult> {
   const fieldsCount = Object.values(delta.fields).reduce(
     (acc, fields) => acc + Object.keys(fields).length,
     0,
   );
-  const intentsCount = delta.intents?.length ?? 0;
+  const intents = delta.intents ?? [];
+  const intentsCount = intents.length;
   const child = log.child({
     op: 'mergeFieldDelta',
     conversationId: delta.conversationId,
@@ -77,18 +130,14 @@ export async function mergeFieldDelta(
       fieldsCount,
       intentsCount,
       fields: incomingFields,
-      intents: (delta.intents ?? []).map((i) => ({ kind: i.kind, agentId: 'agentId' in i ? i.agentId : undefined })),
+      intents: intents.map((i) => ({ kind: i.kind, agentId: 'agentId' in i ? i.agentId : undefined })),
     },
     'merger.input',
   );
   child.info({ fieldsCount, intentsCount }, 'merge.delta.received');
 
-  const outcomes: Array<{
-    agentId: string;
-    fieldName: string;
-    outcome: FieldOutcome;
-    confidence?: number;
-  }> = [];
+  const fieldOutcomes: MergeFieldOutcome[] = [];
+  const intentOutcomes: MergeIntentOutcome[] = [];
 
   const snapshot = await store.get(delta.conversationId);
   if (!snapshot) {
@@ -98,33 +147,56 @@ export async function mergeFieldDelta(
     );
   }
 
+  const schemas = registry.getFieldSchemas();
   let mutationsApplied = 0;
 
-  for (const [agentId, fields] of Object.entries(delta.fields)) {
-    // Validate agent is registered — deltas for unknown agents are dropped.
-    let agentKnown = true;
-    try {
-      registry.get(agentId);
-    } catch {
-      agentKnown = false;
+  // -------------------------------------------------------------------------
+  // Phase 1: reset_field intents. Slots reset here count as empty in phase 2.
+  // -------------------------------------------------------------------------
+  const resetSlots = new Set<string>();
+  for (const intent of intents) {
+    if (intent.kind !== 'reset_field') continue;
+    const { agentId, fieldName } = intent;
+    const resolution = resolveField(registry, schemas, agentId, fieldName);
+    if (resolution.kind !== 'known') {
+      const outcome =
+        resolution.kind === 'unknown_agent' ? 'rejected_unknown_agent' : 'rejected_unknown_field';
+      intentOutcomes.push({ kind: intent.kind, agentId, fieldName, outcome });
+      child.debug({ kind: intent.kind, agentId, fieldName, outcome }, 'merge.intent.rejected');
+      continue;
     }
-    if (!agentKnown) {
-      for (const fieldName of Object.keys(fields)) {
-        outcomes.push({ agentId, fieldName, outcome: 'rejected_unknown_agent' });
+    await store.updateFieldSlot(
+      delta.conversationId,
+      agentId,
+      fieldName,
+      resolution.isRequired,
+      { status: 'empty' },
+    );
+    mutationsApplied++;
+    resetSlots.add(slotKey(agentId, fieldName));
+    intentOutcomes.push({ kind: intent.kind, agentId, fieldName, outcome: 'reset' });
+    child.debug({ kind: intent.kind, agentId, fieldName }, 'merge.intent.processed');
+  }
+
+  // -------------------------------------------------------------------------
+  // Phase 2: field values.
+  // -------------------------------------------------------------------------
+  for (const [agentId, fields] of Object.entries(delta.fields)) {
+    for (const [fieldName, incoming] of Object.entries(fields)) {
+      const resolution = resolveField(registry, schemas, agentId, fieldName);
+
+      // Deltas for unknown agents are dropped before any other check.
+      if (resolution.kind === 'unknown_agent') {
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_unknown_agent' });
         child.debug(
           { agentId, fieldName, outcome: 'rejected_unknown_agent' satisfies FieldOutcome },
           'merge.field.rejected',
         );
+        continue;
       }
-      continue;
-    }
 
-    const fieldSchemas = registry.getFieldSchemas().find((s) => s.agentId === agentId);
-    if (!fieldSchemas) continue;
-
-    for (const [fieldName, incoming] of Object.entries(fields)) {
       if (incoming.confidence < CONFIDENCE_THRESHOLDS.STORE_AND_CONFIRM) {
-        outcomes.push({ agentId, fieldName, outcome: 'rejected_low_confidence', confidence: incoming.confidence });
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_low_confidence', confidence: incoming.confidence });
         child.debug(
           {
             agentId,
@@ -137,10 +209,8 @@ export async function mergeFieldDelta(
         continue; // too low — we'll re-ask explicitly
       }
 
-      const isRequired = fieldSchemas.requiredFields.includes(fieldName);
-      const isOptional = fieldSchemas.optionalFields.includes(fieldName);
-      if (!isRequired && !isOptional) {
-        outcomes.push({ agentId, fieldName, outcome: 'rejected_unknown_field' });
+      if (resolution.kind === 'unknown_field') {
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_unknown_field' });
         child.debug(
           {
             agentId,
@@ -152,10 +222,13 @@ export async function mergeFieldDelta(
         continue; // unknown field for this agent
       }
 
-      const currentSlot =
-        snapshot.agentStates[agentId]?.[isRequired ? 'requiredFields' : 'optionalFields']?.[
-          fieldName
-        ];
+      const { isRequired } = resolution;
+      // A slot reset in phase 1 is empty now, whatever the snapshot read said.
+      const currentSlot = resetSlots.has(slotKey(agentId, fieldName))
+        ? undefined
+        : snapshot.agentStates[agentId]?.[isRequired ? 'requiredFields' : 'optionalFields']?.[
+            fieldName
+          ];
 
       // Conflict: if existing is filled with higher confidence, keep it.
       if (
@@ -163,7 +236,7 @@ export async function mergeFieldDelta(
         currentSlot.status !== 'empty' &&
         currentSlot.confidence > incoming.confidence
       ) {
-        outcomes.push({ agentId, fieldName, outcome: 'conflict_kept_existing', confidence: incoming.confidence });
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'conflict_kept_existing', confidence: incoming.confidence });
         child.debug(
           {
             agentId,
@@ -194,7 +267,7 @@ export async function mergeFieldDelta(
         nextSlot,
       );
       mutationsApplied++;
-      outcomes.push({ agentId, fieldName, outcome: nextStatus, confidence: incoming.confidence });
+      fieldOutcomes.push({ agentId, fieldName, outcome: nextStatus, confidence: incoming.confidence });
       child.debug(
         {
           agentId,
@@ -207,56 +280,73 @@ export async function mergeFieldDelta(
     }
   }
 
-  // Intents are merged separately (selection, iteration, cancel, reset).
-  if (delta.intents) {
-    for (const intent of delta.intents) {
-      switch (intent.kind) {
-        case 'select_deliverable': {
-          // The merge stage records the selection. Figuring out WHICH agent
-          // the deliverable belongs to is a storage lookup; for now, callers
-          // include the agentId context via other means (future: enrich the
-          // intent). We no-op here to keep the harness small.
-          child.debug({ kind: intent.kind }, 'merge.intent.processed');
-          break;
-        }
-        case 'reset_field': {
-          const schemas = registry.getFieldSchemas().find((s) => s.agentId === intent.agentId);
-          if (!schemas) {
-            child.debug(
-              { kind: intent.kind, agentId: intent.agentId, outcome: 'rejected_unknown_agent' },
-              'merge.intent.rejected',
-            );
-            break;
-          }
-          const isRequired = schemas.requiredFields.includes(intent.fieldName);
-          await store.updateFieldSlot(
-            delta.conversationId,
-            intent.agentId,
-            intent.fieldName,
-            isRequired,
-            { status: 'empty' },
-          );
-          mutationsApplied++;
-          child.debug(
-            { kind: intent.kind, agentId: intent.agentId, fieldName: intent.fieldName },
-            'merge.intent.processed',
-          );
-          break;
-        }
-        case 'request_iteration':
-        case 'cancel_task':
-          // Handled by the orchestrator's dispatch logic, not the merge stage.
-          child.debug({ kind: intent.kind }, 'merge.intent.deferred_to_dispatch');
-          break;
+  // -------------------------------------------------------------------------
+  // Phase 3: every other intent. None of these writes field slots.
+  // -------------------------------------------------------------------------
+  for (const intent of intents) {
+    switch (intent.kind) {
+      case 'reset_field':
+        break; // applied in phase 1
+      case 'select_deliverable': {
+        // The merge stage records the selection. Figuring out WHICH agent
+        // the deliverable belongs to is a storage lookup; for now, callers
+        // include the agentId context via other means (future: enrich the
+        // intent). We no-op here to keep the harness small.
+        intentOutcomes.push({ kind: intent.kind, outcome: 'noop' });
+        child.debug({ kind: intent.kind }, 'merge.intent.processed');
+        break;
       }
+      case 'request_iteration':
+      case 'cancel_task':
+        // Handled by the orchestrator's dispatch logic, not the merge stage.
+        intentOutcomes.push({
+          kind: intent.kind,
+          ...('agentId' in intent ? { agentId: intent.agentId } : {}),
+          outcome: 'deferred_to_dispatch',
+        });
+        child.debug({ kind: intent.kind }, 'merge.intent.deferred_to_dispatch');
+        break;
     }
   }
 
   child.info({ mutationsApplied }, 'merge.delta.complete');
   child.info(
-    { mutationsApplied, outcomes, intentsProcessed: intentsCount },
+    {
+      mutationsApplied,
+      outcomes: fieldOutcomes,
+      intentOutcomes,
+      intentsProcessed: intentsCount,
+    },
     'merger.output',
   );
+  return { mutationsApplied, fieldOutcomes, intentOutcomes };
+}
+
+/**
+ * Classify `agentId.fieldName` against the registry: unknown agent, unknown
+ * field for that agent, or a declared required/optional field. Shared by field
+ * values and `reset_field` so both reject the same inputs.
+ */
+function resolveField(
+  registry: AgentRegistry,
+  schemas: ReadonlyArray<AgentFieldSchema>,
+  agentId: string,
+  fieldName: string,
+): FieldResolution {
+  try {
+    registry.get(agentId);
+  } catch {
+    return { kind: 'unknown_agent' };
+  }
+  const agentSchemas = schemas.find((s) => s.agentId === agentId);
+  if (!agentSchemas) return { kind: 'unknown_agent' };
+  if (agentSchemas.requiredFields.includes(fieldName)) return { kind: 'known', isRequired: true };
+  if (agentSchemas.optionalFields.includes(fieldName)) return { kind: 'known', isRequired: false };
+  return { kind: 'unknown_field' };
+}
+
+function slotKey(agentId: string, fieldName: string): string {
+  return `${agentId}\u0000${fieldName}`;
 }
 
 function previewValue(value: unknown): string {

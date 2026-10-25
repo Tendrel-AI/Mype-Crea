@@ -235,11 +235,12 @@ export const extractorCases: ReadonlyArray<ExtractorCase> = [
   {
     id: 'gap-confirm-no-with-correction',
     tags: ['confirm-compound'],
-    // The correction replaces the pending value. No reset_field intent: merge
-    // applies intents after fields, so a reset would erase the correction.
+    // The correction replaces the pending value: reset_field plus the new
+    // value. Merge applies resets before values, so the correction wins.
     inputs: { userMessage: 'No, se llama Dulce Casa.', priorDecision: confirmName('Dulce Hogar') },
     expected: {
       fields: { business_name: { contains: ['dulce casa'], notContains: ['hogar'] } },
+      intents: [{ kind: 'reset_field', fieldName: 'business_name' }],
     },
   },
   {
