@@ -6,6 +6,7 @@ import { repos } from '../../src/repos';
 import { buildDefaultRegistry } from '../../src/core/orchestrator/bootstrap-registry';
 import { getOrchestrator } from '../../src/core/orchestrator/runtime';
 import type { ConversationId, UUID } from '../../src/core/contracts';
+import { clientDeliverableUrl } from '../../src/core/deliverable-url';
 
 export type NewConversationResult =
   | { readonly ok: true; readonly conversationId: ConversationId }
@@ -114,13 +115,14 @@ export async function loadConversationAction(input: {
         notices: (await repository.aiTurns.listNotices(turn.id)).map(({ code, content }) => ({ code, content })),
         createdAt: turn.createdAt,
       }))),
-      deliverables: deliverables.map(({ id, kind, contentUrl, contentInline, selectedAt, createdAt }) => ({
-        id,
-        kind,
-        contentUrl,
-        contentInline,
-        selectedAt: selectedAt ?? null,
-        createdAt,
+      deliverables: deliverables.map((deliverable) => ({
+        id: deliverable.id,
+        kind: deliverable.kind,
+        // A stored image is only ever exposed through the authorized asset route (KAN-52).
+        contentUrl: clientDeliverableUrl(deliverable),
+        contentInline: deliverable.contentInline,
+        selectedAt: deliverable.selectedAt ?? null,
+        createdAt: deliverable.createdAt,
       })),
     };
   } catch {
@@ -178,7 +180,13 @@ export async function exportConversationTraceAction(input: {
         },
         turns: turnEvidence,
         messages,
-        deliverables,
+        // The export is a client download too: no provider URL or bucket key for stored images.
+        // (JSON.stringify drops the undefined key.)
+        deliverables: deliverables.map((deliverable) => ({
+          ...deliverable,
+          contentUrl: clientDeliverableUrl(deliverable),
+          storageKey: undefined,
+        })),
         exportedAt: new Date().toISOString(),
       }, null, 2),
     };

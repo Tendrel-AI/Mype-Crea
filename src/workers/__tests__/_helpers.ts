@@ -107,6 +107,8 @@ export function buildWorkerTestContext(
     onTaskSettled: overrides.onTaskSettled ?? vi.fn(),
     deliverablesFor: overrides.deliverablesFor,
     settleTaskFor: overrides.settleTaskFor,
+    // Storage disabled by default (artifacts pass through unchanged); KAN-52 tests inject a fake.
+    storeArtifacts: overrides.storeArtifacts ?? (async ({ artifacts }) => artifacts),
     lifecycleNotifier: overrides.lifecycleNotifier,
   };
 }

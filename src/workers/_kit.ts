@@ -23,6 +23,7 @@ import type { TaskSettlementContext } from '../core/orchestrator/runtime-config'
 import type { DeliverableInsert, DeliverableRow } from '../repos/models';
 import type { SystemRepos, Tenant } from '../repos';
 import type { AiTurnsRepo } from '../repos/ai-turns';
+import type { StoreArtifactImages } from '../services/storage/artifact-store';
 
 export interface DeliverablesRepoLike {
   insert(input: DeliverableInsert): Promise<Pick<DeliverableRow, 'id'>>;
@@ -57,6 +58,12 @@ export interface WorkerContext {
     tenantId: UUID,
     userId: UUID,
   ) => DeliverablesRepoLike;
+  /**
+   * Copy generated images into private object storage before settlement
+   * (KAN-52). Defaults to `storeArtifactImages` over the configured bucket
+   * service; tests inject a fake. Throws a typed task error on failure.
+   */
+  readonly storeArtifacts?: StoreArtifactImages;
   /** Atomic terminal task, deliverables, core-state and outbox commit. */
   readonly settleTaskFor?: (tenantId: UUID, userId: UUID) => Pick<AiTurnsRepo, 'settleTaskAndEnqueue'>;
   /**

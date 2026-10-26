@@ -23,6 +23,9 @@ import type {
 } from '../../core/agent-types';
 import type { AgentId, TaskId } from '../../core/contracts';
 import { TaskError } from '../../core/task-errors';
+import { InMemoryObjectStorage } from '../../services/storage/memory-storage';
+import { storeArtifactImages } from '../../services/storage/artifact-store';
+import { StorageConfigError } from '../../services/storage/types';
 import {
   buildAgentTaskRow,
   buildWorkerTestContext,
@@ -482,5 +485,110 @@ describe('logo-agent worker', () => {
 
     expect(settleTaskAndEnqueue).toHaveBeenCalledTimes(1);
     expect(onTaskSettled).not.toHaveBeenCalled();
+  });
+
+  describe('private asset storage (KAN-52)', () => {
+    const TENANT = '66666666-6666-4666-8666-666666666666';
+    const PROVIDER_URL = 'https://fal.test/files/logo.png';
+    const DELIVERABLE = '99999999-9999-4999-8999-999999999999';
+
+    function setup(options: { fetchImpl?: typeof fetch; storage?: InMemoryObjectStorage; storeArtifacts?: never } = {}) {
+      const subscriber = new FakeSubscriber();
+      const registry = new AgentRegistry();
+      registry.register(logoCard as AgentCard, vi.fn(async (message: A2AMessage) => ({
+        status: 'completed' as const,
+        taskId: message.taskId,
+        artifacts: [{ kind: 'image', url: PROVIDER_URL, metadata: { provider: 'fal' } }],
+        completedAt: '2026-05-04T00:00:01Z',
+      })), undefined);
+      const row = buildAgentTaskRow({
+        id: '33333333-3333-4333-8333-333333333333' as TaskId,
+        conversationId: '44444444-4444-4444-8444-444444444444' as never,
+      });
+      const order: string[] = [];
+      const storage = options.storage ?? new InMemoryObjectStorage();
+      const put = storage.putObject.bind(storage);
+      storage.putObject = async (...args) => {
+        order.push('put');
+        return put(...args);
+      };
+      const fetchImpl = options.fetchImpl
+        ?? (vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/png' } })) as unknown as typeof fetch);
+      const settleTaskAndEnqueue = vi.fn(async (input: { state: string }) => {
+        order.push('settle');
+        return { deliverableIds: input.state === 'completed' ? [DELIVERABLE] : [] };
+      });
+      const onTaskSettled = vi.fn(async () => undefined);
+      const ctx = buildWorkerTestContext({
+        subscriber,
+        registry,
+        systemReposFor: () => ({
+          agentTasks: { findById: vi.fn(async () => ({ ...row, status: 'pending' as const })), claimById: vi.fn(async () => row) } as never,
+          llmCalls: {} as never,
+        }),
+        settleTaskFor: () => ({ settleTaskAndEnqueue } as never),
+        storeArtifacts: options.storeArtifacts ?? ((input) => storeArtifactImages(input, { storage, fetchImpl })),
+        onTaskSettled,
+      });
+      const run = async () => {
+        await startLogoAgentWorker(ctx);
+        const onMessage = subscriber.listeners('message')[0] as (channel: string, payload: string) => Promise<void>;
+        await onMessage(channelForAgent('logo-agent' as AgentId), wakeUp({ taskId: row.id, tenantId: TENANT, agentId: 'logo-agent' }));
+      };
+      return { row, storage, order, settleTaskAndEnqueue, onTaskSettled, run };
+    }
+
+    it('uploads the image before the durable settlement and announces only the asset route', async () => {
+      const t = setup();
+      await t.run();
+
+      const key = `tenants/${TENANT}/conversations/${t.row.conversationId}/tasks/${t.row.id}/0.png`;
+      expect(t.order).toEqual(['put', 'settle']);
+      expect(t.storage.objects.get(key)?.contentType).toBe('image/png');
+      expect(t.settleTaskAndEnqueue).toHaveBeenCalledWith(expect.objectContaining({
+        state: 'completed',
+        artifacts: [{ kind: 'image', url: PROVIDER_URL, metadata: { provider: 'fal' }, storageKey: key }],
+      }));
+      const [, state] = (t.onTaskSettled.mock.calls[0] as unknown) as [TaskId, TaskState];
+      if (state.status !== 'completed') throw new Error('expected completed');
+      expect(state.result.artifacts).toEqual([{ kind: 'image', url: `/api/assets/${DELIVERABLE}`, metadata: { provider: 'fal' } }]);
+      expect(JSON.stringify(state)).not.toContain(PROVIDER_URL);
+      expect(JSON.stringify(state)).not.toContain('tenants/');
+    });
+
+    it.each([
+      ['the download fails', () => ({ fetchImpl: vi.fn(async () => new Response('down', { status: 503 })) as unknown as typeof fetch })],
+      ['the provider returns no image', () => ({ fetchImpl: vi.fn(async () => new Response('<html>', { headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch })],
+      ['the upload fails', () => {
+        const storage = new InMemoryObjectStorage();
+        storage.failPuts = new Error('bucket unavailable');
+        return { storage };
+      }],
+    ])('fails the task durably as transient storage_unavailable with no deliverable when %s', async (_label, options) => {
+      const t = setup(options());
+      await t.run();
+
+      expect(t.settleTaskAndEnqueue).toHaveBeenCalledTimes(1);
+      expect(t.settleTaskAndEnqueue).toHaveBeenCalledWith(expect.objectContaining({
+        state: 'failed',
+        artifacts: [],
+        error: expect.objectContaining({ kind: 'storage_unavailable' }),
+        errorCategory: 'transient',
+      }));
+      expect(t.storage.objects.size).toBe(0);
+      expect(t.onTaskSettled).toHaveBeenCalledWith(t.row.id, expect.objectContaining({ status: 'failed' }), [],
+        expect.objectContaining({ durableSettlement: true }));
+    });
+
+    it('fails with config_missing when the bucket is not configured in production', async () => {
+      const t = setup({ storeArtifacts: (async () => { throw new StorageConfigError(['BUCKET_NAME']); }) as never });
+      await t.run();
+      expect(t.settleTaskAndEnqueue).toHaveBeenCalledWith(expect.objectContaining({
+        state: 'failed',
+        artifacts: [],
+        error: expect.objectContaining({ kind: 'config_missing' }),
+        errorCategory: 'permanent_bug',
+      }));
+    });
   });
 });

@@ -15,7 +15,10 @@
  *      (`pending` -> `in_progress`, conditional on `agent_id`); skip if it's
  *      already been claimed by a peer worker or moved past pending.
  *   4. Build an A2AMessage from the row, invoke the registry's logo handler.
- *   5. Hand the resulting TaskState back to OrchestratorCoreImpl.onTaskSettled,
+ *   5. Copy generated images into the private bucket (KAN-52) BEFORE the
+ *      durable settlement; a storage failure fails the task durably
+ *      (`storage_unavailable`, transient) and no deliverable is written.
+ *   6. Hand the resulting TaskState back to OrchestratorCoreImpl.onTaskSettled,
  *      which is the same callback LocalAdapter uses — so the rest of the
  *      pipeline (markCompleted/markFailed, artifact pub/sub, SSE -> UI)
  *      is unchanged.
@@ -41,6 +44,9 @@ import { parseNotification } from '../core/contracts/notifications';
 import { classifyTaskError, taskErrorFromThrown } from '../core/task-errors';
 import { splitRequirementsSnapshot } from '../core/refinement';
 import { loggerFor } from '../services/logger';
+import { storeArtifactImages } from '../services/storage/artifact-store';
+import type { StoredArtifact } from '../services/storage/types';
+import { clientDeliverableUrl } from '../core/deliverable-url';
 import type { DeliverablesRepoLike, WorkerContext } from './_kit';
 
 export type { DeliverablesRepoLike } from './_kit';
@@ -222,6 +228,28 @@ export async function startLogoAgentWorker(
       };
     }
 
+    // KAN-52: the image goes into the private bucket before anything is
+    // settled, so a deliverable row never exists without its stored object.
+    let storedArtifacts: ReadonlyArray<StoredArtifact> = [];
+    if (result.status === 'completed') {
+      try {
+        storedArtifacts = await (deps.storeArtifacts ?? storeArtifactImages)({
+          tenantId,
+          conversationId: claimed.conversationId,
+          taskId: claimed.id,
+          artifacts: result.artifacts,
+        });
+        child.info(
+          { storedCount: storedArtifacts.filter((artifact) => artifact.storageKey).length },
+          'worker.logo.assets_stored',
+        );
+      } catch (err) {
+        const error = taskErrorFromThrown(err);
+        child.error({ err, errorKind: error.kind }, 'worker.logo.asset_storage_failed');
+        result = { status: 'failed', taskId: claimed.id, error, completedAt: new Date().toISOString() };
+      }
+    }
+
     const finalState: TaskState =
       result.status === 'completed'
         ? { status: 'completed', result }
@@ -259,7 +287,7 @@ export async function startLogoAgentWorker(
           taskId: claimed.id,
           state: finalState.status,
           deliverableKind: LOGO_DELIVERABLE_KIND,
-          artifacts: finalState.status === 'completed' ? finalState.result.artifacts : [],
+          artifacts: finalState.status === 'completed' ? storedArtifacts : [],
           ...(finalState.status === 'failed'
             ? {
                 error: {
@@ -295,7 +323,7 @@ export async function startLogoAgentWorker(
           repo,
           claimed.id,
           claimed.conversationId,
-          finalState.result.artifacts,
+          storedArtifacts,
           { tenantId: tenantId as UUID, conversationId: claimed.conversationId, taskId: claimed.id },
         );
       }
@@ -312,7 +340,16 @@ export async function startLogoAgentWorker(
       if (!ownerUserId) {
         throw new Error('Cannot settle task without verified conversation owner');
       }
-      await deps.onTaskSettled(claimed.id, finalState, deliverableIds, {
+      // Downstream (decisions, turn payloads, artifact events) only ever sees
+      // client-safe URLs: a stored image becomes `/api/assets/<id>` (KAN-52).
+      const settledState: TaskState =
+        finalState.status === 'completed'
+          ? {
+              status: 'completed',
+              result: { ...finalState.result, artifacts: clientArtifacts(storedArtifacts, deliverableIds) },
+            }
+          : finalState;
+      await deps.onTaskSettled(claimed.id, settledState, deliverableIds, {
         tenantId: tenantId as UUID,
         conversationId: claimed.conversationId,
         ownerUserId,
@@ -346,11 +383,32 @@ export async function startLogoAgentWorker(
   };
 }
 
+/**
+ * The artifacts as a client may see them. Deliverable ids come back in the
+ * order the persistable artifacts (URL or inline) were inserted; a stored
+ * image is exposed only as its asset route, and loses its URL entirely if
+ * no deliverable row exists for it. `storageKey` never leaves the worker.
+ */
+function clientArtifacts(
+  artifacts: ReadonlyArray<StoredArtifact>,
+  deliverableIds: ReadonlyArray<DeliverableId>,
+): A2AArtifact[] {
+  let position = 0;
+  return artifacts.map(({ storageKey, ...artifact }) => {
+    const persistable = Boolean(artifact.url) || artifact.inline !== undefined;
+    const id = persistable ? deliverableIds[position++] : undefined;
+    if (!storageKey) return artifact;
+    const url = id ? clientDeliverableUrl({ id, contentUrl: artifact.url ?? null, storageKey }) : null;
+    const { url: _providerUrl, ...rest } = artifact;
+    return url ? { ...rest, url } : rest;
+  });
+}
+
 async function persistArtifacts(
   repo: DeliverablesRepoLike,
   taskId: TaskId,
   conversationId: ConversationId,
-  artifacts: ReadonlyArray<A2AArtifact>,
+  artifacts: ReadonlyArray<StoredArtifact>,
   ctx: { tenantId: UUID; conversationId: ConversationId; taskId: TaskId },
 ): Promise<DeliverableId[]> {
   const ids: DeliverableId[] = [];
@@ -365,6 +423,7 @@ async function persistArtifacts(
           artifact.url == null && artifact.inline !== undefined
             ? { value: artifact.inline, kind: artifact.kind }
             : null,
+        storageKey: artifact.storageKey ?? null,
       });
       ids.push(inserted.id as DeliverableId);
       log.info(

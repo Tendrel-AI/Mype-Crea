@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => {
     kind: string;
     contentUrl: string | null;
     contentInline: Record<string, unknown> | null;
+    storageKey?: string | null;
     selectedAt: string | null;
     createdAt: string;
   }>> => []);
@@ -107,6 +108,28 @@ describe('conversation actions', () => {
     expect(mocks.listByConversation).toHaveBeenCalledWith('conversation-1');
   });
 
+  it('exposes a stored image only through the asset route; legacy rows keep their URL (KAN-52)', async () => {
+    mocks.listByConversation.mockResolvedValueOnce([
+      {
+        id: 'deliverable-stored', kind: 'logo', contentUrl: 'https://fal.example/provider.png', contentInline: null,
+        storageKey: 'tenants/tenant-1/conversations/c/tasks/t/0.png', selectedAt: null, createdAt: '2026-01-01T00:00:01.000Z',
+      },
+      {
+        id: 'deliverable-legacy', kind: 'logo', contentUrl: 'https://assets.example/legacy.png', contentInline: null,
+        storageKey: null, selectedAt: null, createdAt: '2026-01-01T00:00:02.000Z',
+      },
+    ]);
+    const result = await loadConversationAction({ conversationId: 'conversation-1' });
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.deliverables.map((d) => d.contentUrl)).toEqual([
+      '/api/assets/deliverable-stored',
+      'https://assets.example/legacy.png',
+    ]);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain('fal.example');
+    expect(serialized).not.toContain('tenants/');
+  });
+
   it('exposes a safe incomplete turn for manual same-request recovery without starting model work', async () => {
     mocks.listTurns.mockResolvedValueOnce([{
       id: 'turn-2', requestId: 'same-request-id', inputContent: 'Quiero un logo',
@@ -127,6 +150,20 @@ describe('conversation actions', () => {
     const result = await loadConversationAction({ conversationId: 'old-id' });
     expect(result).toMatchObject({ ok: false, code: 'legacy_unversioned' });
     expect(mocks.listTurns).not.toHaveBeenCalled();
+  });
+
+  it('exports a stored image as its asset route, without the provider URL or bucket key (KAN-52)', async () => {
+    mocks.listByConversation.mockResolvedValueOnce([{
+      id: 'deliverable-stored', kind: 'logo', contentUrl: 'https://fal.example/provider.png', contentInline: null,
+      storageKey: 'tenants/tenant-1/conversations/c/tasks/t/0.png', selectedAt: null, createdAt: '2026-01-01T00:00:01.000Z',
+    }]);
+    const result = await exportConversationTraceAction({ conversationId: '11111111-1111-4111-8111-111111111111' });
+    if (!result.ok) throw new Error('expected ok');
+    expect(JSON.parse(result.content).deliverables).toEqual([expect.objectContaining({
+      id: 'deliverable-stored', contentUrl: '/api/assets/deliverable-stored',
+    })]);
+    expect(result.content).not.toContain('fal.example');
+    expect(result.content).not.toContain('storageKey');
   });
 
   it('exports only the authenticated owner’s persisted conversation evidence', async () => {

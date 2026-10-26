@@ -244,4 +244,42 @@ describe('cross-tenant isolation (PostgreSQL integration)', () => {
     expect(hiddenAudit.rowCount).toBe(0);
     expect(otherUserAudit.rowCount).toBe(0);
   });
+
+  it('KAN-52: a stored asset key is readable only by its owner, never across tenants or members', async () => {
+    const ownA = repos(tenantA.tenant, tenantA.user);
+    const task = await ownA.agentTasks.insertRoot({
+      conversationId: tenantA.conversationId,
+      agentId: 'logo-agent',
+      agentCardVersion: 'ci-test',
+      idempotencyKey: randomUUID(),
+      requirementsSnapshot: { business_name: 'synthetic stored asset' },
+    });
+    const storageKey = `tenants/${tenantA.tenant.id}/conversations/${tenantA.conversationId}/tasks/${task.id}/0.png`;
+    const settled = await ownA.aiTurns.settleTaskAndEnqueue({
+      conversationId: tenantA.conversationId as never,
+      taskId: task.id as never,
+      state: 'completed',
+      deliverableKind: 'logo',
+      artifacts: [{ kind: 'image', url: 'https://provider.invalid/a.png', storageKey }],
+    });
+    const [deliverableId] = settled.deliverableIds;
+
+    expect(await ownA.deliverables.findOwnStorageKey(deliverableId)).toBe(storageKey);
+    // Tenant B knows the UUID but RLS hides the row; a second member of tenant A is not the owner.
+    expect(await repos(tenantB.tenant, tenantB.user).deliverables.findOwnStorageKey(deliverableId)).toBeNull();
+    expect(await repos(tenantA.tenant, tenantA.otherUser).deliverables.findOwnStorageKey(deliverableId)).toBeNull();
+    // A legacy row without a key is never served.
+    expect(await ownA.deliverables.findOwnStorageKey(tenantA.deliverableId)).toBeNull();
+
+    // A row cannot point at another tenant's objects.
+    await expect(withTenantTransaction(tenantA.tenant, tenantA.user, (tx) =>
+      tx.query(
+        `INSERT INTO deliverables
+           (tenant_id, conversation_id, agent_task_id, user_id, kind, content_url, storage_key)
+         VALUES ($1, $2, $3, $4, 'logo', 'https://provider.invalid/b.png', $5)`,
+        [tenantA.tenant.id, tenantA.conversationId, task.id, tenantA.user.id, `tenants/${tenantB.tenant.id}/x.png`],
+      ),
+    )).rejects.toMatchObject({ code: '23514' });
+  });
 });
+

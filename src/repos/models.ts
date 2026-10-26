@@ -255,6 +255,7 @@ export interface DeliverableInsert {
   readonly kind: DeliverableKind;
   readonly contentUrl?: string | null;
   readonly contentInline?: Record<string, unknown> | null;
+  readonly storageKey?: string | null;
 }
 
 export interface DeliverableRow {
@@ -263,8 +264,11 @@ export interface DeliverableRow {
   readonly agentTaskId: TaskId;
   readonly userId: UUID;
   readonly kind: DeliverableKind;
+  /** Provider URL (provenance once `storageKey` is set; never sent to a client then). */
   readonly contentUrl: string | null;
   readonly contentInline: Record<string, unknown> | null;
+  /** Private bucket object key (KAN-52). Client URL: `clientDeliverableUrl` in src/core/deliverable-url.ts. */
+  readonly storageKey: string | null;
   readonly selectedAt: string | null;
   readonly supersededBy: UUID | null;
   readonly createdAt: string;

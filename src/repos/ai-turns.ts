@@ -7,7 +7,8 @@ import { withTenantAdminTransaction, withTenantTransaction, type Tenant, type Tx
 
 import type { AiTurnAttempt, DeliverableKind, ErrorCategory, MessageRow, UsageSummary } from './models';
 
-import type { A2AArtifact } from '../core/agent-types';
+import type { StoredArtifact } from '../services/storage/types';
+import { clientDeliverableUrl } from '../core/deliverable-url';
 import {
   durableEventFor,
   durableEventSuffix,
@@ -69,6 +70,19 @@ interface ReconcileRow extends SettledTaskFacts {
   readonly userId: UUID;
 }
 
+/**
+ * One stored deliverable of a settled task, as the notice needs it. `url` is the stored
+ * `content_url` (the provider URL); the notice exposes `clientDeliverableUrl` instead (KAN-52).
+ */
+interface SettledArtifactFact {
+  readonly deliverableId: UUID;
+  readonly kind: string;
+  readonly url: string | null;
+  readonly inline: unknown;
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly storageKey: string | null;
+}
+
 /** A settled task as read back from `agent_tasks` + its `deliverables`. */
 interface SettledTaskFacts {
   readonly taskId: TaskId;
@@ -77,7 +91,17 @@ interface SettledTaskFacts {
   readonly errorCategory: ErrorCategory | null;
   readonly error: { readonly kind?: unknown; readonly message?: unknown } | null;
   readonly deliverableIds: readonly UUID[];
-  readonly artifacts: ReadonlyArray<NotificationArtifact>;
+  readonly artifacts: ReadonlyArray<SettledArtifactFact>;
+}
+
+/** The client-facing artifact of a stored deliverable: never the provider URL once stored. */
+function notificationArtifact(fact: SettledArtifactFact): NotificationArtifact {
+  return {
+    kind: fact.kind,
+    url: clientDeliverableUrl({ id: fact.deliverableId, contentUrl: fact.url, storageKey: fact.storageKey }),
+    inline: fact.inline === undefined ? null : (fact.inline as NotificationArtifact['inline']),
+    metadata: fact.metadata as NotificationArtifact['metadata'],
+  };
 }
 
 /**
@@ -85,6 +109,8 @@ interface SettledTaskFacts {
  * Artifact `kind`/`metadata` come from `artifact_kind`/`artifact_metadata` (KAN-81), written by
  * `settleTaskAndEnqueue`, so the rebuilt notice equals the live one. Rows without them (written
  * before KAN-81 or by the legacy worker path) fall back to `content_inline`, then `d.kind`.
+ * `deliverableId` and `storageKey` let `notificationArtifact` apply the KAN-52 URL rule in one
+ * place (TypeScript), for the live and the rebuilt notice alike.
  */
 const SETTLED_TASK_COLUMNS = `t.id AS "taskId",
         t.agent_id AS "agentId",
@@ -93,6 +119,8 @@ const SETTLED_TASK_COLUMNS = `t.id AS "taskId",
         t.error,
         COALESCE(jsonb_agg(d.id ORDER BY d.created_at, d.id) FILTER (WHERE d.id IS NOT NULL), '[]'::jsonb) AS "deliverableIds",
         COALESCE(jsonb_agg(jsonb_build_object(
+          'deliverableId', d.id,
+          'storageKey', d.storage_key,
           'kind', COALESCE(d.artifact_kind, d.content_inline->>'kind', d.kind::text),
           'url', d.content_url,
           'inline', d.content_inline->'value',
@@ -111,7 +139,7 @@ function settledTaskNotification(
       taskId: facts.taskId,
       agentId: facts.agentId,
       deliverableIds: facts.deliverableIds,
-      artifacts: facts.artifacts,
+      artifacts: facts.artifacts.map(notificationArtifact),
     });
   }
   const kind = typeof facts.error?.kind === 'string' ? facts.error.kind : 'unknown';
@@ -964,7 +992,8 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
 
       deliverableKind: DeliverableKind;
 
-      artifacts: ReadonlyArray<A2AArtifact>;
+      /** Handler artifacts; `storageKey` set when the worker stored the image (KAN-52). */
+      artifacts: ReadonlyArray<StoredArtifact>;
 
       /** Failure detail stored in `agent_tasks.error` (failed only). */
       error?: { readonly kind: string; readonly message: string };
@@ -996,10 +1025,21 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
 
         }
         const ids: UUID[] = [];
+        // What the live notice announces: one fact per stored deliverable, paired with its row.
+        const facts: SettledArtifactFact[] = [];
+        const persistable = input.artifacts.filter((artifact) => artifact.url || artifact.inline !== undefined);
+        const factOf = (artifact: StoredArtifact, deliverableId: UUID, storageKey: string | null): SettledArtifactFact => ({
+          deliverableId,
+          kind: artifact.kind,
+          url: artifact.url ?? null,
+          inline: artifact.inline === undefined ? null : artifact.inline,
+          metadata: artifact.metadata ?? {},
+          storageKey,
+        });
 
         if (priorStatus === 'completed' || priorStatus === 'failed') {
-          const existing = await tx.query<{ id: UUID }>(
-            `SELECT id
+          const existing = await tx.query<{ id: UUID; storage_key: string | null }>(
+            `SELECT id, storage_key
         FROM deliverables
         WHERE tenant_id=$1 AND conversation_id=$2 AND agent_task_id=$3
         ORDER BY created_at, id`,
@@ -1007,10 +1047,13 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
           );
 
           ids.push(...existing.rows.map((row) => row.id));
+          existing.rows.forEach((row, index) => {
+            const artifact = persistable[index];
+            if (artifact) facts.push(factOf(artifact, row.id, row.storage_key));
+          });
 
         } else if (input.state === 'completed') {
-          for (const artifact of input.artifacts) {
-            if (!artifact.url && artifact.inline === undefined) continue;
+          for (const artifact of persistable) {
 
             const inserted = await tx.query<{ id: UUID }>(
               `INSERT INTO deliverables
@@ -1022,7 +1065,8 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
         content_url,
         content_inline,
         artifact_kind,
-        artifact_metadata)
+        artifact_metadata,
+        storage_key)
         VALUES ($1,
         $2,
         $3,
@@ -1031,16 +1075,18 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
         $6,
         $7::jsonb,
         $8,
-        $9::jsonb)
+        $9::jsonb,
+        $10)
         RETURNING id`,
               // artifact_kind/artifact_metadata hold the same values the live notice below
               // carries, so a notice rebuilt from this row is identical (KAN-81).
               [tenant.id, input.conversationId, input.taskId, user.id, input.deliverableKind, artifact.url ?? null,
               artifact.url ? null : JSON.stringify({ value: artifact.inline, kind: artifact.kind, metadata: artifact.metadata ?? {} }),
-              artifact.kind, JSON.stringify(artifact.metadata ?? {})],
+              artifact.kind, JSON.stringify(artifact.metadata ?? {}), artifact.storageKey ?? null],
             );
 
             ids.push(inserted.rows[0].id);
+            facts.push(factOf(artifact, inserted.rows[0].id, artifact.storageKey ?? null));
 
           }
         }
@@ -1087,14 +1133,7 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
             errorCategory: input.state === 'failed' ? input.errorCategory ?? 'permanent_bug' : null,
             error: input.state === 'failed' ? input.error ?? null : null,
             deliverableIds: ids,
-            artifacts: input.state === 'completed'
-              ? input.artifacts.map((artifact) => ({
-                kind: artifact.kind,
-                url: artifact.url ?? null,
-                inline: artifact.inline === undefined ? null : artifact.inline,
-                metadata: artifact.metadata ?? {},
-              }))
-              : [],
+            artifacts: input.state === 'completed' ? facts : [],
           }),
         );
 

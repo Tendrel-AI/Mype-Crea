@@ -16,7 +16,7 @@ describe('classifyTaskError', () => {
     expect(classifyTaskError({ kind: 'content_policy' })).toBe('content_policy');
   });
 
-  it.each(['rate_limited', 'timeout', 'provider_unavailable'])(
+  it.each(['rate_limited', 'timeout', 'provider_unavailable', 'storage_unavailable'])(
     'maps the retryable kind %s to transient',
     (kind) => {
       expect(classifyTaskError({ kind })).toBe('transient');
