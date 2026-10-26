@@ -19,7 +19,7 @@ export function RestartModal({ showRestartModal, setShowRestartModal, handleRest
             >
               <h3 className="text-lg font-bold text-neutral-900 mb-2">¿Crear nuevo producto?</h3>
               <p className="text-neutral-600 text-sm mb-6">
-                Esto iniciará un nuevo proceso de creación y descartará el producto actual.
+                Esto iniciará un nuevo proceso de creación. Tu conversación actual seguirá disponible en «Mis conversaciones».
               </p>
               <div className="flex justify-end gap-3">
                 <button

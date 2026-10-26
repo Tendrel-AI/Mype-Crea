@@ -4,12 +4,14 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Sidebar } from './crea-mype/Sidebar';
 import { type BrandAssets, type Message, type Step } from './crea-mype/types';
 import { RestartModal } from './crea-mype/RestartModal';
+import { ConversationMenu } from './crea-mype/ConversationMenu';
 import { ChatPanel } from './crea-mype/ChatPanel';
 import { Dashboard } from './crea-mype/Dashboard';
 import { LandingPreview } from './crea-mype/LandingPreview';
 import { DeliverableCommands, type DeliverableCommandRequest } from './crea-mype/DeliverableCommands';
 import { chatAction } from '../app/actions/chat';
-import { createConversationAction, exportConversationTraceAction } from '../app/actions/conversations';
+import { createConversationAction, exportConversationTraceAction, listConversationsAction } from '../app/actions/conversations';
+import type { ConversationListEntry } from '../src/conversations/selection';
 import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/actions/deliverable-command';
 import type { DeliverableStateView } from '../src/core/contracts';
 import { CLIENT_NOTIFICATION_KINDS, parseNotification } from '../src/core/contracts/notifications';
@@ -36,6 +38,10 @@ interface CreaMypeProps {
   /** Optional validated-on-render typed v1 landing-page envelope. No live producer exists yet. */
   landingPageContent?: unknown;
   initialError?: string;
+  /** KAN-25: the caller's latest conversations for «Mis conversaciones», labelled server-side. */
+  initialConversations?: ReadonlyArray<ConversationListEntry>;
+  /** KAN-25: the requested id is foreign, missing or malformed (one identical outcome). */
+  conversationNotFound?: boolean;
 }
 
 const WELCOME_MESSAGE: Message = {
@@ -69,7 +75,7 @@ const EMPTY_ASSETS: BrandAssets = {
   marketingPlan: '',
 };
 
-export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], landingPageContent, initialError }: CreaMypeProps) {
+export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], landingPageContent, initialError, initialConversations = [], conversationNotFound = false }: CreaMypeProps) {
   const [activeTab, setActiveTab] = useState<'create' | 'gallery' | 'landing'>('create');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
@@ -78,7 +84,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     logoUrl: initialLogoUrl(initialDeliverables),
     typedLandingPage: landingPageContent,
   }));
-  const [messages, setMessages] = useState<Message[]>(() => initialTurns.length
+  const [notFound, setNotFound] = useState(conversationNotFound);
+  const [messages, setMessages] = useState<Message[]>(() => conversationNotFound ? [] : initialTurns.length
     ? initialTurns.flatMap((turn) => [
         ...(turn.userMessage ? [{ id: `${turn.requestId}:user`, role: 'user' as const, text: turn.userMessage }] : []),
         ...(turn.content ? [{ id: `${turn.requestId}:assistant`, role: 'model' as const, text: turn.content }] : []),
@@ -367,6 +374,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
         setProcessingAgents(new Set());
         setDeliverableStates([]);
         setCommandError('');
+        setNotFound(false);
         window.history.pushState({}, '', `/?conversationId=${encodeURIComponent(result.conversationId)}`);
         setShowRestartModal(false);
       } finally {
@@ -402,7 +410,9 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       <RestartModal showRestartModal={showRestartModal} setShowRestartModal={setShowRestartModal} handleRestart={handleRestart} />
       {activeTab === 'create' && (
         <>
-          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} setShowRestartModal={setShowRestartModal} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={logoView ? renderLogoCommands(false) : undefined} />
+          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} setShowRestartModal={setShowRestartModal} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={logoView ? renderLogoCommands(false) : undefined} conversationNotFound={notFound} conversationMenu={
+            <ConversationMenu initialConversations={initialConversations} currentConversationId={conversationId} onNewConversation={() => setShowRestartModal(true)} loadConversations={listConversationsAction} />
+          } />
           <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands(true)} />
       </>
       )}
