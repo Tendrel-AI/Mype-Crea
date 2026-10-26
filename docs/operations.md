@@ -86,6 +86,12 @@ Text-model calls go to one of two providers. Images always use fal.ai.
 - `LLM_PROVIDER` and the model variables are read when a platform admin captures a baseline draft
   in **Configuración de IA** (`/admin/ai`): the selected provider becomes the primary profile.
   They also drive direct provider calls (evals and the eval judge).
+- A platform admin needs a recent platform MFA verification (10 minutes) to use `/admin/ai`. Without
+  one, the page says so and links to `/platform/mfa?next=/admin/ai`, which returns to `/admin/ai`
+  after the code is accepted. Tenant admins without the platform role do not need it. Since KAN-80
+  the proof cookie (`cremype_platform_mfa_proof`) is scoped to `/`; the old `/platform`-scoped
+  `cremype_platform_mfa` is no longer read, so after that deploy each platform admin verifies once
+  more.
 - A fresh database has no AI release. Before the first conversation, a platform admin must
   capture a baseline draft, freeze it, and make it active for the tenant or as the platform
   default. New conversations fail until then. This sequence follows the code; it was not run end
