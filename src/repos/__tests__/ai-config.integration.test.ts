@@ -562,7 +562,11 @@ SUITE('AI configuration and durable turns (integration)', () => {
       taskId: task.id as TaskId,
       state: 'completed' as const,
       deliverableKind: 'logo' as const,
-      artifacts: [{ kind: 'image', url: 'https://example.invalid/synthetic.png' }],
+      artifacts: [{
+        kind: 'image',
+        url: 'https://example.invalid/synthetic.png',
+        metadata: { provider: 'fal', model: 'synthetic-model', prompt: 'logo sintético', purpose: 'logo' },
+      }],
     };
     const first = await scoped.aiTurns.settleTaskAndEnqueue(settlement);
     const second = await scoped.aiTurns.settleTaskAndEnqueue(settlement);
@@ -645,13 +649,31 @@ SUITE('AI configuration and durable turns (integration)', () => {
     const failureId = `${failedTask.id}:announce_failure`;
     const completionId = `${task.id}:announce_completion`;
     expect(rebuilt.get(failureId)).toEqual(before.get(failureId));
-    // Known bug (docs/agents/known-bugs): a URL deliverable does not store its artifact kind,
-    // so the rebuilt completion carries the deliverable kind instead. Everything else matches.
+    // KAN-81: the deliverable stores the artifact's own kind and metadata, so the rebuilt
+    // completion equals the live one, artifact kind and metadata included.
+    expect(rebuilt.get(completionId)).toEqual(before.get(completionId));
     expect(parseNotification(rebuilt.get(completionId), ['task_completed'])).toMatchObject({
       ok: true,
       notification: {
         deliverableIds: first.deliverableIds,
-        artifacts: [{ url: 'https://example.invalid/synthetic.png' }],
+        artifacts: [{ kind: 'image', url: 'https://example.invalid/synthetic.png', inline: null, metadata: settlement.artifacts[0].metadata }],
+      },
+    });
+
+    // Rows written before KAN-81 have no artifact facts: the rebuild falls back to the
+    // deliverable kind and empty metadata, as before.
+    await owner.query(
+      `UPDATE deliverables SET artifact_kind = NULL, artifact_metadata = NULL WHERE tenant_id = $1 AND agent_task_id = $2`,
+      [tenant.id, task.id],
+    );
+    await owner.query(`DELETE FROM ai_turn_events WHERE tenant_id = $1 AND event_id = $2`, [tenant.id, completionId]);
+    await scoped.aiTurns.enqueueSettledTaskEvents({ conversationId: conversation, taskId: task.id as TaskId });
+    const legacy = (await scoped.aiTurns.peekEvents({ conversationId: conversation })).find((event) => event.eventId === completionId);
+    expect(parseNotification(legacy?.payload, ['task_completed'])).toMatchObject({
+      ok: true,
+      notification: {
+        deliverableIds: first.deliverableIds,
+        artifacts: [{ kind: 'logo', url: 'https://example.invalid/synthetic.png', inline: null, metadata: {} }],
       },
     });
   });

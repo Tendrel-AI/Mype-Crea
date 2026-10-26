@@ -80,17 +80,23 @@ interface SettledTaskFacts {
   readonly artifacts: ReadonlyArray<NotificationArtifact>;
 }
 
-/** Columns (on `t` = agent_tasks, `d` = deliverables) that build `SettledTaskFacts`; GROUP BY t.id. */
+/**
+ * Columns (on `t` = agent_tasks, `d` = deliverables) that build `SettledTaskFacts`; GROUP BY t.id.
+ * Artifact `kind`/`metadata` come from `artifact_kind`/`artifact_metadata` (KAN-81), written by
+ * `settleTaskAndEnqueue`, so the rebuilt notice equals the live one. Rows without them (written
+ * before KAN-81 or by the legacy worker path) fall back to `content_inline`, then `d.kind`.
+ */
 const SETTLED_TASK_COLUMNS = `t.id AS "taskId",
         t.agent_id AS "agentId",
         t.status,
         t.error_category AS "errorCategory",
         t.error,
         COALESCE(jsonb_agg(d.id ORDER BY d.created_at, d.id) FILTER (WHERE d.id IS NOT NULL), '[]'::jsonb) AS "deliverableIds",
-        COALESCE(jsonb_agg(jsonb_build_object('kind', COALESCE(d.content_inline->>'kind', d.kind::text),
+        COALESCE(jsonb_agg(jsonb_build_object(
+          'kind', COALESCE(d.artifact_kind, d.content_inline->>'kind', d.kind::text),
           'url', d.content_url,
           'inline', d.content_inline->'value',
-          'metadata', COALESCE(d.content_inline->'metadata', '{}'::jsonb)) ORDER BY d.created_at, d.id)
+          'metadata', COALESCE(d.artifact_metadata, d.content_inline->'metadata', '{}'::jsonb)) ORDER BY d.created_at, d.id)
           FILTER (WHERE d.id IS NOT NULL), '[]'::jsonb) AS artifacts`;
 
 /**
@@ -1014,17 +1020,24 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
         user_id,
         kind,
         content_url,
-        content_inline)
+        content_inline,
+        artifact_kind,
+        artifact_metadata)
         VALUES ($1,
         $2,
         $3,
         $4,
         $5,
         $6,
-        $7::jsonb)
+        $7::jsonb,
+        $8,
+        $9::jsonb)
         RETURNING id`,
+              // artifact_kind/artifact_metadata hold the same values the live notice below
+              // carries, so a notice rebuilt from this row is identical (KAN-81).
               [tenant.id, input.conversationId, input.taskId, user.id, input.deliverableKind, artifact.url ?? null,
-              artifact.url ? null : JSON.stringify({ value: artifact.inline, kind: artifact.kind, metadata: artifact.metadata ?? {} })],
+              artifact.url ? null : JSON.stringify({ value: artifact.inline, kind: artifact.kind, metadata: artifact.metadata ?? {} }),
+              artifact.kind, JSON.stringify(artifact.metadata ?? {})],
             );
 
             ids.push(inserted.rows[0].id);
