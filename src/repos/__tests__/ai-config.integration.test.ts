@@ -678,6 +678,50 @@ SUITE('AI configuration and durable turns (integration)', () => {
     });
   });
 
+  it('KAN-52: a stored image keeps the provider URL for provenance and every notice exposes only the asset route', async () => {
+    const tenant = tenants[0];
+    const conversation = await newPinnedConversation(tenant, tenant.admin);
+    const scoped = repository(asIdentity(tenant, tenant.admin));
+    const task = await scoped.agentTasks.insertRoot({ conversationId: conversation, agentId: 'logo-agent', agentCardVersion: '0.1.0', idempotencyKey: randomUUID() as UUID, requirementsSnapshot: { business_name: 'synthetic' } });
+    await scoped.agentTasks.claimById(task.id as TaskId);
+    const storageKey = `tenants/${tenant.id}/conversations/${conversation}/tasks/${task.id}/0.png`;
+    const settled = await scoped.aiTurns.settleTaskAndEnqueue({
+      conversationId: conversation,
+      taskId: task.id as TaskId,
+      state: 'completed',
+      deliverableKind: 'logo',
+      artifacts: [{ kind: 'image', url: 'https://provider.invalid/synthetic.png', metadata: { provider: 'fal' }, storageKey }],
+    });
+    const [deliverableId] = settled.deliverableIds;
+    const [row] = await scoped.deliverables.listByAgentTask(task.id as TaskId);
+    expect(row).toMatchObject({ id: deliverableId, contentUrl: 'https://provider.invalid/synthetic.png', storageKey });
+    expect(await scoped.deliverables.findOwnStorageKey(deliverableId)).toBe(storageKey);
+
+    const completionId = `${task.id}:announce_completion`;
+    const live = (await scoped.aiTurns.peekEvents({ conversationId: conversation })).find((event) => event.eventId === completionId)!.payload;
+    expect(parseNotification(live, ['task_completed'])).toMatchObject({
+      ok: true,
+      notification: { deliverableIds: [deliverableId], artifacts: [{ kind: 'image', url: `/api/assets/${deliverableId}`, inline: null, metadata: { provider: 'fal' } }] },
+    });
+    expect(JSON.stringify(live)).not.toContain('provider.invalid');
+    expect(JSON.stringify(live)).not.toContain(storageKey);
+
+    // Reconcile (tenant-admin projection) and the owner rebuild both equal the live notice.
+    await owner.query(`DELETE FROM ai_turn_events WHERE tenant_id = $1 AND event_id = $2`, [tenant.id, completionId]);
+    expect(await systemRepos({ id: tenant.id }).aiEvents!.reconcileSettledTasks()).toBeGreaterThanOrEqual(1);
+    const reconciled = (await scoped.aiTurns.peekEvents({ conversationId: conversation })).find((event) => event.eventId === completionId)!.payload;
+    expect(reconciled).toEqual(live);
+    await owner.query(`DELETE FROM ai_turn_events WHERE tenant_id = $1 AND event_id = $2`, [tenant.id, completionId]);
+    await scoped.aiTurns.enqueueSettledTaskEvents({ conversationId: conversation, taskId: task.id as TaskId });
+    const rebuilt = (await scoped.aiTurns.peekEvents({ conversationId: conversation })).find((event) => event.eventId === completionId)!.payload;
+    expect(rebuilt).toEqual(live);
+
+    // The database refuses a key outside the row's own tenant prefix.
+    await expect(withTenantTransaction({ id: tenant.id }, { id: tenant.admin.id }, (tx) =>
+      tx.query(`UPDATE deliverables SET storage_key = $2 WHERE id = $1`, [deliverableId, `tenants/${randomUUID()}/x.png`]),
+    )).rejects.toMatchObject({ code: '23514' });
+  });
+
   it('locks shared releases only through the narrow helper without widening tenant or platform privileges', async () => {
     const [tenantA, tenantB] = tenants;
     const lockSql = `SELECT app.lock_frozen_shared_release($1) AS frozen`;
