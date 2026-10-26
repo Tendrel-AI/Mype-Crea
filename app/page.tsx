@@ -1,13 +1,13 @@
 import { withAuth } from '@workos-inc/authkit-nextjs';
 import { redirect } from 'next/navigation';
 import CreaMype from '../components/CreaMype';
-import { createConversationAction, loadConversationAction } from './actions/conversations';
+import { resolveHomeConversation } from '../src/conversations/selection';
 import { requireGlobalAdmin, requireGlobalMfa } from '../src/auth/resolve-identity';
 
 export default async function Home({
   searchParams,
 }: {
-  readonly searchParams?: Promise<{ readonly conversationId?: string }>;
+  readonly searchParams?: Promise<{ readonly conversationId?: string | string[] }>;
 }) {
   const { user } = await withAuth();
   if (!user) return null;
@@ -19,39 +19,46 @@ export default async function Home({
     redirect(hasRecentMfa ? '/platform' : '/platform/mfa');
   }
 
-  const requestedId = (await searchParams)?.conversationId;
-  if (requestedId) {
-    const history = await loadConversationAction({ conversationId: requestedId });
-    if (!history.ok) {
+  const userName = [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email;
+  // KAN-25: one server-side decision. No id → most recent conversation (or a new one);
+  // an id → that conversation only when the caller owns it, else the same «not found».
+  const result = await resolveHomeConversation((await searchParams)?.conversationId);
+
+  switch (result.kind) {
+    case 'redirect':
+      return redirect(`/?conversationId=${encodeURIComponent(result.conversationId)}`);
+    case 'open':
       return (
         <CreaMype
+          key={result.history.conversationId}
           userEmail={user.email}
-          userName={[user.firstName, user.lastName].filter(Boolean).join(' ') || user.email}
-          initialError={history.message}
+          userName={userName}
+          initialConversationId={result.history.conversationId}
+          initialTurns={result.history.turns}
+          initialDeliverables={result.history.deliverables}
+          initialConversations={result.conversations}
         />
       );
-    }
-    return (
-      <CreaMype
-        userEmail={user.email}
-        userName={[user.firstName, user.lastName].filter(Boolean).join(' ') || user.email}
-        initialConversationId={history.conversationId}
-        initialTurns={history.turns}
-        initialDeliverables={history.deliverables}
-      />
-    );
+    case 'not_found':
+      return (
+        <CreaMype
+          key="conversation-not-found"
+          userEmail={user.email}
+          userName={userName}
+          initialConversationId=""
+          initialConversations={result.conversations}
+          conversationNotFound
+        />
+      );
+    case 'error':
+      return (
+        <CreaMype
+          key="conversation-error"
+          userEmail={user.email}
+          userName={userName}
+          initialConversationId=""
+          initialError={result.message}
+        />
+      );
   }
-
-  const created = await createConversationAction();
-  if (created.ok) {
-    redirect(`/?conversationId=${encodeURIComponent(created.conversationId)}`);
-  }
-  return (
-    <CreaMype
-      userEmail={user.email}
-      userName={[user.firstName, user.lastName].filter(Boolean).join(' ') || user.email}
-      initialConversationId=""
-      initialError={created.message}
-    />
-  );
 }

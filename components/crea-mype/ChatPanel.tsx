@@ -1,13 +1,14 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
 import { Send, Loader2, Sparkles, PlusCircle, Download } from 'lucide-react';
 import { type BrandAssets, type Message } from './types';
 
 
-export function ChatPanel({ assets, processingAgents, conversationId, handleExportConversation, step, setShowRestartModal, messages, isLoading, messagesEndRef, conversationError, retryTurn, submitTurn, inputText, setInputText, handleKeyDown, handleSend, needsNewConversation, mobileDeliverablePanel }: { assets: BrandAssets; processingAgents: Set<string>; conversationId: string; handleExportConversation: () => void; step: number; setShowRestartModal: (open: boolean) => void; messages: Message[]; isLoading: boolean; messagesEndRef: React.RefObject<HTMLDivElement | null>; conversationError: string; retryTurn: { requestId: string; userMessage: string } | null; submitTurn: (text: string, requestId: string) => void; inputText: string; setInputText: (text: string) => void; handleKeyDown: (e: React.KeyboardEvent) => void; handleSend: () => void; needsNewConversation: boolean; /** KAN-28: deliverable commands for small screens, where the dashboard is hidden. */ mobileDeliverablePanel?: React.ReactNode }) {
+export function ChatPanel({ assets, processingAgents, conversationId, handleExportConversation, step, setShowRestartModal, messages, isLoading, messagesEndRef, conversationError, retryTurn, submitTurn, inputText, setInputText, handleKeyDown, handleSend, needsNewConversation, mobileDeliverablePanel, conversationMenu, conversationNotFound = false }: { assets: BrandAssets; processingAgents: Set<string>; conversationId: string; handleExportConversation: () => void; step: number; setShowRestartModal: (open: boolean) => void; messages: Message[]; isLoading: boolean; messagesEndRef: React.RefObject<HTMLDivElement | null>; conversationError: string; retryTurn: { requestId: string; userMessage: string } | null; submitTurn: (text: string, requestId: string) => void; inputText: string; setInputText: (text: string) => void; handleKeyDown: (e: React.KeyboardEvent) => void; handleSend: () => void; needsNewConversation: boolean; /** KAN-28: deliverable commands for small screens, where the dashboard is hidden. */ mobileDeliverablePanel?: React.ReactNode; /** KAN-25: «Mis conversaciones» dropdown, next to the restart button. */ conversationMenu?: React.ReactNode; /** KAN-25: the requested conversation is not the caller's (or does not exist). */ conversationNotFound?: boolean }) {
   return (
 <>
           {/* Left Panel: Chat Interface */}
@@ -26,7 +27,7 @@ export function ChatPanel({ assets, processingAgents, conversationId, handleExpo
             </div>
             <h1 className="font-semibold text-lg tracking-tight">CreaMype</h1>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             {conversationId && <button
               type="button"
               onClick={() => void handleExportConversation()}
@@ -36,6 +37,7 @@ export function ChatPanel({ assets, processingAgents, conversationId, handleExpo
             <div className="text-xs font-medium px-2.5 py-1 rounded-full bg-neutral-100 text-neutral-600">
               Paso {Math.min(step, 5)} de 5
             </div>
+            {conversationMenu}
             <button
               onClick={() => setShowRestartModal(true)}
               className="text-xs font-medium px-2.5 py-1 rounded-full bg-orange-50 text-orange-600 hover:bg-orange-100 transition-colors flex items-center gap-1"
@@ -111,6 +113,17 @@ export function ChatPanel({ assets, processingAgents, conversationId, handleExpo
               {mobileDeliverablePanel}
             </div>
           )}
+          {conversationNotFound && (
+            <div role="status" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <p>No encontramos esta conversación.</p>
+              <Link
+                href="/"
+                className="mt-2 inline-block rounded-lg border border-amber-300 px-3 py-2 font-medium hover:bg-amber-100"
+              >
+                Ir a mi última conversación
+              </Link>
+            </div>
+          )}
           {conversationError && (
             <div role="status" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               {conversationError}
@@ -142,11 +155,11 @@ export function ChatPanel({ assets, processingAgents, conversationId, handleExpo
               placeholder="Escribe tu mensaje aquí..."
               className="w-full bg-neutral-50 border border-neutral-200 text-neutral-900 rounded-xl px-4 py-3 pr-12 focus:outline-none focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 resize-none min-h-[52px] max-h-32"
               rows={1}
-              disabled={isLoading || Boolean(retryTurn) || needsNewConversation}
+              disabled={isLoading || Boolean(retryTurn) || needsNewConversation || conversationNotFound}
             />
             <button
               onClick={handleSend}
-              disabled={!inputText.trim() || isLoading || Boolean(retryTurn) || needsNewConversation}
+              disabled={!inputText.trim() || isLoading || Boolean(retryTurn) || needsNewConversation || conversationNotFound}
               className="absolute right-2 bottom-2 p-2 bg-orange-600 hover:bg-orange-500 disabled:bg-neutral-200 disabled:text-neutral-400 text-white rounded-lg transition-colors flex-shrink-0"
             >
               <Send size={18} />

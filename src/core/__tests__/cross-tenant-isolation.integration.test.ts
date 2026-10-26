@@ -111,6 +111,68 @@ async function createFixture(
   };
 }
 
+interface PinnedSpec {
+  readonly startedAt: string;
+  readonly lastMessageAt?: string;
+  readonly businessName?: string;
+}
+
+/**
+ * KAN-25 fixture: synthetic PINNED conversations with chosen activity times.
+ * Test-only: `session_replication_role = replica` on the owner connection skips
+ * the release-pin triggers, which would otherwise require a frozen, activated
+ * release per tenant. A frozen release row is still inserted so no pin dangles.
+ * Every read under test goes through repos() as app_user.
+ */
+async function seedPinnedConversations(
+  owner: pg.Client,
+  fixture: { tenant: Tenant; user: User },
+  specs: ReadonlyArray<PinnedSpec>,
+): Promise<UUID[]> {
+  const ids: UUID[] = [];
+  await owner.query('BEGIN');
+  try {
+    await owner.query(`SET LOCAL session_replication_role = 'replica'`);
+    const releaseId = randomUUID();
+    await owner.query(
+      `INSERT INTO ai_releases
+         (id, tenant_id, name, status, manifest, canonical_content, content_hash, created_by, updated_by, frozen_at)
+       VALUES ($1, $2, $3, 'frozen', '{}'::jsonb, '{}', $4, $5, $5, now())`,
+      [releaseId, fixture.tenant.id, `CI KAN-25 ${releaseId}`, 'a'.repeat(64), fixture.user.id],
+    );
+    for (const spec of specs) {
+      const id = randomUUID();
+      ids.push(id);
+      const agentStates = spec.businessName
+        ? { 'logo-agent': {
+            requiredFields: { business_name: { status: 'filled', value: spec.businessName, confidence: 1 } },
+            optionalFields: {},
+            iterationCount: 0,
+          } }
+        : {};
+      await owner.query(
+        `INSERT INTO conversations
+           (id, tenant_id, user_id, ai_release_id, configuration_state, started_at, agent_states)
+         VALUES ($1, $2, $3, $4, 'pinned', $5, $6::jsonb)`,
+        [id, fixture.tenant.id, fixture.user.id, releaseId, spec.startedAt, JSON.stringify(agentStates)],
+      );
+      if (spec.lastMessageAt) {
+        await owner.query(
+          `INSERT INTO messages (tenant_id, conversation_id, user_id, role, content, created_at)
+           VALUES ($1, $2, $3, 'user', 'synthetic early message', $4::timestamptz - interval '1 hour'),
+                  ($1, $2, $3, 'user', 'synthetic latest message', $4)`,
+          [fixture.tenant.id, id, fixture.user.id, spec.lastMessageAt],
+        );
+      }
+    }
+    await owner.query('COMMIT');
+  } catch (error) {
+    await owner.query('ROLLBACK');
+    throw error;
+  }
+  return ids;
+}
+
 describe('cross-tenant isolation (PostgreSQL integration)', () => {
   let owner: pg.Client;
   let tenantA: Fixture;
@@ -280,6 +342,54 @@ describe('cross-tenant isolation (PostgreSQL integration)', () => {
         [tenantA.tenant.id, tenantA.conversationId, task.id, tenantA.user.id, `tenants/${tenantB.tenant.id}/x.png`],
       ),
     )).rejects.toMatchObject({ code: '23514' });
+  });
+  it('KAN-25: the recent-conversations list and direct opens are owner-only, ordered, capped and hide legacy rows', async () => {
+    const ownA = repos(tenantA.tenant, tenantA.user);
+    const ownB = repos(tenantB.tenant, tenantB.user);
+    const otherUserA = repos(tenantA.tenant, tenantA.otherUser);
+
+    // Started long ago but with the newest message → first. Started recently, no messages → by started_at.
+    const [activeOld, quietNew] = await seedPinnedConversations(owner, tenantA, [
+      { startedAt: '2026-01-01T10:00:00.000Z', lastMessageAt: '2026-10-24T15:00:00.000Z', businessName: 'Café Andino' },
+      { startedAt: '2026-10-20T10:00:00.000Z' },
+    ]);
+    // 20 more, all older than both, so the cap drops exactly the oldest ones.
+    const filler = await seedPinnedConversations(owner, tenantA, Array.from({ length: 20 }, (_, i) => ({
+      startedAt: new Date(Date.UTC(2025, 0, 1 + i)).toISOString(),
+    })));
+    const [foreignTenantRow] = await seedPinnedConversations(owner, tenantB, [
+      { startedAt: '2026-10-25T10:00:00.000Z', businessName: 'Otra empresa' },
+    ]);
+    const [otherMemberRow] = await seedPinnedConversations(owner, { tenant: tenantA.tenant, user: tenantA.otherUser }, [
+      { startedAt: '2026-10-25T11:00:00.000Z', businessName: 'Ajena' },
+    ]);
+
+    const listA = await ownA.conversations.listRecent();
+    expect(listA).toHaveLength(20);
+    expect(listA.slice(0, 2)).toEqual([
+      expect.objectContaining({ conversationId: activeOld, businessName: 'Café Andino', lastActivityAt: '2026-10-24T15:00:00.000Z' }),
+      expect.objectContaining({ conversationId: quietNew, businessName: null, lastActivityAt: '2026-10-20T10:00:00.000Z' }),
+    ]);
+    // Newest filler first; the two oldest filler rows fall outside the cap of 20.
+    expect(listA.slice(2).map((row) => row.conversationId)).toEqual([...filler].reverse().slice(0, 18));
+    const listedA = listA.map((row) => row.conversationId);
+    // The fixture's legacy unversioned conversation (getOrCreate) is never listed.
+    expect(listedA).not.toContain(tenantA.conversationId);
+    expect(listedA).not.toContain(foreignTenantRow);
+    expect(listedA).not.toContain(otherMemberRow);
+
+    // Tenant B and a second member of tenant A only see their own rows.
+    expect((await ownB.conversations.listRecent()).map((row) => row.conversationId)).toEqual([foreignTenantRow]);
+    expect((await otherUserA.conversations.listRecent()).map((row) => row.conversationId)).toEqual([otherMemberRow]);
+
+    // A direct open of a known foreign id finds nothing, exactly like a missing id.
+    expect((await ownA.conversations.readPinnedConversation(activeOld, schemas))?.state).toBe('pinned');
+    expect(await ownB.conversations.readPinnedConversation(activeOld, schemas)).toBeUndefined();
+    expect(await otherUserA.conversations.readPinnedConversation(activeOld, schemas)).toBeUndefined();
+    expect(await ownA.conversations.readPinnedConversation(randomUUID(), schemas)).toBeUndefined();
+    // The legacy row is still the owner's, but it is unversioned (the page hides it).
+    expect((await ownA.conversations.readPinnedConversation(tenantA.conversationId, schemas))?.state)
+      .toBe('legacy_unversioned');
   });
 });
 
