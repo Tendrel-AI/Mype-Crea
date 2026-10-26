@@ -36,6 +36,8 @@ export const TASK_ERROR_KINDS = [
   'not_implemented',
   /** The handler threw something that carried no typed kind. */
   'handler_threw',
+  /** The generated asset could not be downloaded from the provider or written to object storage. */
+  'storage_unavailable',
 ] as const;
 
 export type TaskErrorKind = (typeof TASK_ERROR_KINDS)[number];
@@ -50,6 +52,7 @@ const CATEGORY_BY_KIND: Readonly<Record<TaskErrorKind, TaskErrorCategory>> = {
   invalid_output: 'permanent_bug',
   not_implemented: 'permanent_bug',
   handler_threw: 'permanent_bug',
+  storage_unavailable: 'transient',
 };
 
 /** Category for kinds the classifier does not know. Never retried automatically. */
