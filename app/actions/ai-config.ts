@@ -1,5 +1,6 @@
 'use server';
 
+import { MfaRequiredError } from '../../src/auth/platform-mfa';
 import { repositoryActor, requirePlatformStepUp, resolveIdentity, type ResolvedIdentity } from '../../src/auth/resolve-identity';
 import { repos } from '../../src/repos';
 import { AiAdminService } from '../../src/services/ai-config/admin-service';
@@ -7,11 +8,18 @@ import { AiConfigService } from '../../src/services/ai-config/service';
 import { ProviderRegistry } from '../../src/services/ai-config/provider-registry';
 import { AiPromptSyncService } from '../../src/services/ai-config/prompt-sync';
 
+/** Typed failure reasons the page can act on. Everything else stays a generic failure. */
+export type AiAdminFailureReason = 'mfa_required';
+
 export interface AiAdminActionResult<T> {
   readonly ok: boolean;
   readonly data?: T;
   readonly error?: string;
+  readonly reason?: AiAdminFailureReason;
 }
+
+const GENERIC_ERROR = 'No se pudo completar la acción de administración. Verifica tu acceso y vuelve a intentarlo.';
+const MFA_REQUIRED_ERROR = 'Verifica tu código de autenticación de la plataforma para continuar.';
 
 function configService(identity: ResolvedIdentity): AiConfigService {
   return new AiConfigService(() => repos(identity.tenant, identity.user, repositoryActor(identity)).aiConfig);
@@ -28,12 +36,21 @@ function promptSyncService(identity: ResolvedIdentity): AiPromptSyncService {
 async function action<T>(work: (identity: ResolvedIdentity) => Promise<T>): Promise<AiAdminActionResult<T>> {
   try {
     const identity = await resolveIdentity();
-    // A real platform admin needs the step-up even while acting with reduced roles (KAN-79).
-    await requirePlatformStepUp(identity);
+    try {
+      // A real platform admin needs the step-up even while acting with reduced roles (KAN-79).
+      await requirePlatformStepUp(identity);
+    } catch (error) {
+      // Only an effective platform admin is sent to /platform/mfa; a reduced identity is not
+      // treated as one and keeps the generic failure (KAN-79).
+      if (identity.platformAdmin && error instanceof MfaRequiredError) {
+        return { ok: false, error: MFA_REQUIRED_ERROR, reason: 'mfa_required' };
+      }
+      throw error;
+    }
     const data = await work(identity);
     return { ok: true, data: JSON.parse(JSON.stringify(data)) as T };
   } catch {
-    return { ok: false, error: 'No se pudo completar la acción de administración. Verifica tu acceso y vuelve a intentarlo.' };
+    return { ok: false, error: GENERIC_ERROR };
   }
 }
 
