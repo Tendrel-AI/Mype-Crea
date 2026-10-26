@@ -20,6 +20,7 @@ describe('proxy.ts matcher and the health probes', () => {
     '/admin/ai',
     '/platform',
     '/api/agents/stream?conversationId=x',
+    '/api/assets/11111111-1111-4111-8111-111111111111',
     '/api/healthz',
     '/api/health-check',
     '/api/health/readyz',
