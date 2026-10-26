@@ -31,8 +31,11 @@ const mocks = vi.hoisted(() => {
   const listMessages = vi.fn(async () => [{ id: 'message-1', role: 'user', content: 'Quiero un logo' }]);
   const getPinnedRelease = vi.fn(async () => ({ id: 'release-1', contentHash: 'hash-1' }));
   const startConversation = vi.fn(async () => undefined);
+  const listRecent = vi.fn(async (): Promise<Array<{
+    conversationId: string; startedAt: string; lastActivityAt: string; businessName: string | null;
+  }>> => []);
   const repos = vi.fn(() => ({
-    conversations: { ensurePinnedConversation, readPinnedConversation },
+    conversations: { ensurePinnedConversation, readPinnedConversation, listRecent },
     messages: { listByConversation: listMessages },
     deliverables: { listByConversation },
     aiConfig: { getPinnedRelease },
@@ -43,7 +46,7 @@ const mocks = vi.hoisted(() => {
   return {
     identity, pinned, ensurePinnedConversation, readPinnedConversation,
     listTurns, listNotices, listAttempts, listByConversation, listMessages, getPinnedRelease,
-    startConversation, repos, getOrchestrator, getFieldSchemas,
+    startConversation, repos, getOrchestrator, getFieldSchemas, listRecent,
   };
 });
 
@@ -54,7 +57,14 @@ vi.mock('../../../src/core/orchestrator/bootstrap-registry', () => ({
   buildDefaultRegistry: () => ({ getFieldSchemas: mocks.getFieldSchemas }),
 }));
 
-import { createConversationAction, exportConversationTraceAction, loadConversationAction } from '../conversations';
+import {
+  createConversationAction,
+  exportConversationTraceAction,
+  listConversationsAction,
+  loadConversationAction,
+} from '../conversations';
+
+const CONVERSATION_ID = '11111111-1111-4111-8111-111111111111';
 
 describe('conversation actions', () => {
   beforeEach(() => {
@@ -89,8 +99,8 @@ describe('conversation actions', () => {
       id: 'deliverable-1', kind: 'logo', contentUrl: 'https://assets.example/logo.png', contentInline: null,
       selectedAt: '2026-01-01T00:00:05.000Z', createdAt: '2026-01-01T00:00:01.000Z',
     }]);
-    const result = await loadConversationAction({ conversationId: 'conversation-1' });
-    expect(mocks.readPinnedConversation).toHaveBeenCalledWith('conversation-1', []);
+    const result = await loadConversationAction({ conversationId: CONVERSATION_ID });
+    expect(mocks.readPinnedConversation).toHaveBeenCalledWith(CONVERSATION_ID, []);
     expect(result).toMatchObject({
       ok: true,
       turns: [{
@@ -105,7 +115,7 @@ describe('conversation actions', () => {
         selectedAt: '2026-01-01T00:00:05.000Z',
       }],
     });
-    expect(mocks.listByConversation).toHaveBeenCalledWith('conversation-1');
+    expect(mocks.listByConversation).toHaveBeenCalledWith(CONVERSATION_ID);
   });
 
   it('exposes a stored image only through the asset route; legacy rows keep their URL (KAN-52)', async () => {
@@ -119,7 +129,7 @@ describe('conversation actions', () => {
         storageKey: null, selectedAt: null, createdAt: '2026-01-01T00:00:02.000Z',
       },
     ]);
-    const result = await loadConversationAction({ conversationId: 'conversation-1' });
+    const result = await loadConversationAction({ conversationId: CONVERSATION_ID });
     if (!result.ok) throw new Error('expected ok');
     expect(result.deliverables.map((d) => d.contentUrl)).toEqual([
       '/api/assets/deliverable-stored',
@@ -136,18 +146,18 @@ describe('conversation actions', () => {
       responseContent: null, stage: 'effects_committed', failureCategory: null,
       createdAt: '2026-01-02T00:00:00.000Z',
     }]);
-    const result = await loadConversationAction({ conversationId: 'conversation-1' });
+    const result = await loadConversationAction({ conversationId: CONVERSATION_ID });
     expect(result).toMatchObject({
       ok: true,
       turns: [{ requestId: 'same-request-id', userMessage: 'Quiero un logo', stage: 'effects_committed' }],
     });
     expect(mocks.getOrchestrator).not.toHaveBeenCalled();
-    expect(mocks.listTurns).toHaveBeenCalledWith('conversation-1');
+    expect(mocks.listTurns).toHaveBeenCalledWith(CONVERSATION_ID);
   });
 
   it('returns a clear legacy outcome without reading turns', async () => {
     mocks.readPinnedConversation.mockResolvedValue({ ...mocks.pinned, state: 'legacy_unversioned' });
-    const result = await loadConversationAction({ conversationId: 'old-id' });
+    const result = await loadConversationAction({ conversationId: '22222222-2222-4222-8222-222222222222' });
     expect(result).toMatchObject({ ok: false, code: 'legacy_unversioned' });
     expect(mocks.listTurns).not.toHaveBeenCalled();
   });
@@ -187,5 +197,47 @@ describe('conversation actions', () => {
     expect(result).toMatchObject({ ok: false, code: 'conversation_unavailable' });
     expect(mocks.listTurns).not.toHaveBeenCalled();
     expect(mocks.listAttempts).not.toHaveBeenCalled();
+  });
+  it('lists the caller’s recent conversations with server-side labels (KAN-25)', async () => {
+    mocks.listRecent.mockResolvedValueOnce([
+      { conversationId: CONVERSATION_ID, startedAt: '2026-10-20T15:00:00.000Z', lastActivityAt: '2026-10-24T15:00:00.000Z', businessName: 'Café Andino' },
+      { conversationId: '22222222-2222-4222-8222-222222222222', startedAt: '2026-10-01T15:00:00.000Z', lastActivityAt: '2026-10-01T15:00:00.000Z', businessName: null },
+    ]);
+    const result = await listConversationsAction();
+    expect(result).toEqual({
+      ok: true,
+      conversations: [
+        { conversationId: CONVERSATION_ID, label: 'Café Andino · 24 oct', lastActivityAt: '2026-10-24T15:00:00.000Z' },
+        { conversationId: '22222222-2222-4222-8222-222222222222', label: 'Nueva conversación · 1 oct', lastActivityAt: '2026-10-01T15:00:00.000Z' },
+      ],
+    });
+    expect(mocks.repos).toHaveBeenCalledWith(mocks.identity.tenant, mocks.identity.user);
+    expect(mocks.listRecent).toHaveBeenCalledWith();
+  });
+
+  it('answers a list failure with safe Spanish copy (KAN-25)', async () => {
+    mocks.listRecent.mockRejectedValueOnce(new Error('relation "conversations" does not exist'));
+    const result = await listConversationsAction();
+    expect(result).toEqual({
+      ok: false, code: 'conversations_unavailable', message: 'No pudimos cargar tus conversaciones. Inténtalo de nuevo.',
+    });
+  });
+
+  it('gives malformed, foreign and missing ids the same not-found answer on direct load (KAN-25)', async () => {
+    const malformed = await loadConversationAction({ conversationId: 'conversation-1' });
+    mocks.readPinnedConversation.mockResolvedValueOnce(undefined);
+    const foreignOrMissing = await loadConversationAction({ conversationId: CONVERSATION_ID });
+    expect(malformed).toEqual({ ok: false, code: 'conversation_unavailable', message: 'No encontramos esta conversación.' });
+    expect(foreignOrMissing).toEqual(malformed);
+    expect(mocks.readPinnedConversation).toHaveBeenCalledTimes(1);
+    expect(mocks.listTurns).not.toHaveBeenCalled();
+  });
+
+  it('creating a conversation never touches the caller’s other conversations (KAN-25)', async () => {
+    const result = await createConversationAction();
+    expect(result.ok).toBe(true);
+    expect(mocks.ensurePinnedConversation).toHaveBeenCalledTimes(1);
+    expect(mocks.listRecent).not.toHaveBeenCalled();
+    expect(mocks.readPinnedConversation).not.toHaveBeenCalled();
   });
 });
