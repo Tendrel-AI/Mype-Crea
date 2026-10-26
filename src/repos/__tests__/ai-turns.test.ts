@@ -56,7 +56,7 @@ describe('aiTurnsRepo task settlement artifact parity (KAN-81)', () => {
     });
 
     const insert = calls().find((call) => call.sql.includes('INSERT INTO deliverables'))!;
-    expect(insert.sql).toMatch(/content_inline,\s*artifact_kind,\s*artifact_metadata\)/);
+    expect(insert.sql).toMatch(/content_inline,\s*artifact_kind,\s*artifact_metadata,\s*storage_key\)/);
     // A URL deliverable keeps content_inline null (readers treat it as inline content).
     expect(insert.params[5]).toBe(LOGO_ARTIFACT.url);
     expect(insert.params[6]).toBeNull();
@@ -144,5 +144,89 @@ describe('aiTurnsRepo task settlement artifact parity (KAN-81)', () => {
     await aiTurnsRepo({ id: TENANT }, { id: USER }).enqueueSettledTaskEvents({ conversationId: CONVERSATION, taskId: TASK });
 
     expect(outboxPayload()).toEqual(live);
+  });
+
+  describe('stored images (KAN-52)', () => {
+    const KEY = `tenants/${TENANT}/conversations/${CONVERSATION}/tasks/${TASK}/0.png`;
+    const STORED_ARTIFACT = { ...LOGO_ARTIFACT, storageKey: KEY };
+
+    function settleMock() {
+      mocked.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM agent_tasks t') && sql.includes('FOR UPDATE')) {
+          return { rows: [{ agent_id: 'logo-agent', status: 'in_progress' }] };
+        }
+        if (sql.includes('INSERT INTO deliverables')) return { rows: [{ id: 'deliverable-a' }] };
+        return { rows: [], rowCount: 1 };
+      });
+    }
+
+    it('stores the object key, keeps the provider URL for provenance, and announces only the asset route', async () => {
+      settleMock();
+      await aiTurnsRepo({ id: TENANT }, { id: USER }).settleTaskAndEnqueue({
+        conversationId: CONVERSATION, taskId: TASK, state: 'completed', deliverableKind: 'logo', artifacts: [STORED_ARTIFACT],
+      });
+
+      const insert = calls().find((call) => call.sql.includes('INSERT INTO deliverables'))!;
+      expect(insert.params[5]).toBe(LOGO_ARTIFACT.url);
+      expect(insert.params[9]).toBe(KEY);
+      const live = outboxPayload() as { artifacts: Array<{ url: string }> };
+      expect(live.artifacts).toEqual([{ kind: 'image', url: '/api/assets/deliverable-a', inline: null, metadata: LOGO_ARTIFACT.metadata }]);
+      const serialized = JSON.stringify(live);
+      expect(serialized).not.toContain(LOGO_ARTIFACT.url);
+      expect(serialized).not.toContain(KEY);
+    });
+
+    it('projects the deliverable id and storage key for the shared URL rule', async () => {
+      mocked.query.mockResolvedValue({ rows: [] });
+      await aiTurnsRepo({ id: TENANT }, { id: USER }).enqueueSettledTaskEvents({ conversationId: CONVERSATION, taskId: TASK });
+      const projection = calls()[0].sql;
+      expect(projection).toContain(`'deliverableId', d.id`);
+      expect(projection).toContain(`'storageKey', d.storage_key`);
+    });
+
+    it('rebuilds a notice equal to the live one for a stored image', async () => {
+      settleMock();
+      await aiTurnsRepo({ id: TENANT }, { id: USER }).settleTaskAndEnqueue({
+        conversationId: CONVERSATION, taskId: TASK, state: 'completed', deliverableKind: 'logo', artifacts: [STORED_ARTIFACT],
+      });
+      const live = outboxPayload();
+      const stored = calls().find((call) => call.sql.includes('INSERT INTO deliverables'))!.params;
+
+      mocked.query.mockReset();
+      mocked.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM agent_tasks t')) {
+          return {
+            rows: [{
+              taskId: TASK, agentId: 'logo-agent', status: 'completed', errorCategory: null, error: null,
+              deliverableIds: ['deliverable-a'],
+              artifacts: [{
+                deliverableId: 'deliverable-a', storageKey: stored[9],
+                kind: stored[7], url: stored[5], inline: null, metadata: JSON.parse(String(stored[8])),
+              }],
+            }],
+          };
+        }
+        return { rows: [], rowCount: 1 };
+      });
+      await aiTurnsRepo({ id: TENANT }, { id: USER }).enqueueSettledTaskEvents({ conversationId: CONVERSATION, taskId: TASK });
+
+      expect(outboxPayload()).toEqual(live);
+    });
+
+    it('re-announces a stored image of an already-settled task through the asset route', async () => {
+      mocked.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM agent_tasks t') && sql.includes('FOR UPDATE')) {
+          return { rows: [{ agent_id: 'logo-agent', status: 'completed' }] };
+        }
+        if (sql.includes('SELECT id, storage_key')) return { rows: [{ id: 'deliverable-a', storage_key: KEY }] };
+        return { rows: [], rowCount: 0 };
+      });
+      const settled = await aiTurnsRepo({ id: TENANT }, { id: USER }).settleTaskAndEnqueue({
+        conversationId: CONVERSATION, taskId: TASK, state: 'completed', deliverableKind: 'logo', artifacts: [STORED_ARTIFACT],
+      });
+      expect(settled.deliverableIds).toEqual(['deliverable-a']);
+      expect(calls().some((call) => call.sql.includes('INSERT INTO deliverables'))).toBe(false);
+      expect((outboxPayload() as { artifacts: Array<{ url: string }> }).artifacts[0].url).toBe('/api/assets/deliverable-a');
+    });
   });
 });

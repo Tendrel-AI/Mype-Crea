@@ -23,6 +23,7 @@
 import type { ConversationId, DeliverableId, TaskId, UUID } from '../contracts';
 import { repos, systemRepos, type Tenant, type User } from '../../repos';
 import type { AgentTaskRow, DeliverableRow } from '../../repos/models';
+import { clientDeliverableUrl } from '../deliverable-url';
 import type {
   CreateTaskInput,
   CreateTaskResult,
@@ -52,7 +53,8 @@ function toCandidate(row: DeliverableRow): WorkflowCandidate {
     deliverableId: row.id as DeliverableId,
     agentTaskId: row.agentTaskId as TaskId,
     kind: row.kind,
-    contentUrl: row.contentUrl,
+    // Views reach the browser: a stored image is only ever `/api/assets/<id>` (KAN-52).
+    contentUrl: clientDeliverableUrl(row),
     contentInline: row.contentInline,
     createdAt: row.createdAt,
   };

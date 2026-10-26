@@ -30,6 +30,7 @@ interface DeliverableRowDb {
   kind: DeliverableKind;
   content_url: string | null;
   content_inline: Record<string, unknown> | null;
+  storage_key: string | null;
   selected_at: Date | null;
   superseded_by: UUID | null;
   created_at: Date;
@@ -44,6 +45,7 @@ function toDomain(row: DeliverableRowDb): DeliverableRow {
     kind: row.kind,
     contentUrl: row.content_url,
     contentInline: row.content_inline,
+    storageKey: row.storage_key ?? null,
     selectedAt: row.selected_at ? row.selected_at.toISOString() : null,
     supersededBy: row.superseded_by,
     createdAt: row.created_at.toISOString(),
@@ -75,9 +77,9 @@ export function deliverablesRepo(tenant: Tenant, user: User) {
         const res = await tx.query<DeliverableRowDb>(
           `INSERT INTO deliverables
              (id, tenant_id, conversation_id, agent_task_id, user_id,
-              kind, content_url, content_inline)
+              kind, content_url, content_inline, storage_key)
            VALUES ($1, $2, $3, $4, $5,
-                   $6, $7, $8::jsonb)
+                   $6, $7, $8::jsonb, $9)
            RETURNING *`,
           [
             id,
@@ -90,6 +92,7 @@ export function deliverablesRepo(tenant: Tenant, user: User) {
             input.contentInline === null || input.contentInline === undefined
               ? null
               : JSON.stringify(input.contentInline),
+            input.storageKey ?? null,
           ],
         );
         const row = toDomain(res.rows[0]);
@@ -109,6 +112,23 @@ export function deliverablesRepo(tenant: Tenant, user: User) {
           [conversationId],
         );
         return res.rows.map(toDomain);
+      });
+    },
+
+    /**
+     * The bucket object key of one of the caller's own deliverables (KAN-52 asset route).
+     * RLS scopes the row to the tenant; the explicit `user_id` keeps it owner-only, as the
+     * reload path is (a tenant-admin context does not widen it). Null when the row is unknown,
+     * belongs to someone else, or has no stored object.
+     */
+    async findOwnStorageKey(deliverableId: UUID): Promise<string | null> {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<{ storage_key: string }>(
+          `SELECT storage_key FROM deliverables
+            WHERE tenant_id = $1 AND id = $2 AND user_id = $3 AND storage_key IS NOT NULL`,
+          [tenant.id, deliverableId, user.id],
+        );
+        return res.rows[0]?.storage_key ?? null;
       });
     },
 
