@@ -9,6 +9,7 @@ import type { RepositoryActor } from '../repos/ai-config';
 import { globalRepos } from '../repos/global';
 import { isDevelopmentMode } from '../services/development-mode';
 import { loggerFor } from '../services/logger';
+import { MFA_PROOF_COOKIE, MfaRequiredError } from './platform-mfa';
 import {
   applyRoleReductions,
   NO_REDUCTIONS,
@@ -23,7 +24,6 @@ import {
 const log = loggerFor('auth.resolve-identity');
 const WORKOS_ORG_ID_PATTERN = /^org_[A-Za-z0-9]+$/;
 const WORKOS_USER_ID_PATTERN = /^user_[A-Za-z0-9]+$/;
-const MFA_COOKIE = 'cremype_platform_mfa';
 const MFA_TTL_SECONDS = 10 * 60;
 
 export type { TenantRole } from './role-override';
@@ -125,12 +125,11 @@ export async function requirePlatformStepUp(identity: ResolvedIdentity): Promise
 }
 
 async function requireMfaProof(identity: GlobalIdentity): Promise<GlobalIdentity> {
-  const token = (await cookies()).get(MFA_COOKIE)?.value;
-  if (!token || !validMfaProof(token, identity)) throw new Error('Verifica tu código de autenticación para continuar.');
+  const token = (await cookies()).get(MFA_PROOF_COOKIE)?.value;
+  if (!token || !validMfaProof(token, identity)) throw new MfaRequiredError();
   return identity;
 }
 
-export function mfaProofCookieName(): string { return MFA_COOKIE; }
 export function mfaProofTtlSeconds(): number { return MFA_TTL_SECONDS; }
 export function signMfaProof(identity: GlobalIdentity, issuedAt = Date.now()): string {
   const payload = Buffer.from(JSON.stringify({ uid: identity.workosUserId, sid: identity.sessionId, iat: issuedAt, kind: 'verified' })).toString('base64url');

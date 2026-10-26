@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { beginPlatformMfa, verifyPlatformMfa } from '../../actions/auth';
 
-export function PlatformMfaForm() {
+/** `next` must already be validated by the server page (`safeNextPath`). */
+export function PlatformMfaForm({ next }: { readonly next: string }) {
   const router = useRouter();
   const [mode, setMode] = useState<'loading' | 'enroll' | 'challenge' | 'error'>('loading');
   const [qrCode, setQrCode] = useState('');
@@ -39,7 +40,7 @@ export function PlatformMfaForm() {
       setMessage(result.message ?? 'No pudimos verificar el código. Inténtalo de nuevo.');
       return;
     }
-    router.replace('/platform');
+    router.replace(next);
     router.refresh();
   }
 
