@@ -72,6 +72,19 @@ export interface AiConversationPin {
   readonly snapshot: ConversationSnapshot;
 }
 
+/**
+ * One entry of the owner's recent-conversations list (KAN-25). Only pinned
+ * conversations appear; legacy unversioned rows are hidden.
+ */
+export interface RecentConversationRow {
+  readonly conversationId: ConversationId;
+  readonly startedAt: string;
+  /** Newest message `created_at`, or `startedAt` when the conversation has no messages. */
+  readonly lastActivityAt: string;
+  /** The filled `business_name` slot of the persisted brief, else null. */
+  readonly businessName: string | null;
+}
+
 export interface AiTurnRow {
   readonly id: UUID;
   readonly userId: UUID;

@@ -18,7 +18,7 @@ import type {
   TaskId,
   UUID,
 } from '../core/contracts';
-import type { AiConversationPin } from './models';
+import type { AiConversationPin, RecentConversationRow } from './models';
 import type { AgentFieldSchema } from '../core/orchestrator/in-memory-store';
 import {
   withTenantAdminTransaction,
@@ -139,6 +139,35 @@ async function loadSnapshot(
   };
 }
 
+/** Brief field that names the business; every live agent card requires it. */
+export const BUSINESS_NAME_FIELD: FieldName = 'business_name';
+
+/** Upper bound of the recent-conversations list (KAN-25, owner decision: latest 20). */
+export const RECENT_CONVERSATIONS_LIMIT = 20;
+
+/**
+ * The business name from a persisted `agent_states` JSONB: the first `filled`
+ * `business_name` slot (required or optional) with a non-blank string value.
+ * Unconfirmed (`pending_confirmation`) values are not used as a title.
+ */
+export function businessNameFromAgentStates(agentStates: unknown): string | null {
+  if (!agentStates || typeof agentStates !== 'object') return null;
+  for (const state of Object.values(agentStates as Record<string, unknown>)) {
+    if (!state || typeof state !== 'object') continue;
+    for (const sliceKey of ['requiredFields', 'optionalFields'] as const) {
+      const slice = (state as Record<string, unknown>)[sliceKey];
+      if (!slice || typeof slice !== 'object') continue;
+      const slot = (slice as Record<string, unknown>)[BUSINESS_NAME_FIELD] as
+        | { status?: unknown; value?: unknown }
+        | undefined;
+      if (slot?.status === 'filled' && typeof slot.value === 'string' && slot.value.trim()) {
+        return slot.value.trim();
+      }
+    }
+  }
+  return null;
+}
+
 async function writeAgentStates(
   tx: TxClient,
   conversationId: ConversationId,
@@ -217,7 +246,12 @@ export function conversationsRepo(tenant: Tenant, user: User) {
       });
     },
 
-    /** Read the pin for the caller's own conversation without changing it. */
+    /**
+     * Read the pin for the caller's own conversation without changing it.
+     * RLS already hides foreign rows; the explicit tenant + owner predicate is the
+     * application-level owner check (KAN-25), so a foreign id is indistinguishable
+     * from a missing one.
+     */
     async readPinnedConversation(
       conversationId: ConversationId,
       schemas: ReadonlyArray<AgentFieldSchema>,
@@ -229,9 +263,9 @@ export function conversationsRepo(tenant: Tenant, user: User) {
         }>(
           `SELECT configuration_state, ai_release_id
              FROM conversations
-            WHERE id = $1
+            WHERE id = $1 AND tenant_id = $2 AND user_id = $3
             LIMIT 1`,
-          [conversationId],
+          [conversationId, tenant.id, user.id],
         );
         if (!row.rows[0]) return undefined;
         const snapshot = await loadSnapshot(tx, conversationId, schemas);
@@ -242,6 +276,47 @@ export function conversationsRepo(tenant: Tenant, user: User) {
           releaseId: row.rows[0].ai_release_id,
           snapshot,
         };
+      });
+    },
+
+    /**
+     * The caller's own pinned conversations, newest activity first (KAN-25).
+     * Last activity = newest message `created_at`, else `started_at`. Legacy
+     * unversioned rows are never returned. Ties break on id so the order is stable.
+     * The explicit tenant + owner predicate duplicates RLS on purpose.
+     */
+    async listRecent(limit: number = RECENT_CONVERSATIONS_LIMIT): Promise<RecentConversationRow[]> {
+      const bounded = Math.max(1, Math.min(Math.trunc(limit) || 1, RECENT_CONVERSATIONS_LIMIT));
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<{
+          id: ConversationId;
+          started_at: Date;
+          last_activity_at: Date;
+          agent_states: unknown;
+        }>(
+          `SELECT c.id, c.started_at, c.agent_states,
+                  COALESCE(last_message.created_at, c.started_at) AS last_activity_at
+             FROM conversations c
+             LEFT JOIN LATERAL (
+               SELECT m.created_at
+                 FROM messages m
+                WHERE m.tenant_id = c.tenant_id AND m.conversation_id = c.id
+                ORDER BY m.created_at DESC
+                LIMIT 1
+             ) last_message ON true
+            WHERE c.tenant_id = $1
+              AND c.user_id = $2
+              AND c.configuration_state = 'pinned'
+            ORDER BY last_activity_at DESC, c.id DESC
+            LIMIT $3`,
+          [tenant.id, user.id, bounded],
+        );
+        return res.rows.map((row) => ({
+          conversationId: row.id,
+          startedAt: row.started_at.toISOString(),
+          lastActivityAt: row.last_activity_at.toISOString(),
+          businessName: businessNameFromAgentStates(row.agent_states),
+        }));
       });
     },
 

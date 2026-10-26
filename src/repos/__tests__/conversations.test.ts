@@ -6,7 +6,7 @@ vi.mock('../../db/with-transaction', () => ({
   withTenantAdminTransaction: vi.fn(),
 }));
 
-import { conversationsRepo } from '../conversations';
+import { RECENT_CONVERSATIONS_LIMIT, businessNameFromAgentStates, conversationsRepo } from '../conversations';
 
 describe('conversationsRepo.ensurePinnedConversation', () => {
   beforeEach(() => {
@@ -99,5 +99,115 @@ describe('conversationsRepo concurrent state mutations', () => {
     const readSql = String(mocked.query.mock.calls[0][0]);
     expect(readSql).toMatch(/FROM conversations[\s\S]*LIMIT 1\s+FOR UPDATE/i);
     expect(mocked.query.mock.calls[1][0]).toContain('UPDATE conversations');
+  });
+});
+
+describe('conversationsRepo.readPinnedConversation owner check (KAN-25)', () => {
+  beforeEach(() => {
+    mocked.query.mockReset();
+  });
+
+  it('filters by tenant and owner explicitly, on top of RLS', async () => {
+    mocked.query.mockImplementation(async () => ({ rows: [] }));
+    const pin = await conversationsRepo({ id: 'tenant-a' }, { id: 'user-a' })
+      .readPinnedConversation('conversation-a', []);
+    expect(pin).toBeUndefined();
+    const [sql, params] = mocked.query.mock.calls[0];
+    expect(String(sql)).toMatch(/WHERE id = \$1 AND tenant_id = \$2 AND user_id = \$3/);
+    expect(params).toEqual(['conversation-a', 'tenant-a', 'user-a']);
+    // Not visible → no snapshot read at all.
+    expect(mocked.query).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('conversationsRepo.listRecent (KAN-25)', () => {
+  beforeEach(() => {
+    mocked.query.mockReset();
+  });
+
+  const filledName = (value: string) => ({
+    'logo-agent': {
+      requiredFields: { business_name: { status: 'filled', value, confidence: 1 } },
+      optionalFields: {},
+      iterationCount: 0,
+    },
+  });
+
+  it('lists only the caller’s pinned conversations by last activity, capped at 20', async () => {
+    mocked.query.mockResolvedValue({ rows: [] });
+    await conversationsRepo({ id: 'tenant-a' }, { id: 'user-a' }).listRecent();
+    const [sql, params] = mocked.query.mock.calls[0];
+    const text = String(sql);
+    expect(text).toMatch(/c\.tenant_id = \$1\s+AND c\.user_id = \$2/);
+    expect(text).toContain(`c.configuration_state = 'pinned'`);
+    expect(text).toMatch(/COALESCE\(last_message\.created_at, c\.started_at\) AS last_activity_at/);
+    expect(text).toMatch(/m\.tenant_id = c\.tenant_id AND m\.conversation_id = c\.id/);
+    expect(text).toMatch(/ORDER BY last_activity_at DESC, c\.id DESC\s+LIMIT \$3/);
+    expect(params).toEqual(['tenant-a', 'user-a', RECENT_CONVERSATIONS_LIMIT]);
+    expect(RECENT_CONVERSATIONS_LIMIT).toBe(20);
+  });
+
+  it.each([[1, 1], [5, 5], [20, 20], [500, 20], [0, 1], [-3, 1]])('bounds limit %d to %d', async (asked, bound) => {
+    mocked.query.mockResolvedValue({ rows: [] });
+    await conversationsRepo({ id: 'tenant-a' }, { id: 'user-a' }).listRecent(asked);
+    expect(mocked.query.mock.calls[0][1]).toEqual(['tenant-a', 'user-a', bound]);
+  });
+
+  it('maps rows in database order with ISO dates and the derived business name', async () => {
+    mocked.query.mockResolvedValue({
+      rows: [
+        {
+          id: 'conversation-new',
+          started_at: new Date('2026-10-20T10:00:00.000Z'),
+          last_activity_at: new Date('2026-10-24T15:00:00.000Z'),
+          agent_states: filledName('Café Andino'),
+        },
+        {
+          id: 'conversation-old',
+          started_at: new Date('2026-10-01T10:00:00.000Z'),
+          last_activity_at: new Date('2026-10-01T10:00:00.000Z'),
+          agent_states: {},
+        },
+      ],
+    });
+    const rows = await conversationsRepo({ id: 'tenant-a' }, { id: 'user-a' }).listRecent();
+    expect(rows).toEqual([
+      {
+        conversationId: 'conversation-new',
+        startedAt: '2026-10-20T10:00:00.000Z',
+        lastActivityAt: '2026-10-24T15:00:00.000Z',
+        businessName: 'Café Andino',
+      },
+      {
+        conversationId: 'conversation-old',
+        startedAt: '2026-10-01T10:00:00.000Z',
+        lastActivityAt: '2026-10-01T10:00:00.000Z',
+        businessName: null,
+      },
+    ]);
+  });
+});
+
+describe('businessNameFromAgentStates (KAN-25)', () => {
+  it('returns the first filled, non-blank business_name, trimmed', () => {
+    expect(businessNameFromAgentStates({
+      'logo-agent': { requiredFields: { business_name: { status: 'filled', value: '  Café Andino ', confidence: 1 } }, optionalFields: {} },
+    })).toBe('Café Andino');
+    expect(businessNameFromAgentStates({
+      'a': { requiredFields: { business_name: { status: 'empty' } }, optionalFields: {} },
+      'b': { requiredFields: {}, optionalFields: { business_name: { status: 'filled', value: 'Tienda Sol', confidence: 1 } } },
+    })).toBe('Tienda Sol');
+  });
+
+  it.each([
+    ['no states', {}],
+    ['null', null],
+    ['not an object', 'texto'],
+    ['empty slot', { a: { requiredFields: { business_name: { status: 'empty' } } } }],
+    ['unconfirmed value', { a: { requiredFields: { business_name: { status: 'pending_confirmation', value: 'Quizá', confidence: 0.5 } } } }],
+    ['blank value', { a: { requiredFields: { business_name: { status: 'filled', value: '   ', confidence: 1 } } } }],
+    ['non-string value', { a: { requiredFields: { business_name: { status: 'filled', value: 42, confidence: 1 } } } }],
+  ])('returns null for %s', (_label, states) => {
+    expect(businessNameFromAgentStates(states)).toBeNull();
   });
 });
