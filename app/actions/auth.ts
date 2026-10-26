@@ -3,7 +3,15 @@
 import { getWorkOS, signOut } from '@workos-inc/authkit-nextjs';
 import { cookies } from 'next/headers';
 import {
-  mfaProofCookieName,
+  expireLegacyMfaProof,
+  expireMfaPending,
+  expireMfaProof,
+  MFA_PENDING_COOKIE,
+  MFA_PROOF_COOKIE,
+  mfaPendingCookieOptions,
+  mfaProofCookieOptions,
+} from '../../src/auth/platform-mfa';
+import {
   mfaProofTtlSeconds,
   requireGlobalAdmin,
   signMfaPending,
@@ -13,7 +21,7 @@ import {
 import { loggerFor } from '../../src/services/logger';
 
 const log = loggerFor('auth.actions');
-const pendingCookie = 'cremype_platform_mfa_pending';
+const PENDING_TTL_SECONDS = 5 * 60;
 
 export type PlatformMfaStartResult =
   | { readonly ok: true; readonly mode: 'enroll'; readonly qrCode: string; readonly uri: string }
@@ -57,19 +65,20 @@ export async function verifyPlatformMfa(code: string): Promise<{ readonly ok: bo
     const identity = await requireGlobalAdmin();
     if (!/^\d{6,8}$/.test(code.trim())) return { ok: false, message: 'Escribe el código de autenticación.' };
     const jar = await cookies();
-    const pending = jar.get(pendingCookie)?.value;
+    const pending = jar.get(MFA_PENDING_COOKIE)?.value;
     if (!pending) return { ok: false, message: 'Inicia la verificación de nuevo.' };
     const challenge = verifyMfaPending(pending, identity);
     if (!challenge) {
-      jar.delete(pendingCookie);
+      expireMfaPending(jar);
       return { ok: false, message: 'Inicia la verificación de nuevo.' };
     }
     const result = await getWorkOS().mfa.verifyChallenge({ authenticationChallengeId: challenge.challengeId, code: code.trim() });
     if (!result.valid || result.challenge.authenticationFactorId !== challenge.factorId) {
       return { ok: false, message: 'El código no es válido. Inténtalo de nuevo.' };
     }
-    jar.set(mfaProofCookieName(), signMfaProof(identity), cookieOptions(mfaProofTtlSeconds()));
-    jar.delete(pendingCookie);
+    jar.set(MFA_PROOF_COOKIE, signMfaProof(identity), mfaProofCookieOptions(mfaProofTtlSeconds()));
+    expireLegacyMfaProof(jar);
+    expireMfaPending(jar);
     return { ok: true };
   } catch (error) {
     log.error({ error }, 'platform_mfa.verify_failed');
@@ -78,13 +87,18 @@ export async function verifyPlatformMfa(code: string): Promise<{ readonly ok: bo
 }
 
 async function setPending(identity: Awaited<ReturnType<typeof requireGlobalAdmin>>, challengeId: string, factorId: string): Promise<void> {
-  (await cookies()).set(pendingCookie, signMfaPending(identity, challengeId, factorId), cookieOptions(5 * 60));
+  (await cookies()).set(MFA_PENDING_COOKIE, signMfaPending(identity, challengeId, factorId), mfaPendingCookieOptions(PENDING_TTL_SECONDS));
 }
 
-function cookieOptions(maxAge: number) {
-  return { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict' as const, path: '/platform', maxAge };
-}
-
+/** End the WorkOS session and drop every platform MFA cookie, including the legacy proof. */
 export async function signOutAction() {
+  try {
+    const jar = await cookies();
+    expireMfaProof(jar);
+    expireMfaPending(jar);
+  } catch (error) {
+    // The proof is bound to the WorkOS session, so ending the session still invalidates it.
+    log.error({ error }, 'platform_mfa.sign_out_clear_failed');
+  }
   await signOut();
 }

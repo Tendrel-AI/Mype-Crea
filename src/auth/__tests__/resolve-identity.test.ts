@@ -45,6 +45,7 @@ vi.mock('../../services/logger', () => ({
 
 import { getRoleSwitcherState, repositoryActor, requireGlobalAdmin, requireGlobalMfa, requirePlatformAdmin, requirePlatformStepUp, requireTenantAdmin, resolveIdentity, signMfaPending, signMfaProof, verifyActiveMembership, verifyMfaPending } from '../resolve-identity';
 import { aiConfigRepo } from '../../repos/ai-config';
+import { LEGACY_MFA_PROOF_COOKIE, MFA_PROOF_COOKIE, MfaRequiredError } from '../platform-mfa';
 
 const originalBootstrapId = process.env.PLATFORM_BOOTSTRAP_SUPERADMIN_WORKOS_USER_ID;
 const originalCookiePassword = process.env.WORKOS_COOKIE_PASSWORD;
@@ -278,10 +279,11 @@ describe('developer role override (KAN-79)', () => {
     cookie(`v1.${userId}.no-platform-admin`);
     const reduced = await resolveIdentity();
     await expect(requirePlatformStepUp(reduced)).rejects.toThrow('Verifica tu código de autenticación para continuar.');
+    await expect(requirePlatformStepUp(reduced)).rejects.toBeInstanceOf(MfaRequiredError);
     const proof = signMfaProof({ workosUserId: userId, sessionId: 'session_1' });
     mocks.cookieGet.mockImplementation((name: string) => {
       if (name === 'cremype_dev_role_override') return { value: `v1.${userId}.no-platform-admin` };
-      if (name === 'cremype_platform_mfa') return { value: proof };
+      if (name === MFA_PROOF_COOKIE) return { value: proof };
       return undefined;
     });
     await expect(requirePlatformStepUp(reduced)).resolves.toBeUndefined();
@@ -290,6 +292,20 @@ describe('developer role override (KAN-79)', () => {
     mocks.isSuperadmin.mockResolvedValue(false);
     const plainMember = await resolveIdentity();
     await expect(requirePlatformStepUp(plainMember)).resolves.toBeUndefined();
+  });
+
+  it('reads the proof only from the root-scoped cookie, never the legacy /platform one (KAN-80)', async () => {
+    const proof = signMfaProof({ workosUserId: userId, sessionId: 'session_1' });
+    const platformAdmin = await resolveIdentity();
+    expect(platformAdmin).toMatchObject({ platformAdmin: true });
+
+    mocks.cookieGet.mockImplementation((name: string) => (name === LEGACY_MFA_PROOF_COOKIE ? { value: proof } : undefined));
+    await expect(requireGlobalMfa()).rejects.toBeInstanceOf(MfaRequiredError);
+    await expect(requirePlatformStepUp(platformAdmin)).rejects.toBeInstanceOf(MfaRequiredError);
+
+    mocks.cookieGet.mockImplementation((name: string) => (name === MFA_PROOF_COOKIE ? { value: proof } : undefined));
+    await expect(requireGlobalMfa()).resolves.toMatchObject({ workosUserId: userId, sessionId: 'session_1' });
+    await expect(requirePlatformStepUp(platformAdmin)).resolves.toBeUndefined();
   });
 
   it('selects the tenant (not platform) DB admin context for a reduced platform admin', async () => {
