@@ -1,0 +1,148 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mocked = vi.hoisted(() => ({ query: vi.fn() }));
+vi.mock('../../db/with-transaction', () => ({
+  withTenantTransaction: async (_tenant: unknown, _user: unknown, work: (tx: { query: typeof mocked.query }) => unknown) =>
+    work({ query: mocked.query }),
+  withTenantAdminTransaction: vi.fn(),
+}));
+
+import type { ConversationId, TaskId } from '../../core/contracts';
+import { parseNotification } from '../../core/contracts/notifications';
+import { aiTurnsRepo } from '../ai-turns';
+
+const TENANT = 'tenant-a';
+const USER = 'user-a';
+const CONVERSATION = 'conversation-a' as ConversationId;
+const TASK = 'task-a' as TaskId;
+const LOGO_ARTIFACT = {
+  kind: 'image',
+  url: 'https://example.invalid/synthetic.png',
+  metadata: { provider: 'fal', model: 'synthetic-model', prompt: 'logo sintético', purpose: 'logo' },
+};
+
+type Call = { sql: string; params: unknown[] };
+
+function calls(): Call[] {
+  return mocked.query.mock.calls.map(([sql, params]) => ({ sql: String(sql), params: (params ?? []) as unknown[] }));
+}
+
+function outboxPayload(): unknown {
+  const insert = calls().find((call) => call.sql.includes('INSERT INTO ai_turn_events'));
+  expect(insert).toBeDefined();
+  return JSON.parse(String(insert!.params[6]));
+}
+
+describe('aiTurnsRepo task settlement artifact parity (KAN-81)', () => {
+  beforeEach(() => {
+    mocked.query.mockReset();
+  });
+
+  it('stores the artifact kind and metadata of a URL deliverable next to the live notice', async () => {
+    mocked.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM agent_tasks t') && sql.includes('FOR UPDATE')) {
+        return { rows: [{ agent_id: 'logo-agent', status: 'in_progress' }] };
+      }
+      if (sql.includes('INSERT INTO deliverables')) return { rows: [{ id: 'deliverable-a' }] };
+      return { rows: [], rowCount: 1 };
+    });
+
+    await aiTurnsRepo({ id: TENANT }, { id: USER }).settleTaskAndEnqueue({
+      conversationId: CONVERSATION,
+      taskId: TASK,
+      state: 'completed',
+      deliverableKind: 'logo',
+      artifacts: [LOGO_ARTIFACT],
+    });
+
+    const insert = calls().find((call) => call.sql.includes('INSERT INTO deliverables'))!;
+    expect(insert.sql).toMatch(/content_inline,\s*artifact_kind,\s*artifact_metadata\)/);
+    // A URL deliverable keeps content_inline null (readers treat it as inline content).
+    expect(insert.params[5]).toBe(LOGO_ARTIFACT.url);
+    expect(insert.params[6]).toBeNull();
+    expect(insert.params[7]).toBe('image');
+    expect(JSON.parse(String(insert.params[8]))).toEqual(LOGO_ARTIFACT.metadata);
+
+    expect(parseNotification(outboxPayload(), ['task_completed'])).toMatchObject({
+      ok: true,
+      notification: { artifacts: [{ kind: 'image', url: LOGO_ARTIFACT.url, inline: null, metadata: LOGO_ARTIFACT.metadata }] },
+    });
+  });
+
+  it('stores an empty metadata object when the artifact has none, as the live notice does', async () => {
+    mocked.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM agent_tasks t') && sql.includes('FOR UPDATE')) {
+        return { rows: [{ agent_id: 'logo-agent', status: 'in_progress' }] };
+      }
+      if (sql.includes('INSERT INTO deliverables')) return { rows: [{ id: 'deliverable-a' }] };
+      return { rows: [], rowCount: 1 };
+    });
+
+    await aiTurnsRepo({ id: TENANT }, { id: USER }).settleTaskAndEnqueue({
+      conversationId: CONVERSATION,
+      taskId: TASK,
+      state: 'completed',
+      deliverableKind: 'logo',
+      artifacts: [{ kind: 'image', url: LOGO_ARTIFACT.url }],
+    });
+
+    const insert = calls().find((call) => call.sql.includes('INSERT INTO deliverables'))!;
+    expect(insert.params[7]).toBe('image');
+    expect(JSON.parse(String(insert.params[8]))).toEqual({});
+    expect((outboxPayload() as { artifacts: unknown[] }).artifacts).toEqual([
+      { kind: 'image', url: LOGO_ARTIFACT.url, inline: null, metadata: {} },
+    ]);
+  });
+
+  it('projects the stored artifact facts first and falls back to content_inline, then the deliverable kind', async () => {
+    mocked.query.mockResolvedValue({ rows: [] });
+
+    await aiTurnsRepo({ id: TENANT }, { id: USER }).enqueueSettledTaskEvents({ conversationId: CONVERSATION, taskId: TASK });
+
+    const projection = calls()[0].sql;
+    expect(projection).toContain(`'kind', COALESCE(d.artifact_kind, d.content_inline->>'kind', d.kind::text)`);
+    expect(projection).toContain(`'metadata', COALESCE(d.artifact_metadata, d.content_inline->'metadata', '{}'::jsonb)`);
+  });
+
+  it('rebuilds a completion notice equal to the live one from the stored artifact facts', async () => {
+    // Live settlement: capture what is stored and what is announced.
+    mocked.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM agent_tasks t') && sql.includes('FOR UPDATE')) {
+        return { rows: [{ agent_id: 'logo-agent', status: 'in_progress' }] };
+      }
+      if (sql.includes('INSERT INTO deliverables')) return { rows: [{ id: 'deliverable-a' }] };
+      return { rows: [], rowCount: 1 };
+    });
+    await aiTurnsRepo({ id: TENANT }, { id: USER }).settleTaskAndEnqueue({
+      conversationId: CONVERSATION,
+      taskId: TASK,
+      state: 'completed',
+      deliverableKind: 'logo',
+      artifacts: [LOGO_ARTIFACT],
+    });
+    const live = outboxPayload();
+    const stored = calls().find((call) => call.sql.includes('INSERT INTO deliverables'))!.params;
+
+    // Rebuild: the projection returns the stored columns (artifact_kind/artifact_metadata set).
+    mocked.query.mockReset();
+    mocked.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM agent_tasks t')) {
+        return {
+          rows: [{
+            taskId: TASK,
+            agentId: 'logo-agent',
+            status: 'completed',
+            errorCategory: null,
+            error: null,
+            deliverableIds: ['deliverable-a'],
+            artifacts: [{ kind: stored[7], url: stored[5], inline: null, metadata: JSON.parse(String(stored[8])) }],
+          }],
+        };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+    await aiTurnsRepo({ id: TENANT }, { id: USER }).enqueueSettledTaskEvents({ conversationId: CONVERSATION, taskId: TASK });
+
+    expect(outboxPayload()).toEqual(live);
+  });
+});
