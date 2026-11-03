@@ -49,7 +49,7 @@ No chat text can start a paid generation: generation starts only from the typed 
 | Conversations | The app reopens the latest conversation; «Mis conversaciones» switches between them | [07-conversations.md](07-conversations.md) |
 | Consent | A terms screen that must be accepted before any AI work | [08-consent.md](08-consent.md) |
 | AI configuration and model execution | Stable, versioned model behavior per conversation, with one approved fallback | [09-ai-configuration.md](09-ai-configuration.md) |
-| Admin and platform operator | Platform console: organizations, operators, module rollouts, monthly metrics, audit trail | [10-admin-platform.md](10-admin-platform.md) |
+| Admin and platform operator | Platform console: organizations, operators, module rollouts, monthly metrics, audit trail; tenant admins manage their tenant's accounts | [10-admin-platform.md](10-admin-platform.md) |
 | Operations | Health probes, safe deploy migrations, CI, and paid evals on request | [11-operations.md](11-operations.md) |
 | Product brief | Chat and an editable panel write the same validated brief, with origin and missing preconditions shown | [12-product-brief.md](12-product-brief.md) |
 | Usage limits | Budget and rate limits checked before every paid model or image call | [13-usage-limits.md](13-usage-limits.md) |

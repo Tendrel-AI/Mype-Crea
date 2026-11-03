@@ -1,6 +1,6 @@
 # KAN-66 — Account operations and management roles for the pilot
 
-Status: proposed — awaiting owner approval
+Status: **approved 2026-11-02** — Option B, implemented by KAN-41
 
 ## Context
 
@@ -89,7 +89,33 @@ administrador.»
 - Optional later: Option C items as separate tickets, especially deletion, after retention and
   legal input.
 
-## Open questions for the owner
+## Owner decision (2026-11-02)
+
+The owner approved the recommendation. Answers to the open questions:
+
+1. **Operations:** Option B. A tenant admin provisions, lists, deactivates and reactivates
+   members of their own tenant. No in-tenant role changes and no deletion in Phase 1.
+   - Provision: email → WorkOS user + organization membership, then a local `users` row with
+     role `member`, as one audited operation; idempotent and safe on partial failure (WorkOS
+     first; a DB failure leaves a membership that grants nothing without the local row, and a
+     retry reuses it).
+   - Deactivate: local `status = 'inactive'` plus the WorkOS membership deactivated; data is
+     kept; access ends on the next request or stream recheck.
+   - Guards: no self-deactivation; the last active admin cannot be removed; role and tenant are
+     derived on the server; forged ids and cross-tenant targets are refused.
+2. **Who:** the pilot tenant admin is an institution staff member. The first admin and any admin
+   role change remain platform-operator actions (no console flow yet: WorkOS plus SQL as the
+   migration owner, documented in `docs/operations.md` section 11).
+3. **Mapping:** 1:1 WorkOS organization ↔ tenant, as today. Sign-in needs both the WorkOS
+   membership and the active local row.
+4. **Tenants:** the second seeded tenant lives only in CI and throwaway databases.
+5. **Invitation:** none. The admin shares the login link manually; no WorkOS invitation email.
+6. **Audit:** tenant-scoped, append-only `tenant_account_audit_events` under RLS (actor, action,
+   target, before/after status, reason, outcome). Tenant admins read their tenant's rows; members
+   read none. `users.status` is constrained to `active` / `inactive`. Migration
+   `1792800012000_tenant-account-admin`.
+
+## Open questions for the owner (answered above)
 
 1. Approve Option B's operations: provision, list, deactivate, reactivate. No in-tenant role
    changes and no deletion in Phase 1?

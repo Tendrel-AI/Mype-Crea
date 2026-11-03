@@ -128,15 +128,19 @@ panel (`app/actions/brief.ts:updateBriefFieldAction`) and the deliverable comman
 - 2026-10-25 — KAN-79: developer role switcher is downgrade-only and exists only with
   `DEVELOPMENT=TRUE`.
 - 2026-10-25 — KAN-80: the platform MFA proof cookie is scoped to `/` so it reaches `/admin/ai`.
-- Account operations and member roles: KAN-66 is **proposed, awaiting owner approval**
-  ([`pipeline/decisions/KAN-66-account-operations-roles.md`](../../pipeline/decisions/KAN-66-account-operations-roles.md)).
+- 2026-11-02 — KAN-66 approved (Option B), implemented by KAN-41: tenant admins provision,
+  deactivate and reactivate members of their own tenant; `users` writes are admin-only under RLS
+  and audited in `tenant_account_audit_events`
+  ([`pipeline/decisions/KAN-66-account-operations-roles.md`](../../pipeline/decisions/KAN-66-account-operations-roles.md),
+  [10-admin-platform.md](10-admin-platform.md)).
 
 ## Limits & known gaps
 
 - Pilot scope: one institutional tenant. Personal-tenant provisioning is an open decision.
 - Membership is checked live with WorkOS on each request, so a WorkOS outage blocks tenant
   access.
-- There is no tenant-admin member management UI yet (KAN-66 pending).
+- A deactivated member keeps a valid WorkOS session until their next request or stream
+  recheck; access then fails closed on the inactive local row.
 - `agent_tasks` has no user axis in RLS; ownership is checked through the conversation in the
   app layer.
 - `payload_hash` is an unsalted SHA-256, so a short or guessable value (for example a known
