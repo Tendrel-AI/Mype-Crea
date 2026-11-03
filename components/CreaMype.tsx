@@ -18,6 +18,7 @@ import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/ac
 import type { DeliverableStateView } from '../src/core/contracts';
 import { CLIENT_NOTIFICATION_KINDS, parseNotification } from '../src/core/contracts/notifications';
 import { developerFailureChatText } from './crea-mype/failure-copy';
+import { LOGO_AGENT_ID, completedLogoUrl } from './crea-mype/live-logo';
 
 interface CreaMypeProps {
   userEmail: string;
@@ -37,6 +38,8 @@ interface CreaMypeProps {
     contentInline: Record<string, unknown> | null;
     selectedAt?: string | null;
   }>;
+  /** KAN-25: the persisted brief of a resumed conversation, shown before the client reloads it. */
+  initialBrief?: ReadonlyArray<BriefPanelField>;
   /** Optional validated-on-render typed v1 landing-page envelope. No live producer exists yet. */
   landingPageContent?: unknown;
   initialError?: string;
@@ -53,7 +56,6 @@ const WELCOME_MESSAGE: Message = {
   isSystem: true,
 };
 
-const LOGO_AGENT_ID = 'logo-agent';
 const NAME_AGENT_ID = 'name-agent';
 const TAGLINE_AGENT_ID = 'tagline-agent';
 
@@ -79,7 +81,7 @@ const EMPTY_ASSETS: BrandAssets = {
   marketingPlan: '',
 };
 
-export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], landingPageContent, initialError, initialConversations = [], conversationNotFound = false }: CreaMypeProps) {
+export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialBrief = [], landingPageContent, initialError, initialConversations = [], conversationNotFound = false }: CreaMypeProps) {
   const [activeTab, setActiveTab] = useState<'create' | 'gallery' | 'landing'>('create');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
@@ -131,7 +133,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   const nameView = deliverableStates.find((view) => view.agentId === NAME_AGENT_ID);
   const taglineView = deliverableStates.find((view) => view.agentId === TAGLINE_AGENT_ID);
   // KAN-26: the brief exactly as the server last returned it.
-  const [briefFields, setBriefFields] = useState<ReadonlyArray<BriefPanelField>>([]);
+  const [briefFields, setBriefFields] = useState<ReadonlyArray<BriefPanelField>>(initialBrief);
   const [briefSaving, setBriefSaving] = useState<string | null>(null);
   const [briefError, setBriefError] = useState<{ field: string; message: string } | null>(null);
 
@@ -266,10 +268,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
         case 'task_completed': {
           // Whatever the agent produced, its spinner disappears.
           stopProcessing(event.agentId);
-          const imgUrl = event.artifacts.find((a) => a.kind === 'image')?.url;
-          if (imgUrl && event.agentId === LOGO_AGENT_ID) {
-            setAssets((prev) => ({ ...prev, logoUrl: imgUrl }));
-          }
+          const imgUrl = completedLogoUrl(event);
+          if (imgUrl) setAssets((prev) => ({ ...prev, logoUrl: imgUrl }));
           break;
         }
         case 'task_failed':

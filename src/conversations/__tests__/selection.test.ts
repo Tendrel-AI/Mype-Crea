@@ -13,6 +13,8 @@ interface StoredConversation {
   state: 'pinned' | 'legacy_unversioned';
   lastActivityAt: string;
   businessName: string | null;
+  /** Persisted `agent_states` (the brief), as `loadSnapshot` reifies it. */
+  agentStates?: Record<string, unknown>;
 }
 
 const OWN = { tenant: { id: 'tenant-a' }, user: { id: 'user-a' } };
@@ -66,7 +68,7 @@ vi.mock('../../repos', () => ({
           await mocks.readPinnedConversation(tenant, user, conversationId);
           const row = mocks.store.find((candidate) => candidate.id === conversationId && visible(candidate));
           return row
-            ? { conversationId, state: row.state, releaseId: row.state === 'pinned' ? 'release-1' : null, snapshot: {} }
+            ? { conversationId, state: row.state, releaseId: row.state === 'pinned' ? 'release-1' : null, snapshot: { agentStates: row.agentStates ?? {} } }
             : undefined;
         },
         ensurePinnedConversation: async (input: { conversationId: string }) => {
@@ -75,7 +77,7 @@ vi.mock('../../repos', () => ({
             id: input.conversationId, tenantId: tenant.id, userId: user.id, state: 'pinned',
             lastActivityAt: '2026-10-25T12:00:00.000Z', businessName: null,
           });
-          return { conversationId: input.conversationId, state: 'pinned', releaseId: 'release-1', snapshot: {} };
+          return { conversationId: input.conversationId, state: 'pinned', releaseId: 'release-1', snapshot: { agentStates: {} } };
         },
       },
       aiTurns: {
@@ -98,7 +100,16 @@ import {
 function seed(): StoredConversation[] {
   return [
     { id: ids.older, tenantId: 'tenant-a', userId: 'user-a', state: 'pinned', lastActivityAt: '2026-10-20T15:00:00.000Z', businessName: null },
-    { id: ids.latest, tenantId: 'tenant-a', userId: 'user-a', state: 'pinned', lastActivityAt: '2026-10-24T15:00:00.000Z', businessName: 'Café Andino' },
+    {
+      id: ids.latest, tenantId: 'tenant-a', userId: 'user-a', state: 'pinned', lastActivityAt: '2026-10-24T15:00:00.000Z', businessName: 'Café Andino',
+      agentStates: {
+        'logo-agent': {
+          requiredFields: { business_name: { status: 'filled', value: 'Café Andino', confidence: 0.95, source: 'chat-es' } },
+          optionalFields: { color_palette: { status: 'filled', value: 'verde y crema', confidence: 1, source: 'brief-panel' } },
+          iterationCount: 0,
+        },
+      },
+    },
     // Newest of all, but legacy: never listed, never resumed.
     { id: ids.legacy, tenantId: 'tenant-a', userId: 'user-a', state: 'legacy_unversioned', lastActivityAt: '2026-10-25T09:00:00.000Z', businessName: 'Antigua' },
     // Same tenant, another member.
@@ -160,6 +171,15 @@ describe('resolveHomeConversation (KAN-25)', () => {
       conversations: OWN_LIST,
     });
     expect(mocks.listTurns).toHaveBeenCalledWith(ids.older);
+  });
+
+  it('resumes a conversation with its persisted brief, as the panel shows it', async () => {
+    const result = await resolveHomeConversation(ids.latest);
+    expect(result.kind).toBe('open');
+    const brief = result.kind === 'open' ? result.history.brief : [];
+    expect(brief.find((field) => field.name === 'business_name')).toMatchObject({ status: 'filled', value: 'Café Andino', source: 'chat' });
+    expect(brief.find((field) => field.name === 'color_palette')).toMatchObject({ status: 'filled', value: 'verde y crema', source: 'panel' });
+    expect(brief.find((field) => field.name === 'manufacturer')).toMatchObject({ status: 'empty', value: null });
   });
 
   it('gives foreign-user, foreign-tenant, missing, malformed and legacy ids one identical not-found result', async () => {

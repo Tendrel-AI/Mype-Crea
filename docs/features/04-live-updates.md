@@ -54,6 +54,10 @@ reload restores everything from the database.
   row commits with the deliverable, and reload restores state, so a lost Pub/Sub message loses
   nothing. Enforced by `app/api/agents/stream/__tests__/route.test.ts` ("acks a durable event
   only after writing it to the stream").
+- **A reconciled completion places the logo live, like the live one.** `CreaMype` reads the logo
+  URL with `components/crea-mype/live-logo.ts:completedLogoUrl` (an `image` artifact from
+  `logo-agent`). Enforced by `components/crea-mype/__tests__/live-logo.test.tsx` (rebuilt notice
+  from the real repository code → parser → panel) and `src/repos/__tests__/ai-turns.test.ts`.
 - **A row that does not match the contract is logged, acknowledged and skipped.** One bad row
   cannot block the outbox. Enforced by `route.test.ts` ("acks and skips a durable row that does
   not match the contract…") and `src/core/__tests__/notifications.test.ts` (rejections never

@@ -14,7 +14,8 @@
 
 import { buildDefaultRegistry } from '../../src/core/orchestrator/bootstrap-registry';
 import { getOrchestrator } from '../../src/core/orchestrator/runtime';
-import { briefFieldSpec, briefFromSnapshot, validateBriefValue, type BriefFieldView } from '../../src/core/brief';
+import { briefFieldSpec, validateBriefValue } from '../../src/core/brief';
+import { BRIEF_PANEL_SOURCE, briefPanelFields, type BriefPanelField } from '../../src/conversations/brief-panel';
 import type { ConversationId, DeliverableStateView, FieldDelta } from '../../src/core/contracts';
 import { loggerFor } from '../../src/services/logger';
 import { authorizeConversation, isUuid, type AccessFailureCode } from './conversation-access';
@@ -23,11 +24,7 @@ import type { ResolvedIdentity } from '../../src/auth/resolve-identity';
 
 const log = loggerFor('controller.brief');
 
-/** `FieldDelta.source` of panel edits. Audit/display only (the core never branches on it). */
-const BRIEF_PANEL_SOURCE = 'brief-panel';
-
-/** A brief field as the panel shows it: which channel wrote the accepted value. */
-export type BriefPanelField = Omit<BriefFieldView, 'source'> & { readonly source: 'chat' | 'panel' | null };
+export type { BriefPanelField };
 
 type BriefFailureCode = AccessFailureCode | 'invalid_request' | 'invalid_value' | 'brief_failed';
 
@@ -145,10 +142,5 @@ async function currentBrief(conversationId: ConversationId): Promise<BriefResult
     orchestrator.getSnapshot(conversationId),
     orchestrator.getDeliverableStates(conversationId),
   ]);
-  const fields = briefFromSnapshot(snapshot).map((field) => ({
-    ...field,
-    // shortcut: every non-panel source is the chat today; name new input adapters here when they exist.
-    source: field.source === null ? null : field.source === BRIEF_PANEL_SOURCE ? ('panel' as const) : ('chat' as const),
-  }));
-  return { ok: true, fields, states };
+  return { ok: true, fields: briefPanelFields(snapshot), states };
 }

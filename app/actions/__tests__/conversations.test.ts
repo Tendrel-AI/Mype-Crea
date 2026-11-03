@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   const identity = { tenant: { id: 'tenant-1' }, user: { id: 'user-1' } };
-  const pinned = { state: 'pinned', snapshot: { conversationId: 'new-id' }, releaseId: 'release-1' };
+  const pinned = { state: 'pinned', snapshot: { conversationId: 'new-id', agentStates: {} }, releaseId: 'release-1' };
   const ensurePinnedConversation = vi.fn(async () => pinned);
   const readPinnedConversation = vi.fn(async (): Promise<typeof pinned | undefined> => pinned);
   const listTurns = vi.fn(async (): Promise<Array<{
