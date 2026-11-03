@@ -56,7 +56,11 @@ tokens, and tenant admins see a usage summary. Logo images always come from fal.
 8. **Usage summary.** `src/repos/ai-turns.ts` aggregates `ai_turn_attempts` per tenant (and
    optionally per user and period) through `src/repos/usage-summary.ts:summarizeUsage`, exposed
    to tenant admins by `src/services/ai-config/admin-service.ts:AiAdminService` (`getUsage`) on
-   `/admin/ai`.
+   `/admin/ai`. Its `budgetStatus` is the tenant's KAN-43 monthly budget read from the usage
+   ledger (`src/repos/usage.ts:readUsageCounters`): limit USD 30 from `USAGE_POLICY`, committed
+   (settled plus reserved) this calendar month in America/Lima, `remainingUsd`, and
+   `within_budget | exhausted`. The screen shows «USD X gastados o reservados de USD 30.00;
+   quedan USD Y».
 
 ## Key rules / invariants
 
@@ -72,7 +76,9 @@ tokens, and tenant admins see a usage summary. Logo images always come from fal.
   A logging failure never breaks the turn (same test file).
 - **Unknown cost stays unknown.** The summary reports `complete | partial | unknown |
   no_attempts`, and the budget as `within_budget | exhausted` against the KAN-43 limit, instead of inventing zeros. Enforced by
-  `src/repos/__tests__/usage-summary.test.ts`.
+  `src/repos/__tests__/usage-summary.test.ts`, `components/__tests__/AiConfigurationAdmin.test.tsx`
+  (the screen shows the recorded spend and what remains) and
+  `src/repos/__tests__/usage-reservations.integration.test.ts` (the status follows the ledger).
 - **Releases are inert, hashed and secret-free.** Enforced by
   `src/services/ai-config/__tests__/manifest.test.ts`.
 - **Prompts in neutral Spanish with tuteo; bump the prompt version on any wording change.**

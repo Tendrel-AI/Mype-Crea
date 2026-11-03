@@ -133,7 +133,7 @@ SUITE('KAN-43 usage reservations (integration)', () => {
     expect(new Set(denials.map((d) => d.reason))).toEqual(new Set(['tenant_budget']));
     expect(await statusCounts(t.tenant)).toEqual({ settled: 4, denied: 16 });
     const summary = await repos(t.tenant, t.admin, adminActor(t.admin)).aiTurns.adminGetUsage();
-    expect(summary.budgetStatus).toMatchObject({ state: 'exhausted', limitUsd: 30, committedUsd: 30 });
+    expect(summary.budgetStatus).toMatchObject({ state: 'exhausted', limitUsd: 30, committedUsd: 30, remainingUsd: 0 });
   });
 
   it('concurrency: 20 parallel images for one user stop at the daily limit of 15', async () => {
@@ -176,7 +176,7 @@ SUITE('KAN-43 usage reservations (integration)', () => {
     expect(await repos(t.tenant, t.other).usage.settle({ reservationId: held.reservationId!, actualCostUsd: 0, outcome: 'succeeded' })).toBe(false);
     expect(await ledger.settle({ reservationId: held.reservationId!, actualCostUsd: 0.04, outcome: 'succeeded' })).toBe(true);
     const summary = await repos(t.tenant, t.admin, adminActor(t.admin)).aiTurns.adminGetUsage();
-    expect(summary.budgetStatus).toMatchObject({ state: 'within_budget', committedUsd: 0.04 });
+    expect(summary.budgetStatus).toMatchObject({ state: 'within_budget', committedUsd: 0.04, remainingUsd: 29.96 });
   });
 
   it('preflight writes nothing when allowed and records a denial when not', async () => {

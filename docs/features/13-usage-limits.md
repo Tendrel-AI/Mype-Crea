@@ -23,7 +23,9 @@ Every paid call checks the limits before it reaches a provider. This covers each
    - `app/actions/chat.ts` runs `usage.preflight` before the turn. It skips the check when the request was already answered, so a retry still returns the stored reply.
    - `app/actions/deliverable-command.ts` runs the check before Generar, Iterar and Reintentar: kind `llm` for `name-agent` and `tagline-agent`, `image` for the rest.
    - The cards map `lastFailure.errorKind = usage_limited` to the image-limit message, or to the LLM-limit message on the name card (`components/crea-mype/failure-copy.ts`).
-5. **Table.** `migrations/1792800006000_usage-reservations.js`: tenant-scoped, RLS forced, no DELETE for the app role.
+5. **Admin view.** Tenant admins see the month's committed spend, the limit and what remains on
+   `/admin/ai` (`budgetStatus` in the usage summary, [09-ai-configuration.md](09-ai-configuration.md)).
+6. **Table.** `migrations/1792800006000_usage-reservations.js`: tenant-scoped, RLS forced, no DELETE for the app role.
 
 ## Key rules / invariants
 
