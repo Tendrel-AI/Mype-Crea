@@ -15,7 +15,7 @@ export interface FakeOrchestratorCoreOptions {
 }
 
 /**
- * Build a no-op OrchestratorCore. `applyDelta` returns the supplied snapshot
+ * Build a no-op OrchestratorCore. `applyDelta` returns the supplied snapshot and no rejections
  * (or an empty one), `getNextDecision` returns the supplied decisions
  * (defaulting to `[announce_all_complete]`).
  */
@@ -24,7 +24,7 @@ export function buildFakeCore(opts: FakeOrchestratorCoreOptions = {}): Orchestra
   const decisions =
     opts.decisions ?? ([{ kind: 'announce_all_complete' }] as ReadonlyArray<PlannerDecision>);
   return {
-    applyDelta: async () => snapshot,
+    applyDelta: async () => ({ snapshot, rejected: [] }),
     getNextDecision: async () => decisions,
     peekNextDecision: async () => decisions,
     acknowledgeDecisions: async () => undefined,

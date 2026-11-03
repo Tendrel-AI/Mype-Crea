@@ -18,6 +18,7 @@ import { aiEventsRepo, aiTurnsRepo, type AiEventsRepo, type AiTurnsRepo } from '
 import { messagesRepo, type MessagesRepo } from './messages';
 import { termsAcceptancesRepo, type TermsAcceptancesRepo } from './terms-acceptances';
 import { usageRepo, type UsageRepo } from './usage';
+import { writeRejectionsRepo, type WriteRejectionsRepo } from './write-rejections';
 import type { Tenant, User } from '../db/with-transaction';
 
 export interface Repos {
@@ -32,6 +33,7 @@ export interface Repos {
   readonly refinements: RefinementsRepo;
   readonly termsAcceptances: TermsAcceptancesRepo;
   readonly usage: UsageRepo;
+  readonly writeRejections: WriteRejectionsRepo;
 }
 
 export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repos {
@@ -47,6 +49,7 @@ export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repo
     refinements: refinementsRepo(tenant, user),
     termsAcceptances: termsAcceptancesRepo(tenant, user),
     usage: usageRepo(tenant, user),
+    writeRejections: writeRejectionsRepo(tenant, user),
   };
 }
 

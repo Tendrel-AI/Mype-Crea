@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BRIEF_CATALOG, briefFieldSpec, briefFromSnapshot, validateBriefValue } from '../brief';
+import { BRIEF_CATALOG, briefFieldSpec, briefFromSnapshot, fieldRule, validateBriefValue } from '../brief';
 import { buildDefaultRegistry } from '../orchestrator/bootstrap-registry';
 import { buildAgentRequirementState, buildSnapshot } from './_fixtures';
 
@@ -21,7 +21,10 @@ describe('brief catalog (KAN-26)', () => {
 
   it.each<[string, unknown, ReturnType<typeof validateBriefValue>]>([
     ['trims', '  Dulce Andino ', { ok: true, value: 'Dulce Andino' }],
-    ['collapses whitespace and control characters', 'Dulce\n\t\u0000 Andino', { ok: true, value: 'Dulce Andino' }],
+    ['collapses tabs, line breaks and whitespace', 'Dulce\n\t\r  Andino', { ok: true, value: 'Dulce Andino' }],
+    ['rejects a NUL (KAN-44)', 'Dulce\u0000Andino', { ok: false, message: '«Nombre del negocio» tiene caracteres no permitidos.' }],
+    ['rejects an escape sequence (KAN-44)', 'Dulce\u001b[31mAndino', { ok: false, message: '«Nombre del negocio» tiene caracteres no permitidos.' }],
+    ['rejects DEL and C1 controls (KAN-44)', 'Dulce\u007f\u0085', { ok: false, message: '«Nombre del negocio» tiene caracteres no permitidos.' }],
     ['composes to NFC', 'Café', { ok: true, value: 'Café' }],
     ['accepts exactly the max length', 'a'.repeat(120), { ok: true, value: 'a'.repeat(120) }],
     ['counts code points, not UTF-16 units', '😀'.repeat(120), { ok: true, value: '😀'.repeat(120) }],
@@ -31,6 +34,14 @@ describe('brief catalog (KAN-26)', () => {
     ['rejects null', null, { ok: false, message: 'No pudimos validar este dato.' }],
   ])('validateBriefValue %s', (_name, input, expected) => {
     expect(validateBriefValue(name, input)).toEqual(expected);
+  });
+
+  it('fieldRule: the catalog spec, else plain text up to 500 code points for a card field outside it (KAN-44)', () => {
+    expect(fieldRule('business_name')).toBe(name);
+    const tone = fieldRule('tone');
+    expect(validateBriefValue(tone, '  cálido ')).toEqual({ ok: true, value: 'cálido' });
+    expect(validateBriefValue(tone, 'a'.repeat(501)).ok).toBe(false);
+    expect(validateBriefValue(tone, 3).ok).toBe(false);
   });
 
   it('projects a snapshot in catalog order, with status, value and source', () => {

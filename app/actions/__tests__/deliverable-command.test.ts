@@ -6,7 +6,8 @@ const mocks = vi.hoisted(() => {
   const acceptedVersions = new Set<string>(['terminos-v1']);
   const hasAccepted = vi.fn(async (version: string) => acceptedVersions.has(version));
   const preflight = vi.fn<(request: unknown) => Promise<any>>(async () => ({ allowed: true, reservationId: null }));
-  const repos = vi.fn(() => ({ conversations: { readPinnedConversation }, termsAcceptances: { hasAccepted }, usage: { preflight } }));
+  const record = vi.fn(async () => undefined);
+  const repos = vi.fn(() => ({ conversations: { readPinnedConversation }, termsAcceptances: { hasAccepted }, usage: { preflight }, writeRejections: { record } }));
   const startConversation = vi.fn(async () => undefined);
   const executeCommand = vi.fn(async (command: { commandId: string; kind: string }) => ({
     ok: true,
@@ -17,7 +18,7 @@ const mocks = vi.hoisted(() => {
   }));
   const getDeliverableStates = vi.fn(async () => [{ agentId: 'logo-agent', state: 'enabled' }]);
   const resolveIdentity = vi.fn<() => Promise<any>>(async () => identity);
-  return { identity, acceptedVersions, hasAccepted, preflight, readPinnedConversation, repos, startConversation, executeCommand, getDeliverableStates, resolveIdentity };
+  return { record, identity, acceptedVersions, hasAccepted, preflight, readPinnedConversation, repos, startConversation, executeCommand, getDeliverableStates, resolveIdentity };
 });
 
 vi.mock('../../../src/auth/resolve-identity', () => ({ resolveIdentity: mocks.resolveIdentity }));
@@ -137,7 +138,9 @@ describe('deliverableCommandAction', () => {
     const result = await deliverableCommandAction(input as never);
     expect(result).toMatchObject({ ok: false, reason: 'invalid', message: 'No pudimos validar esta acción.' });
     expect(mocks.executeCommand).not.toHaveBeenCalled();
-    expect(mocks.resolveIdentity).not.toHaveBeenCalled();
+    // KAN-44: identity is resolved only to log the refusal; the conversation is never read.
+    expect(mocks.readPinnedConversation).not.toHaveBeenCalled();
+    expect(mocks.record).toHaveBeenCalledWith([expect.objectContaining({ channel: 'command', reason: 'invalid_request' })]);
   });
 
   it('rejects an observation over the cap with neutral Spanish', async () => {

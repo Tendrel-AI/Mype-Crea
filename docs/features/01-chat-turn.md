@@ -11,7 +11,8 @@ most two missing items at a time, and, once the brief is complete, invites the o
 
 ## How it works
 
-1. **Controller.** `app/actions/chat.ts:chatAction` validates the request id and message, calls
+1. **Controller.** `app/actions/chat.ts:chatAction` accepts exactly `conversationId`,
+   `requestId` and `userMessage` (any other key is refused and logged, KAN-44), validates them, calls
    `src/auth/resolve-identity.ts:resolveIdentity`, then the terms gate
    `src/consent/gate.ts:checkCurrentTerms` ([08-consent.md](08-consent.md)). It loads the
    owner's pinned conversation (`ensurePinnedConversation` in `src/repos/conversations.ts`) and
@@ -28,8 +29,13 @@ most two missing items at a time, and, once the brief is complete, invites the o
 3. **Merge (pure rules).** `src/core/orchestrator/merge.ts:mergeFieldDelta` applies
    `src/core/contracts/deltas.ts:CONFIDENCE_THRESHOLDS`: ≥ 0.9 → slot `filled`, ≥ 0.6 →
    `pending_confirmation`, lower → dropped (the planner will ask again). Order inside one delta:
-   `reset_field` intents, then values, then other intents. Unknown agents or fields are rejected
-   with no write. It writes through the injected `IConversationStore` port
+   `reset_field` intents, then values, then other intents. Unknown agents or fields, values that
+   fail `validateBriefValue` (catalog rule, or plain text ≤ 500 for a card field outside the
+   catalog), and a missing or out-of-range confidence are rejected with no write. `applyDelta`
+   returns `{ snapshot, rejected }`, and the controller logs each rejection in
+   `write_rejections`
+   ([05-auth-tenancy-isolation.md](05-auth-tenancy-isolation.md#write-catalog-and-rejection-log-kan-44)).
+   Fields the model invents are reported through `onUnaskedFields` and logged the same way. It writes through the injected `IConversationStore` port
    (`src/core/orchestrator/in-memory-store.ts` in tests,
    `src/core/orchestrator/postgres-store.ts:PostgresConversationStore` in production, which keeps
    the slots in `conversations.agent_states`).
@@ -66,7 +72,7 @@ most two missing items at a time, and, once the brief is complete, invites the o
   the same plan").
 - **Merge decides only by confidence and order, never by who produced the delta.** Keeps chat,
   forms or voice interchangeable. Enforced by `src/core/orchestrator/__tests__/merge.test.ts`
-  (reset + value ordering, unknown-field rejection).
+  (reset + value ordering, unknown-field rejection, KAN-44 validation of every accepted field).
 - **The core is agent-agnostic: no agent- or field-specific `if`s in `orchestrator-core.ts`.**
   New agents must work by adding a card. Enforced by the fixture-agent smoke test
   `src/core/__tests__/orchestrator-smoke.test.ts` ("orchestrator smoke (agent-agnostic)").

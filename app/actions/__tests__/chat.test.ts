@@ -37,7 +37,7 @@ const mocks = vi.hoisted(() => {
   };
   const repos = vi.fn(() => repository);
   const startConversation = vi.fn(async () => { calls.push('startConversation'); });
-  const applyDelta = vi.fn(async () => { calls.push('applyDelta'); return snapshot; });
+  const applyDelta = vi.fn(async () => { calls.push('applyDelta'); return { snapshot, rejected: [] }; });
   const peekNextDecision = vi.fn(async (): Promise<PlannerDecision[]> => [decision]);
   const acknowledgeDecisions = vi.fn(async () => { calls.push('acknowledgeDecisions'); });
   const getSnapshot = vi.fn(async () => snapshot);

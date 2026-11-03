@@ -44,6 +44,7 @@ Items marked **Por definir** are open owner decisions; do not treat them as sett
 | Generated deliverables (logo images) | private storage bucket (`deliverables.storage_key`) and `deliverables` | The deliverable itself, served only to its owner |
 | Approvals and staleness marks | `deliverable_approvals`, `deliverable_stale_marks` | Who approved which deliverable and when |
 | Terms acceptance | `terms_acceptances` | Evidence of informed consent per terms version |
+| Refused write attempts (KAN-44): actor, channel, conversation id, field name, reason, and a SHA-256 hash of the refused value (never the value itself) | `write_rejections` | Security audit of attempts to write fields outside the catalog; read by the actor and tenant admins |
 | Identifiers in logs (tenant, user, conversation ids) | application logs | Operations and debugging; message content is not meant to be logged (not audited in KAN-27) |
 
 Not collected by design: national ID (DNI), address, phone, payment data, health data. The terms

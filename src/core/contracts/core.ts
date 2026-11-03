@@ -21,12 +21,30 @@ import type { ConversationSnapshot } from './conversation';
 import type { PlannerDecision } from './decisions';
 import type { FieldDelta } from './deltas';
 
+/**
+ * A field value or `reset_field` that merge refused because the field is not
+ * declared by a registered Agent Card or its value fails validation (KAN-44).
+ * Names only: the offending value stays in the caller's delta.
+ */
+export interface RejectedFieldWrite {
+  readonly agentId: string;
+  readonly fieldName: string;
+  readonly target: 'value' | 'reset';
+  readonly reason: 'unknown_agent' | 'unknown_field' | 'invalid_value';
+}
+
+export interface AppliedDelta {
+  readonly snapshot: ConversationSnapshot;
+  /** What merge refused; the controller records it in the rejection log (KAN-44). */
+  readonly rejected: ReadonlyArray<RejectedFieldWrite>;
+}
+
 export interface OrchestratorCore {
   /**
    * Merge a FieldDelta into the conversation's state.
    *
-   * Resolves to the updated state snapshot (useful for tests; adapters
-   * typically ignore the return value and pull decisions separately).
+   * Resolves to the updated state snapshot and the writes merge refused
+   * (KAN-44); adapters pull decisions separately.
    *
    * Side effects:
    *   - Writes the delta to the conversation history (append-only).
@@ -35,7 +53,7 @@ export interface OrchestratorCore {
    *     typed deliverable command (`DeliverableCommandPort.executeCommand`).
    *   - May emit a Postgres NOTIFY so subscribed output adapters wake up.
    */
-  applyDelta(delta: FieldDelta): Promise<ConversationSnapshot>;
+  applyDelta(delta: FieldDelta): Promise<AppliedDelta>;
 
   /**
    * Return the planner's current ordered plan for the conversation. The array

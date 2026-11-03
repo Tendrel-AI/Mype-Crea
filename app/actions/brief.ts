@@ -18,6 +18,8 @@ import { briefFieldSpec, briefFromSnapshot, validateBriefValue, type BriefFieldV
 import type { ConversationId, DeliverableStateView, FieldDelta } from '../../src/core/contracts';
 import { loggerFor } from '../../src/services/logger';
 import { authorizeConversation, isUuid, type AccessFailureCode } from './conversation-access';
+import { hasOnlyKeys, recordRejectedWrites } from './write-rejections';
+import type { ResolvedIdentity } from '../../src/auth/resolve-identity';
 
 const log = loggerFor('controller.brief');
 
@@ -53,28 +55,59 @@ export async function loadBriefAction(input: { readonly conversationId: string }
   }
 }
 
+/** The only keys a panel edit may carry; anything else (a forged actor, tenant, agent…) is refused (KAN-44). */
+const UPDATE_KEYS = ['conversationId', 'fieldName', 'value'] as const;
+
 /** Set one brief field from the panel, through the same merge path as chat. */
 export async function updateBriefFieldAction(input: {
   readonly conversationId: string;
   readonly fieldName: string;
   readonly value: string;
 }): Promise<BriefResult> {
-  if (!isUuid(input?.conversationId)) return { ok: false, code: 'invalid_request', message: MESSAGES.invalid };
-  const spec = briefFieldSpec(String(input.fieldName));
-  if (!spec) return { ok: false, code: 'invalid_request', message: MESSAGES.invalid };
+  // KAN-44: every refusal below changes nothing and leaves a `write_rejections` row.
+  const refuse = async (
+    reason: string,
+    code: BriefFailureCode,
+    message: string,
+    detail: { readonly fieldName?: string; readonly offending?: unknown; readonly identity?: ResolvedIdentity } = {},
+  ): Promise<BriefResult> => {
+    await recordRejectedWrites(detail.identity, [{
+      channel: 'panel',
+      reason,
+      offending: 'offending' in detail ? detail.offending : input,
+      conversationId: (input as { conversationId?: unknown } | null)?.conversationId,
+      fieldName: detail.fieldName,
+    }]);
+    return { ok: false, code, message };
+  };
+
+  if (!hasOnlyKeys(input, UPDATE_KEYS) || !isUuid(input.conversationId) || typeof input.fieldName !== 'string') {
+    return refuse('invalid_request', 'invalid_request', MESSAGES.invalid);
+  }
+  const spec = briefFieldSpec(input.fieldName);
+  if (!spec) return refuse('unknown_field', 'invalid_request', MESSAGES.invalid, { fieldName: input.fieldName });
   const checked = validateBriefValue(spec, input.value);
-  if (!checked.ok) return { ok: false, code: 'invalid_value', message: checked.message };
+  if (!checked.ok) {
+    return refuse('invalid_value', 'invalid_value', checked.message, { fieldName: spec.name, offending: input.value });
+  }
 
   const conversationId = input.conversationId as ConversationId;
   // Brief data later reaches agents: KAN-27 consent is required, as for chat.
   const authorized = await authorizeConversation(conversationId, { requireDurability: false, requireTerms: true });
-  if (!authorized.ok) return authorized;
+  if (!authorized.ok) {
+    // A forged or foreign conversation id (another user's or tenant's) is logged; other access failures are not writes.
+    if (authorized.code === 'conversation_unavailable') {
+      await refuse('conversation_unavailable', authorized.code, authorized.message, { fieldName: spec.name });
+    }
+    return authorized;
+  }
+  const { identity } = authorized;
 
   const owners = buildDefaultRegistry()
     .getFieldSchemas()
     .filter((schema) => schema.requiredFields.includes(spec.name) || schema.optionalFields.includes(spec.name))
     .map((schema) => schema.agentId);
-  if (owners.length === 0) return { ok: false, code: 'invalid_request', message: MESSAGES.invalid };
+  if (owners.length === 0) return refuse('unknown_field', 'invalid_request', MESSAGES.invalid, { fieldName: spec.name, identity });
 
   const delta: FieldDelta = {
     conversationId,
@@ -85,7 +118,19 @@ export async function updateBriefFieldAction(input: {
     ),
   };
   try {
-    await getOrchestrator().applyDelta(delta);
+    const { rejected } = await getOrchestrator().applyDelta(delta);
+    if (rejected.length > 0) {
+      // Unreachable while the panel and merge share the catalog rule; refused and logged if they ever drift.
+      await recordRejectedWrites(identity, rejected.map((write) => ({
+        channel: 'panel' as const,
+        reason: write.reason,
+        offending: input.value,
+        conversationId,
+        agentId: write.agentId,
+        fieldName: write.fieldName,
+      })));
+      return { ok: false, code: 'invalid_value', message: MESSAGES.invalid };
+    }
     log.info({ conversationId, fieldName: spec.name, owners }, 'brief.field_updated');
     return await currentBrief(conversationId);
   } catch (error) {

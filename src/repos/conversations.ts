@@ -184,6 +184,14 @@ async function writeAgentStates(
   }
 }
 
+/** The conversation id exists but is not the caller's (another user or tenant). Indistinguishable from "not found" to the user. */
+export class ConversationUnavailableError extends Error {
+  constructor() {
+    super('Conversation id is not available to this user.');
+    this.name = 'ConversationUnavailableError';
+  }
+}
+
 export function conversationsRepo(tenant: Tenant, user: User) {
   return {
     /**
@@ -205,8 +213,9 @@ export function conversationsRepo(tenant: Tenant, user: User) {
             LIMIT 1`,
           [input.conversationId, tenant.id, user.id],
         );
+        let resolvedReleaseId: string | undefined;
         if (!pinned.rows[0]) {
-          const resolvedReleaseId = await resolveNewConversationRelease(tx, tenant);
+          resolvedReleaseId = await resolveNewConversationRelease(tx, tenant);
           await tx.query(
             `INSERT INTO conversations
                (id, tenant_id, user_id, ai_release_id, configuration_state)
@@ -227,6 +236,8 @@ export function conversationsRepo(tenant: Tenant, user: User) {
           );
         }
         if (!pinned.rows[0]) {
+          // The insert had a release but hit an existing id: it belongs to another user or tenant (KAN-44).
+          if (resolvedReleaseId) throw new ConversationUnavailableError();
           throw new Error('No hay una configuración activa para iniciar una conversación nueva.');
         }
 

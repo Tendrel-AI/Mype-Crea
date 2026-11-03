@@ -30,6 +30,7 @@
  */
 
 import type {
+  AppliedDelta,
   AgentId,
   AnnounceDispatchDecision,
   ConversationId,
@@ -52,7 +53,7 @@ import { loggerFor } from '../../services/logger';
 import type { AgentRegistry } from './agent-registry';
 import type { TaskSettlementContext } from './runtime-config';
 import type { IConversationStore } from './in-memory-store';
-import { mergeFieldDelta } from './merge';
+import { mergeFieldDelta, rejectedWrites } from './merge';
 import { planNextDecision } from './planner';
 import type { IArtifactNotifier } from './artifact-notifier';
 import { InProcessNotificationChannel, type NotificationChannel } from './notification-channels';
@@ -63,6 +64,8 @@ import {
   type WorkflowTask,
 } from './deliverable-workflow';
 import {
+  COMMAND_MESSAGES,
+  commandFingerprint,
   deriveStatesFor,
   executeDeliverableCommand,
   type DeliverableCommandContext,
@@ -151,7 +154,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
   private readonly commandLocks = new Map<ConversationId, Promise<unknown>>();
 
   /** Applied command results, keyed `${conversationId}:${commandId}` (idempotent replay). */
-  private readonly appliedCommands = new Map<string, DeliverableCommandResult>();
+  private readonly appliedCommands = new Map<string, { readonly result: DeliverableCommandResult; readonly fingerprint: string }>();
 
   private readonly defaultWorkflow: InMemoryDeliverableWorkflowStore;
   private readonly defaultApprovals: InMemoryApprovalStore;
@@ -215,7 +218,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
     this.conversationUsers.set(conversationId, userId);
   }
 
-  async applyDelta(delta: FieldDelta): Promise<ConversationSnapshot> {
+  async applyDelta(delta: FieldDelta): Promise<AppliedDelta> {
     const tenantId = this.conversationTenants.get(delta.conversationId);
     if (!tenantId) {
       throw new Error(
@@ -260,7 +263,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
     );
 
     // 1) Merge the delta into state.
-    await mergeFieldDelta(delta, this.deps.store, this.deps.registry);
+    const merged = await mergeFieldDelta(delta, this.deps.store, this.deps.registry);
     const snapshotAfterMerge = (await this.deps.store.get(delta.conversationId))!;
 
     // 2) No dispatch here (KAN-64 Option B). A merge can only make a
@@ -286,7 +289,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
       },
       'orchestrator.output',
     );
-    return snapshotAfterMerge;
+    return { snapshot: snapshotAfterMerge, rejected: rejectedWrites(merged) };
   }
 
   async getNextDecision(conversationId: ConversationId): Promise<ReadonlyArray<PlannerDecision>> {
@@ -386,11 +389,17 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
       const ctx = this.commandContext(command.conversationId);
       const cacheKey = `${command.conversationId}:${command.commandId}`;
       const cached = this.appliedCommands.get(cacheKey);
-      if (cached && cached.kind === command.kind) {
-        return { ...cached, replayed: true, states: await deriveStatesFor(ctx, command.conversationId) };
+      const fingerprint = commandFingerprint(command);
+      if (cached) {
+        const states = await deriveStatesFor(ctx, command.conversationId);
+        // KAN-44: the same command id with another payload never applies and never replays.
+        if (cached.fingerprint !== fingerprint) {
+          return { ok: false, commandId: command.commandId, kind: command.kind, reason: 'invalid', message: COMMAND_MESSAGES.replayConflict, states };
+        }
+        return { ...cached.result, replayed: true, states };
       }
       const result = await executeDeliverableCommand(ctx, command);
-      if (result.ok) this.rememberCommand(cacheKey, result);
+      if (result.ok) this.rememberCommand(cacheKey, { result, fingerprint });
       return result;
     });
   }
@@ -412,8 +421,8 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
     }
   }
 
-  private rememberCommand(key: string, result: DeliverableCommandResult): void {
-    this.appliedCommands.set(key, result);
+  private rememberCommand(key: string, entry: { readonly result: DeliverableCommandResult; readonly fingerprint: string }): void {
+    this.appliedCommands.set(key, entry);
     if (this.appliedCommands.size > COMMAND_REPLAY_CACHE_SIZE) {
       const oldest = this.appliedCommands.keys().next().value;
       if (oldest !== undefined) this.appliedCommands.delete(oldest);
