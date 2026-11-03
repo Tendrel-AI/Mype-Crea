@@ -79,8 +79,9 @@ reload restores everything from the database.
 - Acknowledgement means "written to the server response", not "received by the browser"; the
   reload path covers the gap.
 - The Responder text is not streamed over SSE; it returns from the chat action.
-- Without Redis, the local path writes no durable notice (KAN-82), so live completion relies on
-  in-process notifiers in a single process.
+- Without Redis, the workers run over an in-process bus and write the same durable notice
+  (KAN-82); the ephemeral `task_processing` event then reaches only SSE streams in the same
+  process.
 
 ## See also
 
