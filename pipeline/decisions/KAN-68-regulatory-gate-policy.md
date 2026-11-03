@@ -1,6 +1,23 @@
 # KAN-68 — Gate policy for regulatory discrepancies
 
-Status: proposed — awaiting owner approval
+Status: **approved by the owner on 2026-11-02** (recommendation accepted as drafted)
+
+## Decision (2026-11-02)
+
+The owner approved the recommendation: **Option B**. This answers the open questions below as follows:
+
+1. The deterministic golden set blocks on **every PR and push, nightly, and at release**. A
+   nightly failure blocks the release until fixed. P0773's "non-blocking, trend-tracked" wording
+   applies only to LLM-backed and heavy suites (label-text and extractor evals, reconnection tests).
+2. The specialist reviewer who may approve golden-set cases and reference changes is still to be
+   named. That reviewer is part of the KAN-50 rule review and the KAN-54 legal review. Until one is
+   recorded, every golden-set case stays a candidate and blocks nothing.
+3. Branch protection is not available: the repository is private on the GitHub Free plan, so
+   rulesets and required checks are refused. "Blocking" therefore means: CI reports the failure on
+   `developer`, and the owner does not merge to `main` or release while the regulatory job is red.
+   This is policy, not enforced by GitHub, and is re-evaluated if the plan changes.
+
+KAN-59 is unblocked on the gate policy. It still depends on KAN-50, KAN-35, KAN-38, and KAN-39.
 
 ## Context
 
