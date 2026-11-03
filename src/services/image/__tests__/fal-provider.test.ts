@@ -27,7 +27,7 @@ vi.mock('@fal-ai/client', () => ({
   },
 }));
 
-import { classifyFalError, FalImageProvider } from '../fal-provider';
+import { classifyFalError, FalImageProvider, falSafety } from '../fal-provider';
 import { TaskError } from '../../../core/task-errors';
 import { getImageGenerator, resetImageGenerator } from '../index';
 
@@ -57,7 +57,7 @@ describe('FalImageProvider', () => {
 
     expect(configSpy).toHaveBeenCalledWith({ credentials: 'test-fal-key' });
     expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/flux-2', {
-      input: { prompt: 'un logo', image_size: 'square_hd' },
+      input: { prompt: 'un logo', image_size: 'square_hd', enable_safety_checker: true },
     });
     expect(result.providerId).toBe('fal');
     expect(result.url).toBe('https://fal.cdn/independent.png');
@@ -86,7 +86,7 @@ describe('FalImageProvider', () => {
 
     expect(subscribeSpy).toHaveBeenCalledTimes(1);
     expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/flux-2', {
-      input: { prompt: 'una marca minimalista', image_size: 'square_hd' },
+      input: { prompt: 'una marca minimalista', image_size: 'square_hd', enable_safety_checker: true },
     });
     expect(result.url).toBe('https://fal.cdn/img.png');
     expect(result.providerId).toBe('fal');
@@ -107,11 +107,39 @@ describe('FalImageProvider', () => {
       input: {
         prompt: 'refine the logo',
         image_size: 'square_hd',
+        enable_safety_checker: true,
         image_urls: ['data:image/png;base64,AAAA'],
       },
     });
     expect(result.modelId).toBe('fal-ai/flux-2/edit');
     expect(result.url).toBe('https://fal.cdn/edited.png');
+  });
+
+  it.each([
+    ['passed', [false], null],
+    ['rejected', [true], 'sexual_content'],
+    ['indeterminate', undefined, null],
+    ['indeterminate', ['maybe'], null],
+    ['indeterminate', [], null],
+  ])('records a %s safety verdict with classifier provenance (has_nsfw_concepts=%j, KAN-33)', async (verdict, flags, category) => {
+    subscribeSpy.mockResolvedValueOnce({ data: { images: [{ url: 'https://fal.cdn/img.png' }], has_nsfw_concepts: flags } });
+    const provider = new FalImageProvider('test-key');
+
+    const result = await provider.generate({ prompt: 'x', referenceUrls: ['https://ref'] });
+
+    expect(result.safety).toEqual({
+      verdict,
+      category,
+      classifier: 'fal-safety-checker',
+      model: 'fal-ai/flux-2/edit',
+      policyVersion: 'logo-safety.v1',
+      checkedAt: expect.any(String),
+    });
+    expect(Number.isNaN(Date.parse(result.safety.checkedAt))).toBe(false);
+  });
+
+  it('treats a response without data as indeterminate', () => {
+    expect(falSafety(undefined, 'fal-ai/flux-2').verdict).toBe('indeterminate');
   });
 
   it('throws when fal returns no image URL', async () => {

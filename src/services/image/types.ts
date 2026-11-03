@@ -17,6 +17,8 @@
  * generator. Consumers stay untouched.
  */
 
+import type { SafetyRecord } from '../../core/deliverable-safety';
+
 export type ImagePurpose = 'logo' | 'label' | 'social';
 
 export interface ImageRequest {
@@ -43,6 +45,8 @@ export interface ImageResult {
   /** Vendor-specific model slug (e.g. 'fal-ai/flux-2'). */
   readonly modelId: string;
   readonly latencyMs: number;
+  /** KAN-33: the provider's safety classifier result for this image. Required: no image is unclassified. */
+  readonly safety: SafetyRecord;
 }
 
 export interface IImageProvider {

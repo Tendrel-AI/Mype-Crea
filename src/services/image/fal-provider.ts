@@ -9,8 +9,14 @@
  * error carries a usable signal (HTTP status, content-policy detail, timeout,
  * network failure), so the task's `error_category` is classified correctly
  * (architecture §2.5). Errors without such a signal are rethrown unchanged.
+ *
+ * Safety (KAN-33): the provider's own safety checker is requested explicitly
+ * and its `has_nsfw_concepts[0]` becomes the image's `SafetyRecord`
+ * (`falSafety`): false → passed, true → rejected (`sexual_content`), anything
+ * else → indeterminate.
  */
 import { fal } from '@fal-ai/client';
+import { SAFETY_POLICY_VERSION, type SafetyRecord } from '../../core/deliverable-safety';
 import { TaskError } from '../../core/task-errors';
 import { loggerFor } from '../logger';
 import type { IImageProvider, ImageRequest, ImageResult } from './types';
@@ -19,6 +25,7 @@ const log = loggerFor('service.image.fal');
 const PROVIDER_ID = 'fal';
 const BASE_MODEL = 'fal-ai/flux-2';
 const EDIT_MODEL = 'fal-ai/flux-2/edit';
+const SAFETY_CLASSIFIER = 'fal-safety-checker';
 
 export class FalImageProvider implements IImageProvider {
   readonly id = PROVIDER_ID;
@@ -40,6 +47,7 @@ export class FalImageProvider implements IImageProvider {
     const input = {
       prompt: req.prompt,
       image_size: 'square_hd' as const,
+      enable_safety_checker: true,
       ...(isEdit ? { image_urls: req.referenceUrls! } : {}),
     };
 
@@ -63,9 +71,25 @@ export class FalImageProvider implements IImageProvider {
       child.error({ latencyMs }, 'image.request.no_url');
       throw new TaskError('invalid_output', 'fal returned no image URL');
     }
-    child.info({ latencyMs }, 'image.request.complete');
-    return { url, providerId: this.id, modelId, latencyMs };
+    const safety = falSafety(result.data, modelId);
+    child.info({ latencyMs, safetyVerdict: safety.verdict }, 'image.request.complete');
+    return { url, providerId: this.id, modelId, latencyMs, safety };
   }
+}
+
+/** Map fal's `has_nsfw_concepts[0]` onto the recorded verdict (KAN-33). Missing or not a boolean → indeterminate. */
+export function falSafety(data: unknown, model: string): SafetyRecord {
+  const flag = (data as { has_nsfw_concepts?: unknown } | undefined)?.has_nsfw_concepts;
+  const first = Array.isArray(flag) ? flag[0] : undefined;
+  const verdict = first === false ? 'passed' : first === true ? 'rejected' : 'indeterminate';
+  return {
+    verdict,
+    category: verdict === 'rejected' ? 'sexual_content' : null,
+    classifier: SAFETY_CLASSIFIER,
+    model,
+    policyVersion: SAFETY_POLICY_VERSION,
+    checkedAt: new Date().toISOString(),
+  };
 }
 
 const CONTENT_POLICY_PATTERN = /content[ _-]?policy|nsfw|safety[ _-]?(checker|filter|system)/i;
