@@ -111,10 +111,11 @@ from the rubro, the style and the optional product.
 - Adding an agent means a working handler, registration, a `REDIS_WORKERS` entry, a
   `deliverable_kind` enum value, and the card in `src/services/ai-config/baseline.ts` (`CARDS`).
 - **A new card that shares brief fields changes the merged extractor fields** (owners, and
-  requiredness when it requires a field another card leaves optional). A pinned AI release frozen
-  before the change no longer matches the registry, and its chat turns fail
-  (`frozenFieldsInRegistry` in `src/adapters/chat-input-adapter.ts`). KAN-31 hits this: open
-  decision, see the KAN-31 report.
+  requiredness when it requires a field another card leaves optional). Pinned AI releases keep
+  working because `frozenFieldsInRegistry` (`src/adapters/chat-input-adapter.ts`) compares only
+  each frozen field's name and hint: the prompt is rendered from the frozen fields, and owners
+  and the live required flag only drive routing and the planner. Changing an existing field's
+  hint still breaks releases pinned before the change.
 - The name prompt (`name-agent.v1`) has no real-model eval yet; only fakes test it.
 - Without Redis, `LocalAdapter` runs the handler but deliverables are not persisted and no
   durable notice is written (KAN-82).
