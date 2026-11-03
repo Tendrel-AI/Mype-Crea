@@ -96,7 +96,7 @@ plain Spanish and offers at least one way out.
 
 ## Limits & known gaps
 
-- Retry and iteration caps are deferred to KAN-43 (in progress).
+- Retry and iteration have no per-deliverable cap; only the KAN-43 image and budget limits bound them ([13-usage-limits.md](13-usage-limits.md)).
 - Staleness does not yet compare the inputs each candidate was generated from with current
   approvals (future KAN-35 work).
 - `dependsOn` is empty on every card, so «Bloqueado» by an upstream approval does not occur in

@@ -51,15 +51,17 @@ No chat text can start a paid generation: generation starts only from the typed 
 | AI configuration and model execution | Stable, versioned model behavior per conversation, with one approved fallback | [09-ai-configuration.md](09-ai-configuration.md) |
 | Admin and platform operator | Platform console: organizations, operators, module rollouts, monthly metrics, audit trail | [10-admin-platform.md](10-admin-platform.md) |
 | Operations | Health probes, safe deploy migrations, CI, and paid evals on request | [11-operations.md](11-operations.md) |
+| Product brief | Chat and an editable panel write the same validated brief, with origin and missing preconditions shown | [12-product-brief.md](12-product-brief.md) |
+| Usage limits | Budget and rate limits checked before every paid model or image call | [13-usage-limits.md](13-usage-limits.md) |
+| Backup and restore | RPO/RTO targets, runbook and a scripted restore rehearsal | [14-backup-restore.md](14-backup-restore.md) |
 
 The wizard UI (`components/CreaMype.tsx`) still shows five steps (Nombre, Logo, Etiqueta, Web,
 Marketing). Only the brief and the logo are wired to the orchestrator; the other steps are not.
 
 ## In progress (not on `developer` yet)
 
-- Product brief and editable panel — KAN-26
-- Usage limits gateway — KAN-43
-- Backup/restore runbook — KAN-53
+- Rejecting and logging disallowed field writes — KAN-44
+- Business-name agent — KAN-31
 
 ## Other records
 
