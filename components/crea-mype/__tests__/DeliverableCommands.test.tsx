@@ -57,8 +57,8 @@ describe('DeliverableCommands (KAN-28)', () => {
 
   it('shows Spanish state badges and guidance with tú', () => {
     expect(render(view({ state: 'blocked', missingFields: ['style'] }))).toContain('Bloqueado');
-    expect(render(view({ state: 'blocked', missingFields: ['style'] }))).toContain(
-      'Completa la información en el chat para habilitar tu logo.',
+    expect(render(view({ state: 'blocked', missingFields: ['business_name', 'style_keywords'] }))).toContain(
+      'Para habilitar tu logo falta: Nombre del negocio, Estilo. Complétalo en el chat o en los datos de tu marca.',
     );
     expect(render(view({ state: 'enabled', allowedCommands: ['generate'] }))).toContain('Listo para generar');
     expect(render(view({ state: 'generating', allowedCommands: ['cancel'] }))).toContain('Generando');

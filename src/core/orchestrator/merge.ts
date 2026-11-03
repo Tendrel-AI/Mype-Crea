@@ -34,6 +34,11 @@
  * for `reset_field`: no store write, and the rejection is reported in the
  * returned `MergeResult` and the `merger.output` log.
  *
+ * KAN-26: a value for a brief catalog field (`../brief.ts`) is normalized and
+ * validated by `validateBriefValue` before it is stored, whatever channel
+ * produced it; an invalid value is `rejected_invalid_value` (no write). The
+ * slot records `delta.source` for provenance; nothing here branches on it.
+ *
  * This function does NOT dispatch agents. Dispatch is the orchestrator's
  * responsibility, triggered AFTER merge completes.
  *
@@ -49,6 +54,7 @@ import {
   type UserIntent,
 } from '../contracts';
 import { loggerFor } from '../../services/logger';
+import { briefFieldSpec, validateBriefValue } from '../brief';
 import type { AgentRegistry } from './agent-registry';
 import type { AgentFieldSchema, IConversationStore } from './in-memory-store';
 
@@ -60,6 +66,7 @@ export type FieldOutcome =
   | 'rejected_low_confidence'
   | 'rejected_unknown_agent'
   | 'rejected_unknown_field'
+  | 'rejected_invalid_value'
   | 'conflict_kept_existing';
 
 export type IntentOutcome =
@@ -222,6 +229,18 @@ export async function mergeFieldDelta(
         continue; // unknown field for this agent
       }
 
+      // shortcut: fields outside the brief catalog are stored unvalidated until KAN-44 rejects them.
+      const spec = briefFieldSpec(fieldName);
+      const checked = spec ? validateBriefValue(spec, incoming.value) : { ok: true as const, value: incoming.value };
+      if (!checked.ok) {
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_invalid_value', confidence: incoming.confidence });
+        child.debug(
+          { agentId, fieldName, outcome: 'rejected_invalid_value' satisfies FieldOutcome },
+          'merge.field.rejected',
+        );
+        continue;
+      }
+
       const { isRequired } = resolution;
       // A slot reset in phase 1 is empty now, whatever the snapshot read said.
       const currentSlot = resetSlots.has(slotKey(agentId, fieldName))
@@ -254,10 +273,12 @@ export async function mergeFieldDelta(
         incoming.confidence >= CONFIDENCE_THRESHOLDS.AUTO_ACCEPT
           ? 'filled'
           : 'pending_confirmation';
-      const nextSlot: FieldSlot =
-        nextStatus === 'filled'
-          ? { status: 'filled', value: incoming.value, confidence: incoming.confidence }
-          : { status: 'pending_confirmation', value: incoming.value, confidence: incoming.confidence };
+      const nextSlot: FieldSlot = {
+        status: nextStatus,
+        value: checked.value,
+        confidence: incoming.confidence,
+        source: delta.source,
+      };
 
       await store.updateFieldSlot(
         delta.conversationId,

@@ -153,6 +153,23 @@ describe('planNextDecision', () => {
     ]);
   });
 
+  it('also confirms a pending OPTIONAL slot before asking for anything else (KAN-26)', () => {
+    const registry = makeRegistry([
+      buildFixtureCard({ id: 'agent-a', required: [{ name: 'a_field_1' }], optional: [{ name: 'a_opt' }] }),
+    ]);
+    const snapshot = snapshotWith({
+      'agent-a': {
+        requiredFields: { a_field_1: { status: 'empty' } },
+        optionalFields: { a_opt: { status: 'pending_confirmation', value: 'quizá', confidence: 0.7 } },
+        iterationCount: 0,
+      },
+    });
+
+    expect(planNextDecision(snapshot, registry)).toEqual([
+      { kind: 'confirm_field', agentId: 'agent-a', fieldName: 'a_opt', pendingValue: 'quizá', reason: 'low_confidence' },
+    ]);
+  });
+
   it('returns announce_all_complete when no agent is eligible to ask or in-flight', () => {
     const registry = makeRegistry([
       buildFixtureCard({ id: 'agent-a', required: [{ name: 'a_field' }] }),

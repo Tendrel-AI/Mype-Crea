@@ -92,6 +92,7 @@ describe('mergeFieldDelta: reset_field + value for the same field', () => {
       status: 'pending_confirmation',
       value: NEW_VALUE,
       confidence: LOW_PENDING,
+      source: 'test',
     });
     expect(result.intentOutcomes).toEqual([
       { kind: 'reset_field', agentId: AGENT, fieldName: 'business_name', outcome: 'reset' },
@@ -117,6 +118,7 @@ describe('mergeFieldDelta: reset_field + value for the same field', () => {
       status: 'pending_confirmation',
       value: NEW_VALUE,
       confidence: LOW_PENDING,
+      source: 'test',
     });
   });
 
@@ -140,6 +142,7 @@ describe('mergeFieldDelta: reset_field + value for the same field', () => {
       status: 'filled',
       value: NEW_VALUE,
       confidence: HIGH_FILLED,
+      source: 'test',
     });
   });
 
@@ -159,6 +162,7 @@ describe('mergeFieldDelta: reset_field + value for the same field', () => {
       status: 'pending_confirmation',
       value: 'azul',
       confidence: LOW_PENDING,
+      source: 'test',
     });
   });
 
@@ -369,6 +373,7 @@ describe('mergeFieldDelta: unchanged behavior', () => {
       status: 'filled',
       value: 'moderno',
       confidence: HIGH_FILLED,
+      source: 'test',
     });
     expect(result.intentOutcomes).toEqual([
       { kind: 'select_deliverable', outcome: 'noop' },
@@ -413,5 +418,43 @@ describe('mergeFieldDelta: unchanged behavior', () => {
         registry,
       ),
     ).rejects.toThrow(/unknown conversation/);
+  });
+});
+
+describe('mergeFieldDelta: brief catalog validation (KAN-26)', () => {
+  it('stores the normalized value and records the delta source', async () => {
+    await mergeFieldDelta(
+      buildDelta({ source: 'brief-panel', fields: value('business_name', '  Dulce \n\t Casa  ', HIGH_FILLED) }),
+      store,
+      registry,
+    );
+    expect((await agentState()).requiredFields.business_name).toEqual({
+      status: 'filled',
+      value: 'Dulce Casa',
+      confidence: HIGH_FILLED,
+      source: 'brief-panel',
+    });
+  });
+
+  it.each([
+    ['blank', '   '],
+    ['over the max length', 'a'.repeat(121)],
+    ['not a string', 42],
+  ])('rejects a %s catalog value with no write, keeping the old value', async (_name, bad) => {
+    await seed('business_name', true, { status: 'filled', value: OLD_VALUE, confidence: HIGH_FILLED });
+    const result = await mergeFieldDelta(buildDelta({ fields: value('business_name', bad, 1.0) }), store, registry);
+    expect(result.fieldOutcomes.map((o) => o.outcome)).toEqual(['rejected_invalid_value']);
+    expect(result.mutationsApplied).toBe(0);
+    expect((await agentState()).requiredFields.business_name).toMatchObject({ value: OLD_VALUE });
+  });
+
+  it('passes a field outside the brief catalog through unchanged', async () => {
+    const other = new AgentRegistry();
+    other.register(buildFixtureCard({ id: AGENT, required: [{ name: 'tagline_tone' }] }), fixtureEchoHandler, undefined);
+    const otherStore = new InMemoryConversationStore(other.getFieldSchemas());
+    await otherStore.getOrCreate(TEST_CONVERSATION_ID, TEST_TENANT_ID, TEST_USER_ID);
+    await mergeFieldDelta(buildDelta({ fields: value('tagline_tone', '  cálido  ', HIGH_FILLED) }), otherStore, other);
+    const snapshot = await otherStore.get(TEST_CONVERSATION_ID);
+    expect(snapshot!.agentStates[AGENT].requiredFields.tagline_tone).toMatchObject({ status: 'filled', value: '  cálido  ' });
   });
 });

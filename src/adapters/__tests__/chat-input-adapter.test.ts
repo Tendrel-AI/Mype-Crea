@@ -485,6 +485,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
         status: 'filled',
         value: PENDING_NAME,
         confidence: 1.0,
+        source: 'chat-es',
       });
     },
   );
@@ -514,6 +515,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       status: 'filled',
       value: 'Dulce Casa',
       confidence: 0.95,
+      source: 'chat-es',
     });
   });
 
@@ -527,6 +529,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       status: 'pending_confirmation',
       value: 'Dulce Casa',
       confidence: 0.75,
+      source: 'chat-es',
     });
   });
 
@@ -557,6 +560,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       status: 'filled',
       value: 'Dulce Casa',
       confidence: 1.0,
+      source: 'chat-es',
     });
   });
 
@@ -607,11 +611,13 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       status: 'filled',
       value: PENDING_NAME,
       confidence: 1.0,
+      source: 'chat-es',
     });
     expect(state.optionalFields.color_palette).toEqual({
       status: 'filled',
       value: 'azul y blanco',
       confidence: 0.95,
+      source: 'chat-es',
     });
   });
 
@@ -628,6 +634,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       status: 'filled',
       value: PENDING_NAME,
       confidence: 1.0,
+      source: 'chat-es',
     });
     expect(state.requiredFields.style_keywords).toMatchObject({ status: 'filled', value: 'rústico' });
   });
@@ -650,6 +657,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       status: 'filled',
       value: PENDING_NAME,
       confidence: 1.0,
+      source: 'chat-es',
     });
     expect(state.requiredFields).not.toHaveProperty('price');
     expect(state.optionalFields).not.toHaveProperty('price');
@@ -703,6 +711,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
         status: 'pending_confirmation',
         value: 'Dulce Casa',
         confidence: correctionConfidence,
+        source: 'chat-es',
       });
     },
   );

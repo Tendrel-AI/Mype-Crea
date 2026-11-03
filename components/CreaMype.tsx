@@ -9,6 +9,8 @@ import { ChatPanel } from './crea-mype/ChatPanel';
 import { Dashboard } from './crea-mype/Dashboard';
 import { LandingPreview } from './crea-mype/LandingPreview';
 import { DeliverableCommands, type DeliverableCommandRequest } from './crea-mype/DeliverableCommands';
+import { BriefPanel } from './crea-mype/BriefPanel';
+import { loadBriefAction, updateBriefFieldAction, type BriefPanelField } from '../app/actions/brief';
 import { chatAction } from '../app/actions/chat';
 import { createConversationAction, exportConversationTraceAction, listConversationsAction } from '../app/actions/conversations';
 import type { ConversationListEntry } from '../src/conversations/selection';
@@ -122,6 +124,10 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   const [commandBusy, setCommandBusy] = useState(false);
   const [commandError, setCommandError] = useState('');
   const logoView = deliverableStates.find((view) => view.agentId === LOGO_AGENT_ID);
+  // KAN-26: the brief exactly as the server last returned it.
+  const [briefFields, setBriefFields] = useState<ReadonlyArray<BriefPanelField>>([]);
+  const [briefSaving, setBriefSaving] = useState<string | null>(null);
+  const [briefError, setBriefError] = useState<{ field: string; message: string } | null>(null);
 
   const applyStates = useCallback((states: ReadonlyArray<DeliverableStateView>) => {
     setDeliverableStates(states);
@@ -138,6 +144,42 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       console.error('Failed to load deliverable states', error);
     }
   }, [applyStates]);
+
+  /** Brief plus deliverable states, both read from the server. */
+  const refreshBrief = useCallback(async (forConversation: string) => {
+    if (!forConversation) return;
+    try {
+      const result = await loadBriefAction({ conversationId: forConversation });
+      if (!result.ok) return;
+      setBriefFields(result.fields);
+      applyStates(result.states);
+    } catch (error) {
+      console.error('Failed to load the brief', error);
+    }
+  }, [applyStates]);
+
+  const saveBriefField = async (fieldName: string, value: string): Promise<boolean> => {
+    if (!conversationId || briefSaving) return false;
+    setBriefSaving(fieldName);
+    setBriefError(null);
+    try {
+      const result = await updateBriefFieldAction({ conversationId, fieldName, value });
+      if (!result.ok) {
+        setBriefError({ field: fieldName, message: result.message });
+        return false;
+      }
+      setBriefFields(result.fields);
+      applyStates(result.states);
+      return true;
+    } catch (error) {
+      console.error('Brief update failed.', error);
+      setBriefError({ field: fieldName, message: 'No pudimos confirmar el cambio. Revisa el dato antes de intentarlo de nuevo.' });
+      await refreshBrief(conversationId);
+      return false;
+    } finally {
+      setBriefSaving(null);
+    }
+  };
 
   // Step is derived from filled assets (logo arrives via SSE; the other
   // panels stay at "Pendiente" until their sub-agents land). The orchestrator
@@ -163,8 +205,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   }, [messages, isLoading]);
 
   useEffect(() => {
-    void refreshStates(conversationId);
-  }, [conversationId, refreshStates]);
+    void refreshBrief(conversationId);
+  }, [conversationId, refreshBrief]);
 
   // Subscribe to artifact events from the orchestrator. The SSE stream is
   // scoped to the current conversationId; resetting the conversation
@@ -297,6 +339,10 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     />
   );
 
+  const briefPanel = (
+    <BriefPanel fields={briefFields} savingField={briefSaving} error={briefError} onSave={saveBriefField} />
+  );
+
   const handleSend = async () => {
     if (!inputText.trim()) return;
     if (retryTurn || needsNewConversation) return;
@@ -338,7 +384,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       ]);
       setRetryTurn(null);
       setNeedsNewConversation(false);
-      void refreshStates(conversationId);
+      void refreshBrief(conversationId);
     } catch (error: unknown) {
       console.error('Chat request failed.', error);
       const text = 'No pudimos confirmar el resultado de esta solicitud. Recarga la conversación antes de continuar.';
@@ -373,6 +419,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
         setConversationError('');
         setProcessingAgents(new Set());
         setDeliverableStates([]);
+        setBriefFields([]);
+        setBriefError(null);
         setCommandError('');
         setNotFound(false);
         window.history.pushState({}, '', `/?conversationId=${encodeURIComponent(result.conversationId)}`);
@@ -410,10 +458,20 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       <RestartModal showRestartModal={showRestartModal} setShowRestartModal={setShowRestartModal} handleRestart={handleRestart} />
       {activeTab === 'create' && (
         <>
-          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} setShowRestartModal={setShowRestartModal} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={logoView ? renderLogoCommands(false) : undefined} conversationNotFound={notFound} conversationMenu={
+          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} setShowRestartModal={setShowRestartModal} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || logoView ? (
+            <>
+              {briefFields.length > 0 && (
+                <details className="mb-2">
+                  <summary className="cursor-pointer text-sm font-medium text-neutral-700">Datos de tu marca y producto</summary>
+                  <div className="mt-2 max-h-[50vh] overflow-y-auto">{briefPanel}</div>
+                </details>
+              )}
+              {logoView && renderLogoCommands(false)}
+            </>
+          ) : undefined} conversationNotFound={notFound} conversationMenu={
             <ConversationMenu initialConversations={initialConversations} currentConversationId={conversationId} onNewConversation={() => setShowRestartModal(true)} loadConversations={listConversationsAction} />
           } />
-          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands(true)} />
+          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands(true)} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
       </>
       )}
 

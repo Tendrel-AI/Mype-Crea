@@ -16,9 +16,10 @@
  *
  * Decision rules (first match wins; one match produces the entire plan):
  *
- *   1. Any required slot in `pending_confirmation`
+ *   1. Any slot (required or optional) in `pending_confirmation`
  *      -> `[confirm_field]` (solo; never batched with anything else, since
- *         confirms are y/n turns).
+ *         confirms are y/n turns). KAN-26: an ambiguous optional brief value
+ *         (rubro, producto, …) is confirmed too before it counts.
  *
  *   2. There exists a "focus agent" — the lex-first registered agent that
  *      (a) has at least one missing required slot, (b) is not currently
@@ -158,7 +159,7 @@ export function planNextDecision(
     'planner.input',
   );
 
-  // Rule 1: any pending_confirmation? Pick the lex-first (agentId, fieldName)
+  // Rule 1: any pending_confirmation (required or optional)? Pick the lex-first (agentId, fieldName)
   // pair so the same field gets confirmed once even if multiple agents own it.
   const pending = collectPendingConfirmations(snapshot, schemas);
   if (pending.length > 0) {
@@ -314,16 +315,25 @@ interface FieldRef {
 
 function collectPendingConfirmations(
   snapshot: ConversationSnapshot,
-  schemas: ReadonlyArray<{ readonly agentId: AgentId; readonly requiredFields: ReadonlyArray<string> }>,
+  schemas: ReadonlyArray<{
+    readonly agentId: AgentId;
+    readonly requiredFields: ReadonlyArray<string>;
+    readonly optionalFields: ReadonlyArray<string>;
+  }>,
 ): FieldRef[] {
   const out: FieldRef[] = [];
   for (const schema of schemas) {
     const agentState = snapshot.agentStates[schema.agentId];
     if (!agentState) continue;
-    for (const fieldName of schema.requiredFields) {
-      const slot = agentState.requiredFields[fieldName];
-      if (slot?.status === 'pending_confirmation') {
-        out.push({ agentId: schema.agentId, fieldName, value: slot.value });
+    for (const [fieldNames, slots] of [
+      [schema.requiredFields, agentState.requiredFields],
+      [schema.optionalFields, agentState.optionalFields],
+    ] as const) {
+      for (const fieldName of fieldNames) {
+        const slot = slots[fieldName];
+        if (slot?.status === 'pending_confirmation') {
+          out.push({ agentId: schema.agentId, fieldName, value: slot.value });
+        }
       }
     }
   }

@@ -13,10 +13,8 @@
  * «Avanzar» is UI navigation only and has no server path.
  */
 
-import { resolveIdentity, type ResolvedIdentity } from '../../src/auth/resolve-identity';
-import { repos } from '../../src/repos';
-import { buildDefaultRegistry } from '../../src/core/orchestrator/bootstrap-registry';
 import { getOrchestrator } from '../../src/core/orchestrator/runtime';
+import { authorizeConversation as authorize, isUuid, type AccessFailureCode } from './conversation-access';
 import {
   MAX_ITERATION_OBSERVATION_LENGTH,
   type ConversationId,
@@ -29,8 +27,6 @@ import {
 } from '../../src/core/contracts';
 import { codePointLength } from '../../src/core/refinement';
 import { loggerFor } from '../../src/services/logger';
-import { checkCurrentTerms } from '../../src/consent/gate';
-import { TERMS_REQUIRED_MESSAGE, TERMS_UNAVAILABLE_MESSAGE } from '../../src/consent/terms';
 
 const log = loggerFor('controller.deliverable-command');
 
@@ -58,15 +54,7 @@ export type DeliverableCommandActionResult =
       readonly states: ReadonlyArray<DeliverableStateView>;
     };
 
-type ControllerFailureCode =
-  | 'invalid_request'
-  | 'identity_unavailable'
-  | 'durability_unavailable'
-  | 'conversation_unavailable'
-  | 'legacy_unversioned'
-  | 'terms_required'
-  | 'terms_unavailable'
-  | 'command_failed';
+type ControllerFailureCode = AccessFailureCode | 'invalid_request' | 'command_failed';
 
 /** Client input: plain JSON from the browser, validated here. */
 export interface DeliverableCommandInput {
@@ -86,10 +74,6 @@ export interface DeliverableCommandInput {
 const MESSAGES = {
   invalid: 'No pudimos validar esta acción.',
   observationTooLong: `Tu comentario puede tener hasta ${MAX_ITERATION_OBSERVATION_LENGTH} caracteres.`,
-  identity: 'No pudimos verificar el acceso de tu cuenta. Inténtalo de nuevo.',
-  durability: 'El servicio de tareas duraderas no está disponible. Inténtalo más tarde.',
-  notFound: 'No encontramos esta conversación.',
-  legacy: 'Esta conversación usa una configuración anterior. Inicia una conversación nueva para continuar.',
   failed: 'No pudimos completar esta acción. Inténtalo de nuevo.',
   loadFailed: 'No pudimos cargar el estado de tus entregables. Inténtalo de nuevo.',
 } as const;
@@ -144,44 +128,6 @@ export async function deliverableCommandAction(
       'deliverableCommand.failed',
     );
     return { ok: false, code: 'command_failed', reason: 'unavailable', message: MESSAGES.failed, states: [] };
-  }
-}
-
-type Authorized = { readonly ok: true; readonly identity: ResolvedIdentity };
-type Unauthorized = { readonly ok: false; readonly code: ControllerFailureCode; readonly message: string };
-
-/** Owner-scoped, pinned conversation; registers its owner with the core. */
-async function authorize(
-  conversationId: ConversationId,
-  options: { readonly requireDurability: boolean; readonly requireTerms: boolean },
-): Promise<Authorized | Unauthorized> {
-  let identity: ResolvedIdentity;
-  try {
-    identity = await resolveIdentity();
-  } catch {
-    return { ok: false, code: 'identity_unavailable', message: MESSAGES.identity };
-  }
-  if (options.requireTerms) {
-    const terms = await checkCurrentTerms(identity);
-    if (terms === 'required') return { ok: false, code: 'terms_required', message: TERMS_REQUIRED_MESSAGE };
-    if (terms !== 'accepted') return { ok: false, code: 'terms_unavailable', message: TERMS_UNAVAILABLE_MESSAGE };
-  }
-  if (options.requireDurability && process.env.NODE_ENV !== 'test' && !process.env.REDIS_URL) {
-    return { ok: false, code: 'durability_unavailable', message: MESSAGES.durability };
-  }
-  try {
-    const registry = buildDefaultRegistry();
-    const pin = await repos(identity.tenant, identity.user).conversations.readPinnedConversation(
-      conversationId,
-      registry.getFieldSchemas(),
-    );
-    if (!pin) return { ok: false, code: 'conversation_unavailable', message: MESSAGES.notFound };
-    if (pin.state !== 'pinned') return { ok: false, code: 'legacy_unversioned', message: MESSAGES.legacy };
-    await getOrchestrator().startConversation(conversationId, identity.tenant.id as UUID, identity.user.id as UUID);
-    return { ok: true, identity };
-  } catch (error) {
-    log.error({ conversationId, err: error }, 'deliverableCommand.authorize_failed');
-    return { ok: false, code: 'conversation_unavailable', message: MESSAGES.notFound };
   }
 }
 
@@ -243,8 +189,4 @@ function parseCommand(input: DeliverableCommandInput): Parsed {
       };
     }
   }
-}
-
-function isUuid(value: unknown): value is string {
-  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }

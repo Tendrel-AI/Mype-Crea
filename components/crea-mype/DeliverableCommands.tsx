@@ -16,6 +16,7 @@ import React, { useState } from 'react';
 import { CheckCircle2, Loader2, RefreshCw, Sparkles, Wand2, XCircle, ArrowRight } from 'lucide-react';
 import type { DeliverableCommandKind, DeliverableStateKind, DeliverableStateView } from '../../src/core/contracts';
 import { failedCardMessage } from './failure-copy';
+import { briefFieldSpec } from '../../src/core/brief';
 
 /** Mirrors MAX_ITERATION_OBSERVATION_LENGTH; the server enforces it in code points. */
 export const OBSERVATION_MAX_LENGTH = 500;
@@ -44,6 +45,11 @@ const STATE_STYLES: Readonly<Record<DeliverableStateKind, string>> = {
   approved: 'bg-emerald-50 text-emerald-700',
   failed: 'bg-red-50 text-red-700',
 };
+
+/** Spanish labels of the server's missing preconditions (KAN-26). */
+function missingLabels(fields: ReadonlyArray<string>): string {
+  return fields.map((name) => briefFieldSpec(name)?.label ?? name).join(', ');
+}
 
 const has = (view: DeliverableStateView, command: DeliverableCommandKind) => view.allowedCommands.includes(command);
 
@@ -119,7 +125,7 @@ export function DeliverableCommands({
         <p className="text-xs text-neutral-500">
           {view.missingUpstream.length > 0
             ? 'Primero aprueba los entregables anteriores.'
-            : `Completa la información en el chat para habilitar tu ${label}.`}
+            : `Para habilitar tu ${label} falta: ${missingLabels(view.missingFields)}. Complétalo en el chat o en los datos de tu marca.`}
         </p>
       )}
       {view.state === 'enabled' && (

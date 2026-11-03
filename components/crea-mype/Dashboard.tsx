@@ -8,13 +8,15 @@ import { type BrandAssets, type Tab } from './types';
 import { LandingPageRenderer } from './LandingPageRenderer';
 
 
-export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls }: {
+export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls, briefPanel }: {
   assets: BrandAssets;
   processingAgents: Set<string>;
   step: number;
   setActiveTab: (tab: Tab) => void;
   /** KAN-28: server-derived logo state and command buttons (DeliverableCommands). */
   logoControls?: React.ReactNode;
+  /** KAN-26: the editable brief (BriefPanel). Replaces the brand placeholder when present. */
+  briefPanel?: React.ReactNode;
 }) {
   const landingContent = assets.typedLandingPage ?? assets.landingPage;
   const hasLandingPage = Boolean(assets.typedLandingPage || assets.landingPage);
@@ -76,9 +78,9 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
               className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 scroll-mt-4"
             >
               <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <Sparkles size={16} /> Identidad de Marca
+                <Sparkles size={16} /> {briefPanel ? "Datos de tu marca y producto" : "Identidad de Marca"}
               </h2>
-              {assets.name ? (
+              {briefPanel ?? (assets.name ? (
                 <div>
                   <h3 className="text-4xl font-bold tracking-tight text-neutral-900 mb-2">{assets.name}</h3>
                   <p className="text-neutral-600 text-sm leading-relaxed">{assets.profile}</p>
@@ -87,7 +89,7 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
                 <div className="h-24 flex items-center justify-center text-neutral-500 border border-dashed border-neutral-300 rounded-xl">
                   Esperando definición de marca...
                 </div>
-              )}
+              ))}
             </motion.div>
 
             {/* Step 2 & 3: Visual Assets */}
