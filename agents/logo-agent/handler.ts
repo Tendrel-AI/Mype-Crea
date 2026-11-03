@@ -16,17 +16,26 @@
  * canonical `taskId` so the lifecycle is auditable end-to-end alongside the
  * worker's logs.
  *
+ * Traceability (KAN-35): the artifact metadata records the brief fields the
+ * prompt actually used (`inputs`: value plus `inputVersion` fingerprint), so
+ * a later change to one of them marks this logo «Potencialmente
+ * desactualizado». Fields the prompt does not read never do.
+ *
  * Failures: an image-generation error is returned as a failed A2ATaskResult
  * whose `error.kind` is the typed kind from the image service
  * (`content_policy`, `config_missing`, `rate_limited`, `timeout`, …), or
  * `handler_threw` when the error carries no kind (architecture §2.5).
  */
 import type { AgentHandler } from '../../src/core/agent-types';
+import { inputVersion } from '../../src/core/deliverable-inputs';
 import { taskErrorFromThrown } from '../../src/core/task-errors';
 import { getImageGenerator } from '../../src/services/image';
 import { loggerFor } from '../../src/services/logger';
 
 const log = loggerFor('agent.logo-agent');
+
+/** Brief fields `buildLogoPrompt` reads. */
+const INPUT_FIELDS = ['business_name', 'style_keywords', 'color_palette'] as const;
 
 interface LogoRequirements {
   readonly business_name: string;
@@ -61,6 +70,16 @@ export function buildLogoPrompt(
 /** One line, no double quotes, so a note cannot break out of its quotes. */
 function flattenObservation(observation: string): string {
   return observation.replace(/["“”]/g, "'").replace(/\s+/g, ' ').trim();
+}
+
+/** `{ field: { value, version } }` for every filled field the prompt reads. */
+export function usedInputs(requirements: Readonly<Record<string, unknown>>): Record<string, { value: string; version: string }> {
+  return Object.fromEntries(
+    INPUT_FIELDS.flatMap((name) => {
+      const value = requirements[name];
+      return typeof value === 'string' && value.trim().length > 0 ? [[name, { value, version: inputVersion(value) }]] : [];
+    }),
+  );
 }
 
 export const handler: AgentHandler<undefined> = async (message) => {
@@ -130,7 +149,7 @@ export const handler: AgentHandler<undefined> = async (message) => {
       {
         kind: 'image',
         url,
-        metadata: { provider: providerId, model: modelId, prompt, purpose: 'logo' },
+        metadata: { provider: providerId, model: modelId, prompt, purpose: 'logo', inputs: usedInputs(message.requirements) },
       },
     ],
     completedAt: new Date().toISOString(),

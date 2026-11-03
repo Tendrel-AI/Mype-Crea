@@ -16,6 +16,7 @@
 import { randomUUID } from 'node:crypto';
 import type { A2AArtifact } from '../agent-types';
 import type { ConversationId, DeliverableId, ISOTimestamp, TaskId } from '../contracts';
+import { recordedFieldVersions, recordedUpstream } from '../deliverable-inputs';
 import type { TaskErrorCategory } from '../task-errors';
 
 export type WorkflowTaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'canceled';
@@ -35,6 +36,11 @@ export interface WorkflowTask {
   readonly iterationNumber: number;
   readonly iterationTrigger: WorkflowIterationTrigger | null;
   readonly createdAt: ISOTimestamp;
+  /**
+   * Upstream approvals the task was created under (`{ kind: deliverableId }`,
+   * KAN-35). Null/absent for tasks created before KAN-35.
+   */
+  readonly upstreamApprovals?: Readonly<Record<string, string>> | null;
 }
 
 export interface WorkflowCandidate {
@@ -44,6 +50,8 @@ export interface WorkflowCandidate {
   readonly contentUrl: string | null;
   readonly contentInline: Readonly<Record<string, unknown>> | null;
   readonly createdAt: ISOTimestamp;
+  /** Brief field versions the handler recorded as used (`metadata.inputs`, KAN-35). Null/absent when none. */
+  readonly inputVersions?: Readonly<Record<string, string>> | null;
 }
 
 export interface CreateTaskInput {
@@ -172,6 +180,7 @@ export class InMemoryDeliverableWorkflowStore implements IDeliverableWorkflowSto
       iterationNumber: input.iteration?.iterationNumber ?? 1,
       iterationTrigger: input.iteration?.trigger ?? null,
       createdAt: this.nextTimestamp(),
+      upstreamApprovals: recordedUpstream(input.requirementsSnapshot),
       commandId: input.commandId,
     };
     bucket.push(task);
@@ -211,6 +220,7 @@ export class InMemoryDeliverableWorkflowStore implements IDeliverableWorkflowSto
         // Same shape as the Postgres settlement (`settleTaskAndEnqueue`).
         contentInline: artifact.url ? null : { value: artifact.inline ?? null, kind: artifact.kind, metadata: artifact.metadata ?? {} },
         createdAt: this.nextTimestamp(),
+        inputVersions: recordedFieldVersions(artifact.metadata),
       });
     });
     this.candidates.set(input.conversationId, bucket);

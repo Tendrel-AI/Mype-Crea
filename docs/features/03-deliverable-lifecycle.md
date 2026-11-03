@@ -5,7 +5,8 @@
 ## What it does
 
 Each deliverable card in the panel shows a state («Bloqueado», «Listo para generar»,
-«Generando», «En revisión», «Aprobado», «Falló», plus an «Obsoleto» overlay) and only the
+«Generando», «En revisión», «Aprobado», «Falló», plus a «Potencialmente desactualizado» overlay)
+and only the
 buttons that make sense now: **Generar**, **Iterar** (with a short note on what to change),
 **Aprobar**, **Reintentar**, **Cancelar**. A failure is never a dead end: the card explains it in
 plain Spanish and offers at least one way out.
@@ -15,7 +16,8 @@ plain Spanish and offers at least one way out.
 1. **Read the state.** `app/actions/deliverable-command.ts:loadDeliverableStatesAction` returns,
    per deliverable, a `DeliverableStateView` (`src/core/contracts/deliverables.ts`) computed by
    the pure `src/core/orchestrator/deliverable-state.ts:deriveDeliverableState` from facts: the
-   brief, tasks, candidates, approvals and stale marks. Precedence: `generating` > `failed` >
+   brief, tasks (with their recorded upstream approvals), candidates (with their recorded input
+   versions), approvals and legacy stale marks. Precedence: `generating` > `failed` >
    `approved` > `in_review` > `enabled` > `blocked`. The view lists `allowedCommands` and a
    `stateToken` (a deterministic hash of the facts).
 2. **Render.** `components/crea-mype/DeliverableCommands.tsx:DeliverableCommands` draws buttons
@@ -54,12 +56,21 @@ plain Spanish and offers at least one way out.
    - **Reintentar** → an iteration chained to the failed task, trigger `failure`, no refinement.
    - **Aprobar** → one call to `IApprovalStore.approve` (`src/core/approvals.ts`; Postgres impl
      `src/repos/approval-store.ts:createPostgresApprovalStore`) that records the approval and
-     marks every transitive dependent stale (`dependentKindsOf`) in one transaction.
+     appends a stale mark for every transitive dependent (`dependentKindsOf`) in one transaction.
+   - Every task-creating command also stores the approved id of each `dependsOn` kind in the
+     task's `requirements_snapshot.upstream_approvals` (workers strip it before the handler).
    - **Cancelar** → `pending → canceled` only; a result that arrives later never overwrites it.
-6. **Staleness.** «Obsoleto» shows on an approved deliverable only when an explicit stale mark
-   (`deliverable_stale_marks`) is newer than its newest approval
-   (`src/core/orchestrator/deliverable-state.ts:deriveStaleKinds`). Nothing is regenerated
-   automatically; the user may Generar again.
+6. **Staleness (RF-07, KAN-35).** «Potencialmente desactualizado» shows on an approved or
+   in-review deliverable when its current candidate (approved, else newest) was generated from
+   inputs that changed since (`deriveStaleCandidateIds`): a brief field the handler recorded as
+   used in `metadata.inputs` (`sha256:` version from `src/core/deliverable-inputs.ts:inputVersion`)
+   has another value, or an upstream approval recorded on its task was replaced (one hop per real
+   change; a flagged approval stays approved and keeps unblocking its dependents). The dependency map is `mypes:deliverable.dependsOn` (today `business_name` → `logo`).
+   The card shows the notice from `components/crea-mype/DeliverableCommands.tsx:staleNotice` and
+   offers Generar and Iterar; nothing is regenerated automatically and an approved deliverable
+   stays approved. Tasks created before KAN-35 fall back to the KAN-34 stale marks
+   (`deriveStaleKinds`, approved only). Policy and future edges (label, nutrition):
+   [`KAN-35-staleness-policy.md`](../../pipeline/decisions/KAN-35-staleness-policy.md).
 7. **Failures.** The worker or transport reports a typed `error.kind`;
    `src/core/task-errors.ts:classifyTaskError` maps it to `transient | content_policy |
    permanent_bug` (unknown → `permanent_bug`). `FAILURE_RECOVERY_COMMANDS` in
@@ -95,6 +106,12 @@ plain Spanish and offers at least one way out.
   (Generar → five candidates → Aprobar, replaced with history; refused without the rubro, nothing
   dispatched), `agents/name-agent/__tests__/handler.test.ts` and
   `components/crea-mype/__tests__/DeliverableCommands.test.tsx`.
+- **Staleness is computed, never stored, and never regenerates.** History rows are not
+  rewritten; a reload re-derives the same flag; unrelated deliverables are untouched; going back
+  to the original name or value clears it. Enforced by `deliverable-state.test.ts` («KAN-35»
+  block), `app/actions/__tests__/name-agent-flow.test.ts` (name → logo end to end, reload with a
+  fresh core) and `src/core/__tests__/deliverable-commands.postgres.integration.test.ts`
+  (recorded `upstream_approvals` over Postgres; run only with approval).
 - **A failure always offers a recovery button when the brief allows it.** Enforced by
   `src/core/__tests__/task-errors.test.ts`, `deliverable-state.test.ts` and
   `components/crea-mype/__tests__/DeliverableCommands.test.tsx`.
@@ -108,6 +125,10 @@ plain Spanish and offers at least one way out.
   [`pipeline/decisions/KAN-65-selection-approval-refinement.md`](../../pipeline/decisions/KAN-65-selection-approval-refinement.md)
 - 2026-10-25 — KAN-34: «Obsoleto» comes only from explicit stale marks, never from comparing
   approval timestamps; only the conversation owner approves.
+- 2026-11-02 — KAN-35: the dependency map is `dependsOn` data; a replaced upstream approval or a
+  changed brief field the deliverable used marks it «Potencialmente desactualizado», computed
+  from recorded inputs; never regenerated automatically. Supersedes the KAN-34 «marks only» rule
+  for new tasks. [`pipeline/decisions/KAN-35-staleness-policy.md`](../../pipeline/decisions/KAN-35-staleness-policy.md)
 - 2026-10-25 — KAN-58: a failure is never a dead end (Reintentar always; Iterar for content
   policy); no `announce_failure` planner decision.
 
@@ -116,12 +137,13 @@ plain Spanish and offers at least one way out.
 - A durable replay compares the agent, the kind and the conversation, but not an Iterar's
   observation or parameters. The in-process cache compares the whole command.
 - Retry and iteration have no per-deliverable cap; only the KAN-43 image and budget limits bound them ([13-usage-limits.md](13-usage-limits.md)).
-- Staleness does not yet compare the inputs each candidate was generated from with current
-  approvals (future KAN-35 work). Name candidates already store their input values and
-  fingerprints for it. No card depends on `business_name`, so approving or replacing a name marks
-  nothing stale, and an approved name is not written back to the brief's `business_name`.
-- `dependsOn` is empty on every card, so «Bloqueado» by an upstream approval does not occur in
-  practice.
+- The logo needs an approved name («Bloqueado» with «Primero aprueba los entregables
+  anteriores.» until then), but an approved name is not written back to the brief's
+  `business_name`: the logo prompt still reads the brief field. Both changes flag the logo.
+- The staleness notice is in the card only; the chat Responder does not mention it (no planner
+  decision for it).
+- Logos generated before KAN-35 record no inputs, so a brief edit does not flag them; their
+  upstream staleness falls back to the KAN-34 marks.
 - A Reintentar after a failed Iterar drops that refinement (owner decision, kept).
 
 ## See also

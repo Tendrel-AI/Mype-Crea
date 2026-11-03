@@ -7,6 +7,7 @@ regulatory, or institutional input say so explicitly.
 
 | Decision | Unblocks | Status | Recommendation (one line) |
 |---|---|---|---|
+| [KAN-35 — Staleness of derived deliverables (RF-07)](KAN-35-staleness-policy.md) | KAN-35 (RF-07) | **approved 2026-11-02** | The dependency map is `mypes:deliverable.dependsOn` data (name → logo live; label and nutrition edges future). A replaced upstream approval or a changed brief field the deliverable used marks it «Potencialmente desactualizado», computed from recorded inputs; never regenerated automatically. |
 | [KAN-42 — Trace access, reconstruction, sampling and pilot metrics](KAN-42-trace-access-metrics.md) | KAN-42 (SYS-07) | **approved 2026-11-02** | Owner and same-tenant admin download the full ordered trace; platform operators get metadata and aggregates only. Monthly random sample and a metrics report (p95, per-deliverable latency, cost per set vs. the USD 0.48 thesis reference, not a cap); availability stays a documented gap. |
 | [KAN-43 — Usage limits before calling models](KAN-43-usage-limits-policy.md) | KAN-43 (SYS-08) | **approved 2026-11-02** | USD 30/month per tenant, 60 LLM calls/hour and 15 images/day per user, 4,000-character messages. Reserve under a lock before every provider call, then reconcile with the real cost. |
 | [KAN-64 — Dispatch model and Phase 1 transitions](KAN-64-dispatch-model.md) | KAN-28 (SYS-03) | **approved 2026-10-25** | Replace auto-dispatch with typed, server-revalidated commands (Generar/Iterar/Aprobar/Reintentar/Cancelar) over a pure per-deliverable state function. "Avanzar" is navigation only. |
@@ -17,7 +18,7 @@ regulatory, or institutional input say so explicitly.
 | [KAN-76 — Landing page block set](KAN-76-landing-block-set.md) | KAN-76 | proposed — awaiting owner approval | Freeze the implemented v1 contract with no producer in Phase 1 (thesis P0612 excludes web builders). Future v2 references approved deliverables by ID with a constrained theme. |
 
 Dependencies between drafts: KAN-65 must stay consistent with the KAN-64 command table, and both
-feed KAN-35 (staleness) and KAN-59 (planner/state tests). KAN-67 depends on KAN-52 for asset
+feed KAN-35 (staleness, now decided) and KAN-59 (planner/state tests). KAN-67 depends on KAN-52 for asset
 coverage. KAN-68's "blocking" is policy, not GitHub-enforced: the private Free-plan repository
 cannot set required checks, so the owner does not merge to `main` while the regulatory job is red.
 

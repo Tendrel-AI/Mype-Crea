@@ -314,6 +314,8 @@ export interface DeliverableRow {
   /** Provider URL (provenance once `storageKey` is set; never sent to a client then). */
   readonly contentUrl: string | null;
   readonly contentInline: Record<string, unknown> | null;
+  /** The artifact's metadata (KAN-81), e.g. the recorded `inputs` (KAN-35). Null on rows written before KAN-81. */
+  readonly artifactMetadata?: Record<string, unknown> | null;
   /** Private bucket object key (KAN-52). Client URL: `clientDeliverableUrl` in src/core/deliverable-url.ts. */
   readonly storageKey: string | null;
   readonly selectedAt: string | null;

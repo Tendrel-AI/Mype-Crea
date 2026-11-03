@@ -42,7 +42,7 @@ No chat text can start a paid generation: generation starts only from the typed 
 |---|---|---|
 | Chat turn | A Spanish conversation that collects the brief and asks only what is missing | [01-chat-turn.md](01-chat-turn.md) |
 | Agents and transport | A logo and five business-name candidates generated from the brief; other agents are declared but not live | [02-agents-and-transport.md](02-agents-and-transport.md) |
-| Deliverable lifecycle | Generar / Iterar / Aprobar / Reintentar / Cancelar buttons with clear states and failure recovery | [03-deliverable-lifecycle.md](03-deliverable-lifecycle.md) |
+| Deliverable lifecycle | Generar / Iterar / Aprobar / Reintentar / Cancelar buttons with clear states, failure recovery, and a «Potencialmente desactualizado» notice when a name or brief value the deliverable used changes | [03-deliverable-lifecycle.md](03-deliverable-lifecycle.md) |
 | Live updates | «Generando» and the finished logo appear without reloading | [04-live-updates.md](04-live-updates.md) |
 | Auth, tenancy and isolation | Sign-in through the organization; nobody sees another tenant's or member's data | [05-auth-tenancy-isolation.md](05-auth-tenancy-isolation.md) |
 | Assets and storage | Generated logos kept privately and shown only to their owner | [06-assets-storage.md](06-assets-storage.md) |
@@ -58,6 +58,7 @@ No chat text can start a paid generation: generation starts only from the typed 
 
 The wizard UI (`components/CreaMype.tsx`) still shows five steps (Nombre, Logo, Etiqueta, Web,
 Marketing). Only the brief, the name and the logo are wired to the orchestrator; the other steps are not.
+The logo needs an approved name first (KAN-35 dependency map).
 
 ## Other records
 

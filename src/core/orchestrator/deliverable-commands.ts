@@ -34,7 +34,6 @@ import {
   type DeliverableCommandRejection,
   type DeliverableCommandResult,
   type DeliverableStateView,
-  type FieldSlot,
   type TaskId,
 } from '../contracts';
 import type { IApprovalStore } from '../approvals';
@@ -49,8 +48,12 @@ import type { CreateTaskInput, IDeliverableWorkflowStore, WorkflowTask } from '.
 import {
   dependentKindsOf,
   deriveDeliverableStates,
+  requirementsFromSnapshot,
   type DeliverableWorkflowFacts,
 } from './deliverable-state';
+import { UPSTREAM_SNAPSHOT_KEY } from '../deliverable-inputs';
+
+export { requirementsFromSnapshot };
 
 const log = loggerFor('orchestrator.commands');
 
@@ -113,23 +116,6 @@ export async function deriveStatesFor(
     loadWorkflowFacts(ctx, conversationId),
   ]);
   return deriveDeliverableStates(snapshot, ctx.specs, facts);
-}
-
-/** Requirements payload: every filled required/optional slot of the agent. */
-export function requirementsFromSnapshot(
-  snapshot: ConversationSnapshot,
-  agentId: string,
-): Record<string, unknown> {
-  const agentState = snapshot.agentStates[agentId];
-  const requirements: Record<string, unknown> = {};
-  if (!agentState) return requirements;
-  for (const [fieldName, slot] of Object.entries(agentState.requiredFields) as Array<[string, FieldSlot]>) {
-    if (slot.status === 'filled') requirements[fieldName] = slot.value;
-  }
-  for (const [fieldName, slot] of Object.entries(agentState.optionalFields) as Array<[string, FieldSlot]>) {
-    if (slot.status === 'filled') requirements[fieldName] = slot.value;
-  }
-  return requirements;
 }
 
 type OkExtras = { readonly taskId?: TaskId; readonly approvalId?: string };
@@ -251,11 +237,11 @@ export async function executeDeliverableCommand(
       if (command.expectedApprovedId !== view.approvedDeliverableId) {
         return reject('stale', COMMAND_MESSAGES.approveStale, states);
       }
-      // RF-07: a new or replaced approval makes the (transitive) dependents
-      // obsolete. The store records the approval and their stale marks in one
-      // atomic write (KAN-34), so an approval never stands without its marks.
-      // Only approved dependents show the overlay; a later approval of a
-      // dependent clears it. Nothing is regenerated automatically.
+      // RF-07: the store records the approval and the (transitive) dependents'
+      // stale marks in one atomic write (KAN-34), an append-only record of the
+      // event. Since KAN-35 the overlay itself is computed from the upstream
+      // approvals each dependent task recorded; the marks decide only for
+      // older tasks. Nothing is regenerated automatically.
       const result = await ctx.approvals.approve({
         conversationId: command.conversationId,
         deliverableKind: spec.deliverableKind,
@@ -318,9 +304,19 @@ export async function executeDeliverableCommand(
 
       // Requirements always come from the current brief, never from the client.
       const requirements = requirementsFromSnapshot(snapshot, command.agentId);
-      const requirementsSnapshot: Record<string, unknown> = refinement
-        ? { ...requirements, [REFINEMENT_SNAPSHOT_KEY]: refinement }
-        : { ...requirements };
+      // RF-07 (KAN-35): a stable reference to the upstream approvals this task is
+      // generated under. Staleness is later computed against it; it is never rewritten.
+      const upstream = Object.fromEntries(
+        spec.dependsOn.flatMap((kind) => {
+          const approved = facts.approvals.find((a) => a.deliverableKind === kind);
+          return approved ? [[kind, approved.deliverableId]] : [];
+        }),
+      );
+      const requirementsSnapshot: Record<string, unknown> = {
+        ...requirements,
+        [UPSTREAM_SNAPSHOT_KEY]: upstream,
+        ...(refinement ? { [REFINEMENT_SNAPSHOT_KEY]: refinement } : {}),
+      };
 
       const created = await ctx.workflow.createTask({
         conversationId: command.conversationId,

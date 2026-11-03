@@ -44,7 +44,7 @@ import { buildDefaultRegistry } from '../../../src/core/orchestrator/bootstrap-r
 import { ChatInputAdapter } from '../../../src/adapters/chat-input-adapter';
 import { newTaskId } from '../../../src/core/ids';
 import { resetProvider, setProvider } from '../../../src/services/llm';
-import { FakeLLMProvider, TEST_TENANT_ID, TEST_USER_ID } from '../../../src/core/__tests__/_fixtures';
+import { APPROVED_NAME_ID, FakeLLMProvider, TEST_TENANT_ID, TEST_USER_ID, buildApprovedStore } from '../../../src/core/__tests__/_fixtures';
 import type { A2AMessage, IAgentTransport } from '../../../src/core/agent-types';
 import type { ConfirmFieldDecision, ConversationId, DeliverableStateView } from '../../../src/core/contracts';
 import { createCurrentAdapterBehaviorSnapshot, type AdapterBehaviorSnapshot } from '../../../src/services/ai-config/adapter-behavior';
@@ -71,6 +71,8 @@ function buildRuntime(store = new InMemoryConversationStore(buildDefaultRegistry
     notifier: new InProcessDecisionNotifier(),
     newTaskId,
     workflowFor: () => workflow,
+    // KAN-35: the logo depends on an approved business name.
+    approvalsFor: () => buildApprovedStore({ business_name: APPROVED_NAME_ID }),
   });
   mocks.state.core = core;
   return { core, store, registry, dispatched };

@@ -17,7 +17,7 @@
  *   in_review  = en revisión      retry    = Reintentar
  *   approved   = aprobado         cancel   = Cancelar
  *   failed     = fallido
- *   stale      = obsoleto (overlay on `approved`)
+ *   stale      = potencialmente desactualizado (overlay on `approved` / `in_review`)
  *
  * "Avanzar" is UI navigation only. It is not a command and never reaches
  * the server (KAN-64 decision 2).
@@ -76,9 +76,11 @@ export interface DeliverableStateView {
   readonly deliverableKind: string;
   readonly state: DeliverableStateKind;
   /**
-   * Obsoleto overlay: approved, and the approval store holds an explicit stale
-   * mark for this kind newer than its approval (written with an upstream
-   * approval or replacement). Never derived from timestamps.
+   * «Potencialmente desactualizado» overlay (RF-07, KAN-35) on `approved` or
+   * `in_review`: the current candidate (approved, else newest) was generated
+   * from inputs that changed since — a brief field it used or an upstream
+   * approval it was created under. Computed from recorded inputs, never
+   * stored and never derived from timestamps. Nothing is regenerated.
    */
   readonly stale: boolean;
   readonly allowedCommands: ReadonlyArray<DeliverableCommandKind>;

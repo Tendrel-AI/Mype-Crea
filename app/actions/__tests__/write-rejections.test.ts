@@ -118,7 +118,7 @@ import { InMemoryDeliverableWorkflowStore } from '../../../src/core/orchestrator
 import { buildDefaultRegistry } from '../../../src/core/orchestrator/bootstrap-registry';
 import { newTaskId } from '../../../src/core/ids';
 import { resetProvider, setProvider } from '../../../src/services/llm';
-import { FakeLLMProvider, TEST_TENANT_ID, TEST_USER_ID } from '../../../src/core/__tests__/_fixtures';
+import { APPROVED_NAME_ID, FakeLLMProvider, TEST_TENANT_ID, TEST_USER_ID, buildApprovedStore } from '../../../src/core/__tests__/_fixtures';
 import type { A2AMessage, IAgentTransport } from '../../../src/core/agent-types';
 import type { ConversationId, DeliverableStateView, FieldDelta } from '../../../src/core/contracts';
 import { BRIEF_CATALOG } from '../../../src/core/brief';
@@ -158,6 +158,8 @@ function buildRuntime() {
     notifier: new InProcessDecisionNotifier(),
     newTaskId,
     workflowFor: () => workflow,
+    // KAN-35: the logo depends on an approved business name.
+    approvalsFor: () => buildApprovedStore({ business_name: APPROVED_NAME_ID }),
   });
   mocks.state.core = core;
   return { core, workflow, dispatched };

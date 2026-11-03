@@ -18,7 +18,7 @@ from the rubro, the style and the optional product.
      shown to the user (see `agents/logo-agent/agent-card.json`: `business_name`,
      `style_keywords`, optional `color_palette`);
    - `mypes:deliverable` — the deliverable `kind` and `dependsOn` (the upstream kinds that must be
-     approved first; every card has `dependsOn: []` today);
+     approved first; today only the logo declares one, `["business_name"]`, KAN-35);
    - `mypes:ui` — tab label, icon, display order (display only, never used for decisions).
 2. **Registry.** `src/core/orchestrator/bootstrap-registry.ts:buildDefaultRegistry` registers
    cards with their handlers into `src/core/orchestrator/agent-registry.ts:AgentRegistry`, the

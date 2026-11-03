@@ -4,7 +4,7 @@
  * Deliverable command panel (KAN-28 / KAN-64 / KAN-65).
  *
  * Renders one deliverable's server-derived state: a Spanish state badge, the
- * «Obsoleto» overlay, its candidates (with Aprobar / «Aprobada»), and the
+ * «Potencialmente desactualizado» overlay (RF-07), its candidates (with Aprobar / «Aprobada»), and the
  * command buttons listed in `allowedCommands`. The buttons are advisory: the
  * server re-validates every command against a fresh state.
  *
@@ -48,6 +48,15 @@ const STATE_STYLES: Readonly<Record<DeliverableStateKind, string>> = {
   approved: 'bg-emerald-50 text-emerald-700',
   failed: 'bg-red-50 text-red-700',
 };
+
+/** RF-07 (KAN-35) overlay badge. */
+export const STALE_LABEL = 'Potencialmente desactualizado';
+
+/** RF-07 notice: something this deliverable used changed; nothing is regenerated on its own. */
+export function staleNotice(view: Pick<DeliverableStateView, 'state'>, label: string): string {
+  const keep = view.state === 'approved' ? ' o mantener el aprobado' : '';
+  return `Cambió algo que usó este ${label} (un dato de tu marca o un entregable aprobado). No lo regeneramos solo: toca Iterar o Generar si quieres actualizarlo${keep}.`;
+}
 
 /** Spanish labels of the server's missing preconditions (KAN-26). */
 function missingLabels(fields: ReadonlyArray<string>): string {
@@ -131,11 +140,8 @@ export function DeliverableCommands({
           {STATE_LABELS[view.state]}
         </span>
         {view.stale && (
-          <span
-            className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800"
-            title="Cambió algo de lo que este entregable depende. Puedes generarlo de nuevo."
-          >
-            Obsoleto
+          <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800">
+            {STALE_LABEL}
           </span>
         )}
       </div>
@@ -156,8 +162,8 @@ export function DeliverableCommands({
         </p>
       )}
       {view.stale && (
-        <p className="text-xs text-amber-800">
-          Cambió algo de lo que depende este {label}. Puedes generarlo de nuevo o mantener el aprobado.
+        <p role="status" className="text-xs text-amber-800">
+          {staleNotice(view, label)}
         </p>
       )}
 
