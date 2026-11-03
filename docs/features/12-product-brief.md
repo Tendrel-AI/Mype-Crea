@@ -13,7 +13,7 @@ The owner builds the brand brief two ways: by chatting or by editing the brief p
 3. **Provenance.** Merge stores `FieldSlot.source` in the `agent_states` JSONB, so the origin survives a reload. `briefFromSnapshot` builds the panel view.
 4. **Ambiguous values.** A low-confidence chat value stays pending until the user confirms it. A delta carries `expectedPendingValue`; when a late «sí» or «no» answers a question the panel has since overwritten, merge returns `stale_confirmation` and leaves the panel value in place.
 5. **Preconditions.** The panel's missing-field list comes from the server's verdict. `deliverableCommandAction` checks the same preconditions again before generating.
-6. **Pinned releases.** `src/adapters/chat-input-adapter.ts:frozenFieldsInRegistry` accepts a pinned AI release when its frozen fields are a subset of the registry. Conversations pinned before the brief keep extracting only the logo fields. Prompt version: `extractor.v5`.
+6. **Pinned releases.** `src/adapters/chat-input-adapter.ts:frozenFieldsInRegistry` accepts a pinned AI release when its frozen fields are a subset of the registry. Conversations pinned before the brief keep extracting only the logo fields. Prompt version: `extractor.v5`. Each frozen field must still match exactly (requiredness, hint and owners): registering `name-agent` (KAN-31) adds an owner to `business_category`, `style_keywords` and `product_name` and makes `business_category` required, so releases pinned before it no longer match (open decision; see [02-agents-and-transport.md](02-agents-and-transport.md#limits--known-gaps)).
 
 ## Key rules / invariants
 
