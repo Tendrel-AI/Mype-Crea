@@ -5,8 +5,11 @@
 ## What it does
 
 After the owner taps Generar, the card switches to «Generando» when the worker picks the task
-up, and the finished logo (or a failure) appears without reloading. If the tab was closed, a
-reload restores everything from the database.
+up, and the finished logo (or a failure) appears without reloading. The chat stays usable
+while a deliverable is being produced. If the live connection is lost, the chat says «Se perdió
+la conexión en vivo. Recarga para ver el estado actual.» with a «Recargar» button. If the tab was
+closed, a reload restores messages, brief, tasks in progress and deliverables from the database
+without starting any new generation (KAN-30).
 
 ## How it works
 
@@ -43,7 +46,16 @@ reload restores everything from the database.
    siblings in `src/core/orchestrator/`) are thin wrappers over them. Redis is used when
    `REDIS_URL` is set; Postgres `LISTEN/NOTIFY` is not an option behind transaction-pooling
    PgBouncer.
-8. **Failure detail.** The route reads `src/services/failure-disclosure.ts:exposesTaskFailureDetail`
+8. **Client side (KAN-30).** `CreaMype` updates processing indicators with the pure
+   `components/crea-mype/live-updates.ts:nextProcessingAgents`: `task_processing` turns an
+   agent's spinner on; `task_completed` or `task_failed` turns it off and keeps the deliverables
+   already shown, then the states are re-read. On an EventSource `error` it counts errors since
+   the last `open`; `liveConnectionLost` reports the loss when the stream is `CLOSED` or a
+   reconnection attempt fails again, and `ChatPanel` shows `LIVE_CONNECTION_LOST_MESSAGE` with
+   «Recargar» (`window.location.reload()`). A later `open` hides it. Nothing polls or reloads on
+   its own. The reload goes through the page's server render
+   ([07-conversations.md](07-conversations.md)), which only reads.
+9. **Failure detail.** The route reads `src/services/failure-disclosure.ts:exposesTaskFailureDetail`
    once per connection. Off (default), a `task_failed` frame carries no technical detail and the
    card shows the plain Spanish message; on (`DEVELOPMENT=TRUE`), the chat also shows a
    «[Modo desarrollo] …» notice (`components/crea-mype/failure-copy.ts:developerFailureChatText`).
@@ -68,6 +80,12 @@ reload restores everything from the database.
   ("forwards the technical detail when DEVELOPMENT=TRUE").
 - **A stream never outlives the caller's access.** Enforced by `route.test.ts` ("closes an open
   stream… when membership is revoked") and `src/auth/__tests__/resolve-identity.test.ts`.
+- **The chat is never blocked by a generation, and a lost stream loses nothing (KAN-30).** The
+  input stays enabled while a task runs; a terminal failure clears only the spinner; a reload
+  re-reads durable state and dispatches nothing. Enforced by
+  `components/crea-mype/__tests__/live-updates.test.tsx`, `components/__tests__/CreaMype.test.tsx`
+  («KAN-30» block), `src/conversations/__tests__/selection.test.ts` and
+  `app/actions/__tests__/conversations.test.ts`.
 - **Failure messages are sanitized before storage.** `sanitizeFailureMessage` removes secrets,
   URL queries and control characters and caps the length. Enforced by `notifications.test.ts`.
 
@@ -75,6 +93,10 @@ reload restores everything from the database.
 
 - 2026-10-25 — KAN-58: one notification contract for every producer and consumer; failure detail
   only in developer mode; no `announce_failure` decision.
+- 2026-11-03 — KAN-30: SSE loss is detected from the EventSource `error` event (stream closed, or
+  a reconnection that fails again); the user reloads by hand. No polling, no automatic reload, no
+  new reload frequency, concurrency or p95 targets. Provider failures reuse the KAN-58 card copy
+  (`failure-copy.ts`). Durable recovery of stuck tasks stays in KAN-18.
 - 2026-10-25 — KAN-81: a rebuilt completion notice must equal the live one (artifact kind and
   metadata are stored on the deliverable).
 
@@ -83,6 +105,11 @@ reload restores everything from the database.
 - Acknowledgement means "written to the server response", not "received by the browser"; the
   reload path covers the gap.
 - The Responder text is not streamed over SSE; it returns from the chat action.
+- A drop the browser recovers from on its first retry is not reported; one that never recovers
+  only shows after the second failed attempt (the browser's own retry delay).
+- A task left `in_progress` by a dead worker still shows «Generando» after a reload; settling it
+  is KAN-18's durable recovery ([`kan-63-recovery-plan.md`](../../pipeline/kan-63-recovery-plan.md)).
+  A `pending` one is re-published by the periodic recovery.
 - Without Redis, the workers run over an in-process bus and write the same durable notice
   (KAN-82); the ephemeral `task_processing` event then reaches only SSE streams in the same
   process.

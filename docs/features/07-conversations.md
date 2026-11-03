@@ -36,7 +36,12 @@ conversación.» with **Ir a mi última conversación**.
    conversation id so a switch remounts it with fresh state. A loaded conversation carries its
    persisted brief (`history.brief`, built by `src/conversations/brief-panel.ts:briefPanelFields`
    from the snapshot `readPinnedConversation` already returns, the same projection the brief
-   panel action uses), so `CreaMype` shows it on first paint instead of an empty panel.
+   panel action uses), so `CreaMype` shows it on first paint instead of an empty panel. It also
+   carries the deliverable states (`history.states`, KAN-30): `loadOwnedConversation` registers
+   the owner with the core and reads `getDeliverableStates`, the same read-only derivation as the
+   panel action, so a task in progress, a failure and the candidates show on first paint
+   (`CreaMype` `initialStates`). If that read fails it logs and returns `[]`; the page still opens
+   and the client reload fills the panel.
 5. **Export.** `exportConversationTraceAction` downloads the conversation's full ordered trace
    (KAN-42, [15-trace-and-metrics.md](15-trace-and-metrics.md)). The owner gets it from
    «Exportar» in the chat header; an active tenant admin of the same tenant gets it from
@@ -55,9 +60,11 @@ conversación.» with **Ir a mi última conversación**.
 - **Starting a new conversation never discards the old one.** Nothing is marked `abandoned`.
   Enforced by `selection.test.ts` ("starting a new conversation keeps the previous one listed")
   and `components/crea-mype/__tests__/ConversationMenu.test.tsx`.
-- **A resumed conversation shows its brief.** Messages, deliverables and the brief come back
-  from the server render, not from a later client fetch. Enforced by `selection.test.ts`
-  ("resumes a conversation with its persisted brief…") and `components/__tests__/CreaMype.test.tsx`.
+- **A resumed conversation shows its brief, messages, tasks and deliverables.** They come back
+  from the server render, not from a later client fetch, and the reload dispatches nothing.
+  Enforced by `selection.test.ts` ("resumes a conversation with its persisted brief…", the two
+  «KAN-30» cases), `app/actions/__tests__/conversations.test.ts` (no `executeCommand` or
+  `applyDelta` on load) and `components/__tests__/CreaMype.test.tsx` («KAN-30» block).
 - **Labels use Lima time and neutral Spanish.** Enforced by
   `src/conversations/__tests__/label.test.ts` and `ConversationMenu.test.tsx`.
 
