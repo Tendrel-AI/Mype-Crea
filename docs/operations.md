@@ -112,9 +112,9 @@ Text-model calls go to one of two providers. Images always use fal.ai.
   set `AI_CONFIG_<PROVIDER>_ENABLED=false` (for example `AI_CONFIG_ANTHROPIC_ENABLED=false`) and
   restart, or disable it per tenant in `/admin/ai`; turns then use the release's fallback profile
   and record a notice.
-- **Pending (owner decision):** KAN-69 asked for "one switch plus restart" and no automatic
-  provider fallback. KAN-70 later introduced pinned releases with automatic compatible fallback.
-  The two need to be reconciled; see the KAN-69 audit.
+- **Decided (2026-10-25): KAN-70 wins over KAN-69.** Conversations keep their pinned release,
+  and the baseline's automatic compatible fallback stays. KAN-69's "one switch plus restart"
+  applies only through the provider kill switch above. See the KAN-69 audit.
 
 ## 6. Local setup
 
