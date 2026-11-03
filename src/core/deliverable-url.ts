@@ -10,7 +10,12 @@
  * Every place that hands a deliverable URL to a client goes through `clientDeliverableUrl`:
  * the reload and export actions, the deliverable workflow views, and the live and rebuilt
  * `task_completed` notices. Pure.
+ *
+ * KAN-33: a deliverable whose recorded safety verdict is not `passed` has no client URL at all
+ * (`isPresentable`), so a rejected or indeterminate image is never shown anywhere.
  */
+
+import { isPresentable } from './deliverable-safety';
 
 export const ASSET_ROUTE_PREFIX = '/api/assets/';
 
@@ -22,6 +27,9 @@ export function clientDeliverableUrl(deliverable: {
   readonly id: string;
   readonly contentUrl: string | null;
   readonly storageKey?: string | null;
+  /** The artifact metadata (`metadata.safety`, KAN-33). Required so no caller can skip the safety rule. */
+  readonly metadata: unknown;
 }): string | null {
+  if (!isPresentable(deliverable.metadata)) return null;
   return deliverable.storageKey ? assetRoutePath(deliverable.id) : deliverable.contentUrl;
 }

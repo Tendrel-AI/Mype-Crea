@@ -99,7 +99,7 @@ interface SettledTaskFacts {
 function notificationArtifact(fact: SettledArtifactFact): NotificationArtifact {
   return {
     kind: fact.kind,
-    url: clientDeliverableUrl({ id: fact.deliverableId, contentUrl: fact.url, storageKey: fact.storageKey }),
+    url: clientDeliverableUrl({ id: fact.deliverableId, contentUrl: fact.url, storageKey: fact.storageKey, metadata: fact.metadata }),
     inline: fact.inline === undefined ? null : (fact.inline as NotificationArtifact['inline']),
     metadata: fact.metadata as NotificationArtifact['metadata'],
   };

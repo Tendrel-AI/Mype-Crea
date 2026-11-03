@@ -65,6 +65,7 @@ export const COMMAND_MESSAGES = {
   invalid: 'No pudimos validar esta acción.',
   cancelTooLate: 'La generación ya empezó y no se puede cancelar.',
   approveNotCandidate: 'Esta propuesta no está disponible para aprobar.',
+  approveUnsafe: 'Esta propuesta no pasó la revisión automática de seguridad. Genera otra opción.',
   approveStale: 'La aprobación cambió mientras decidías. Revisa la propuesta aprobada actual e inténtalo de nuevo.',
   iterateNeedsChange: 'Cuéntanos qué quieres cambiar para intentarlo de nuevo.',
   replayConflict: 'Esta acción ya se usó con otros datos. Inténtalo de nuevo desde el panel.',
@@ -233,9 +234,10 @@ export async function executeDeliverableCommand(
     }
 
     case 'approve': {
-      if (!view.candidates.some((c) => c.deliverableId === command.deliverableId)) {
-        return reject('not_found', COMMAND_MESSAGES.approveNotCandidate, states);
-      }
+      const target = view.candidates.find((c) => c.deliverableId === command.deliverableId);
+      if (!target) return reject('not_found', COMMAND_MESSAGES.approveNotCandidate, states);
+      // KAN-33: a rejected or indeterminate safety verdict is never approvable (fail closed).
+      if (!target.approvable) return reject('not_allowed', COMMAND_MESSAGES.approveUnsafe, states);
       if (command.expectedApprovedId !== view.approvedDeliverableId) {
         return reject('stale', COMMAND_MESSAGES.approveStale, states);
       }

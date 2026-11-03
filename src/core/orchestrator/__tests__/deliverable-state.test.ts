@@ -625,6 +625,38 @@ describe('KAN-35 — staleness from recorded inputs (RF-07)', () => {
   });
 });
 
+describe('KAN-33 — a candidate that did not pass the safety check', () => {
+  const REJECTED = { ...C2, approvable: false };
+
+  it.each([
+    ['only candidate rejected', [{ ...C1, approvable: false }], ['generate', 'iterate']],
+    ['newest rejected, older passed', [C1, REJECTED], ['generate', 'iterate', 'approve']],
+    ['newest passed, older rejected', [{ ...C1, approvable: false }, C2], ['iterate', 'approve']],
+  ] as const)('%s: no URL, never approvable, Generar is its review path', (_name, candidates, allowed) => {
+    const view = stateOf(LOGO_READY, [LOGO_SPEC], facts({ tasks: [DONE, DONE2], candidates: [...candidates] }));
+    expect(view.state).toBe('in_review');
+    expect(view.allowedCommands).toEqual(allowed);
+    for (const c of view.candidates) {
+      expect(c.contentUrl === null).toBe(!c.approvable);
+    }
+  });
+
+  it('an approved logo with only a rejected alternative offers no Aprobar (replace) for it', () => {
+    const view = stateOf(LOGO_READY, [LOGO_SPEC], facts({
+      tasks: [DONE, DONE2],
+      candidates: [C1, REJECTED],
+      approvals: [{ deliverableKind: 'logo', deliverableId: 'd1' }],
+    }));
+    expect(view.state).toBe('approved');
+    expect(view.allowedCommands).toEqual(['iterate']);
+  });
+
+  it('candidates without a recorded verdict stay approvable (text deliverables, pre-KAN-33 images)', () => {
+    const view = stateOf(LOGO_READY, [LOGO_SPEC], facts({ tasks: [DONE], candidates: [C1] }));
+    expect(view.candidates[0]).toMatchObject({ approvable: true, contentUrl: 'https://cdn.test/d1.png' });
+  });
+});
+
 describe('deriveStaleKinds / dependentKindsOf', () => {
   const specs = [NAME_SPEC, LOGO_SPEC, LABEL_SPEC, SOCIAL_SPEC];
   const approvals: ApprovalFact[] = [

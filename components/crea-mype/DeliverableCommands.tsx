@@ -4,7 +4,8 @@
  * Deliverable command panel (KAN-28 / KAN-64 / KAN-65).
  *
  * Renders one deliverable's server-derived state: a Spanish state badge, the
- * «Potencialmente desactualizado» overlay (RF-07), its candidates (with Aprobar / «Aprobada»), and the
+ * «Potencialmente desactualizado» overlay (RF-07), its candidates (with Aprobar / «Aprobada»; a
+ * candidate that did not pass the safety check shows the KAN-33 review message instead), and the
  * command buttons listed in `allowedCommands`. The buttons are advisory: the
  * server re-validates every command against a fresh state.
  *
@@ -56,6 +57,11 @@ export const STALE_LABEL = 'Potencialmente desactualizado';
 export function staleNotice(view: Pick<DeliverableStateView, 'state'>, label: string): string {
   const keep = view.state === 'approved' ? ' o mantener el aprobado' : '';
   return `Cambió algo que usó este ${label} (un dato de tu marca o un entregable aprobado). No lo regeneramos solo: toca Iterar o Generar si quieres actualizarlo${keep}.`;
+}
+
+/** KAN-33 review path: shown instead of a candidate whose safety verdict is not `passed`. */
+export function safetyReviewNotice(label: string): string {
+  return `Este ${label} no pasó la revisión automática de seguridad. Genera otra opción.`;
 }
 
 /** Spanish nouns of upstream deliverable kinds, for the blocked message (KAN-32). */
@@ -193,7 +199,11 @@ export function DeliverableCommands({
                 key={candidate.deliverableId}
                 className={`flex flex-col gap-1 rounded-lg border p-1 ${isApproved ? 'border-emerald-500' : 'border-neutral-200'}`}
               >
-                {text ? (
+                {!candidate.approvable ? (
+                  <p role="status" className="px-1 text-xs text-amber-800">
+                    {safetyReviewNotice(label)}
+                  </p>
+                ) : text ? (
                   <div className="px-1">
                     <p className="text-sm font-semibold text-neutral-900">{text.text}</p>
                     {text.rationale && <p className="text-xs text-neutral-600">{text.rationale}</p>}
@@ -213,7 +223,7 @@ export function DeliverableCommands({
                     <CheckCircle2 size={12} /> Aprobada
                   </span>
                 ) : (
-                  has(view, 'approve') && (
+                  has(view, 'approve') && candidate.approvable && (
                     <button
                       type="button"
                       disabled={busy}

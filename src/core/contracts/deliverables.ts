@@ -64,6 +64,12 @@ export interface DeliverableCandidateView {
   readonly contentUrl: string | null;
   readonly contentInline: Readonly<Record<string, unknown>> | null;
   readonly createdAt: ISOTimestamp;
+  /**
+   * False when the recorded safety verdict is not `passed` (KAN-33): the
+   * candidate has no `contentUrl`, cannot be approved, and the UI shows the
+   * review-path message instead of it.
+   */
+  readonly approvable: boolean;
 }
 
 /**

@@ -24,6 +24,7 @@ import type { ConversationId, DeliverableId, TaskId, UUID } from '../contracts';
 import { repos, systemRepos, type Tenant, type User } from '../../repos';
 import type { AgentTaskRow, DeliverableRow } from '../../repos/models';
 import { clientDeliverableUrl } from '../deliverable-url';
+import { isPresentable } from '../deliverable-safety';
 import { recordedFieldVersions, recordedUpstream } from '../deliverable-inputs';
 import type {
   CreateTaskInput,
@@ -52,16 +53,18 @@ function toWorkflowTask(row: AgentTaskRow): WorkflowTask {
 }
 
 function toCandidate(row: DeliverableRow): WorkflowCandidate {
+  // Rows written before KAN-81 keep the artifact metadata only inside content_inline.
+  const metadata = row.artifactMetadata ?? row.contentInline?.metadata;
   return {
     deliverableId: row.id as DeliverableId,
     agentTaskId: row.agentTaskId as TaskId,
     kind: row.kind,
     // Views reach the browser: a stored image is only ever `/api/assets/<id>` (KAN-52).
-    contentUrl: clientDeliverableUrl(row),
+    contentUrl: clientDeliverableUrl({ ...row, metadata }),
     contentInline: row.contentInline,
     createdAt: row.createdAt,
-    // Rows written before KAN-81 keep the artifact metadata only inside content_inline.
-    inputVersions: recordedFieldVersions(row.artifactMetadata ?? row.contentInline?.metadata),
+    inputVersions: recordedFieldVersions(metadata),
+    approvable: isPresentable(metadata),
   };
 }
 
