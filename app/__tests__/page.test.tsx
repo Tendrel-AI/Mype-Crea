@@ -69,6 +69,7 @@ describe('/ conversation selection (KAN-25)', () => {
       conversationId: LIST[0].conversationId,
       turns: [{ requestId: 'r1', userMessage: 'Hola', content: '¡Hola!', stage: 'responded', failureCategory: null, notices: [], createdAt: 'x' }],
       deliverables: [{ id: 'd1', kind: 'logo', contentUrl: '/api/assets/d1', contentInline: null, selectedAt: null, createdAt: 'x' }],
+      brief: [{ name: 'business_name', label: 'Nombre del negocio', maxLength: 120, status: 'filled', value: 'Café Andino', source: 'chat' }],
     };
     mocks.resolveHomeConversation.mockResolvedValueOnce({ kind: 'open', history, conversations: LIST });
     const element = await page(LIST[0].conversationId) as ReactElement<Props>;
@@ -78,6 +79,7 @@ describe('/ conversation selection (KAN-25)', () => {
       initialConversationId: LIST[0].conversationId,
       initialTurns: history.turns,
       initialDeliverables: history.deliverables,
+      initialBrief: history.brief,
       initialConversations: LIST,
       userName: 'Ana Quispe',
     });

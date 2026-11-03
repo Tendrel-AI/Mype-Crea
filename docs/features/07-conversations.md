@@ -33,7 +33,10 @@ conversación.» with **Ir a mi última conversación**.
    `app/actions/conversations.ts` reuse `createOwnedConversation` / `loadOwnedConversation`. A new
    conversation pins the active AI release in the same transaction
    ([09-ai-configuration.md](09-ai-configuration.md)). `app/page.tsx` keys `CreaMype` by
-   conversation id so a switch remounts it with fresh state.
+   conversation id so a switch remounts it with fresh state. A loaded conversation carries its
+   persisted brief (`history.brief`, built by `src/conversations/brief-panel.ts:briefPanelFields`
+   from the snapshot `readPinnedConversation` already returns, the same projection the brief
+   panel action uses), so `CreaMype` shows it on first paint instead of an empty panel.
 5. **Export.** `exportConversationTraceAction` downloads the conversation's full ordered trace
    (KAN-42, [15-trace-and-metrics.md](15-trace-and-metrics.md)). The owner gets it from
    «Exportar» in the chat header; an active tenant admin of the same tenant gets it from
@@ -52,6 +55,9 @@ conversación.» with **Ir a mi última conversación**.
 - **Starting a new conversation never discards the old one.** Nothing is marked `abandoned`.
   Enforced by `selection.test.ts` ("starting a new conversation keeps the previous one listed")
   and `components/crea-mype/__tests__/ConversationMenu.test.tsx`.
+- **A resumed conversation shows its brief.** Messages, deliverables and the brief come back
+  from the server render, not from a later client fetch. Enforced by `selection.test.ts`
+  ("resumes a conversation with its persisted brief…") and `components/__tests__/CreaMype.test.tsx`.
 - **Labels use Lima time and neutral Spanish.** Enforced by
   `src/conversations/__tests__/label.test.ts` and `ConversationMenu.test.tsx`.
 

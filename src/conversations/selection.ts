@@ -15,6 +15,7 @@ import { getOrchestrator } from '../core/orchestrator/runtime';
 import type { ConversationId, UUID } from '../core/contracts';
 import { clientDeliverableUrl } from '../core/deliverable-url';
 import { conversationListLabel } from './label';
+import { briefPanelFields, type BriefPanelField } from './brief-panel';
 
 export const CONVERSATION_NOT_FOUND_MESSAGE = 'No encontramos esta conversación.';
 export const NEW_CONVERSATION_UNAVAILABLE_MESSAGE = 'No hay una configuración activa para iniciar una conversación nueva.';
@@ -48,6 +49,8 @@ export interface ConversationHistory {
     readonly selectedAt: string | null;
     readonly createdAt: string;
   }>;
+  /** The persisted brief, so a resumed conversation renders it on first paint. */
+  readonly brief: ReadonlyArray<BriefPanelField>;
 }
 
 export type OwnedConversationLoad =
@@ -130,6 +133,7 @@ export async function loadOwnedConversation(
         selectedAt: deliverable.selectedAt ?? null,
         createdAt: deliverable.createdAt,
       })),
+      brief: briefPanelFields(pin.snapshot),
     },
   };
 }
