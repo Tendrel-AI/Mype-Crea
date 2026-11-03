@@ -8,9 +8,9 @@
  * factory + the `globalThis` cache.
  *
  * Transport selection (architecture §2.5):
- *   - When `REDIS_URL` is set, dispatches for `logo-agent` go via
- *     RedisQueueAdapter — the orchestrator publishes only the task id to
- *     `mypes:agent_task:dispatch:logo-agent`, the in-process worker
+ *   - When `REDIS_URL` is set, dispatches for `logo-agent` and `name-agent`
+ *     go via RedisQueueAdapter — the orchestrator publishes only the task id
+ *     to `mypes:agent_task:dispatch:<agentId>`, the agent's in-process worker
  *     re-reads the canonical row from Postgres, runs the handler, and
  *     calls back into core.onTaskSettled. Other agents fall through to
  *     LocalAdapter until they are migrated.
@@ -36,7 +36,7 @@ import { globalRepos } from '../../repos/global';
 import { getConversationOwnerUserId } from '../../repos/conversations';
 import { LocalAdapter } from '../../transport/local-adapter';
 import { dispatchWakeUp, RedisQueueAdapter } from '../../transport/redis-queue-adapter';
-import { startLogoAgentWorker } from '../../workers/logo-agent-worker';
+import { LOGO_WORKER, NAME_WORKER, startAgentWorker } from '../../workers/agent-worker';
 import { getRedisPublisher, getRedisSubscriber } from '../../services/redis';
 import type { AgentId, ConversationId, TaskId, UUID } from '../contracts';
 import type { IAgentTransport } from '../agent-types';
@@ -59,9 +59,9 @@ import type { OrchestratorCoreImpl } from './orchestrator-core';
 
 const log = loggerFor('orchestrator.runtime');
 
-const REDIS_DISPATCH_AGENTS: ReadonlySet<AgentId> = new Set([
-  'logo-agent' as AgentId,
-]);
+/** Agents with a Redis worker; the worker persists their deliverables (§2.5). */
+const REDIS_WORKERS = [LOGO_WORKER, NAME_WORKER] as const;
+const REDIS_DISPATCH_AGENTS: ReadonlySet<AgentId> = new Set(REDIS_WORKERS.map((worker) => worker.agentId));
 
 // Cached on globalThis so that multiple Next.js server bundles observe the
 // same Runtime instance.
@@ -98,7 +98,7 @@ function buildTransport(
   // Boot the per-agent workers that drain the Redis dispatch channels.
   // Fire-and-forget: subscribe failures are logged inside the worker;
   // runtime construction must not block on Redis I/O.
-  void startLogoAgentWorker({
+  const workerContext = {
     subscriber,
     registry,
     systemReposFor: systemRepos,
@@ -110,7 +110,8 @@ function buildTransport(
       repos({ id: tenantId }, { id: userId }).aiTurns,
     onTaskSettled,
     lifecycleNotifier: defaultLifecycleNotifier,
-  }).then(() => {
+  };
+  void Promise.all(REDIS_WORKERS.map((worker) => startAgentWorker(workerContext, worker))).then(() => {
     if (!recoveryHolder[RECOVERY_STOP_SLOT]) {
       recoveryHolder[RECOVERY_STOP_SLOT] = startPeriodicRecovery({
         intervalMs: PENDING_RECOVERY_INTERVAL_MS,
@@ -118,8 +119,8 @@ function buildTransport(
         onError: (err) => log.error({ err }, 'orchestrator.runtime.periodic_recovery_failed'),
       });
     }
-  }).catch((err) =>
-    log.error({ err }, 'orchestrator.runtime.logo_worker_boot_failed'),
+  }).catch((err: unknown) =>
+    log.error({ err }, 'orchestrator.runtime.agent_worker_boot_failed'),
   );
 
   log.info(
@@ -142,18 +143,20 @@ async function reconcileConfiguredTenantEvents(): Promise<void> {
       const tenantRepositories = systemRepos({ id: tenantId as UUID });
       await tenantRepositories.aiEvents?.reconcileSettledTasks({ limit: 500 });
       if (!publisher) return;
-      const republished = await republishPendingDispatches({
-        tenantId: tenantId as UUID,
-        agentId: 'logo-agent',
-        batchSize: PENDING_RECOVERY_BATCH_SIZE,
-        listPending: (input) => tenantRepositories.agentTasks.listPendingDispatches(input),
-        publish: (task, taskTenantId) => {
-          const wakeUp = dispatchWakeUp({ taskId: task.id, tenantId: taskTenantId, agentId: task.agentId as AgentId });
-          return publisher.publish(wakeUp.channel, wakeUp.message);
-        },
-      });
-      if (republished > 0) {
-        log.info({ tenantId, republished, limit: PENDING_RECOVERY_BATCH_SIZE }, 'orchestrator.runtime.pending_tasks_republished');
+      for (const agentId of REDIS_DISPATCH_AGENTS) {
+        const republished = await republishPendingDispatches({
+          tenantId: tenantId as UUID,
+          agentId,
+          batchSize: PENDING_RECOVERY_BATCH_SIZE,
+          listPending: (input) => tenantRepositories.agentTasks.listPendingDispatches(input),
+          publish: (task, taskTenantId) => {
+            const wakeUp = dispatchWakeUp({ taskId: task.id, tenantId: taskTenantId, agentId: task.agentId as AgentId });
+            return publisher.publish(wakeUp.channel, wakeUp.message);
+          },
+        });
+        if (republished > 0) {
+          log.info({ tenantId, agentId, republished, limit: PENDING_RECOVERY_BATCH_SIZE }, 'orchestrator.runtime.pending_tasks_republished');
+        }
       }
     } catch (err) {
       log.error({ tenantId, err }, 'orchestrator.runtime.tenant_reconcile_failed');

@@ -550,6 +550,32 @@ SUITE('AI configuration and durable turns (integration)', () => {
     expect(await repo.claimTurn({ conversationId: conversation, requestId: claim.turn.requestId, inputContent: 'guardar trazas' })).toMatchObject({ kind: 'completed', turn: { responseContent: 'respuesta durable' } });
   });
 
+  it('stores name-agent text candidates as business_name deliverables with their metadata (KAN-31)', async () => {
+    const tenant = tenants[0];
+    const conversation = await newPinnedConversation(tenant, tenant.admin);
+    const scoped = repository(asIdentity(tenant, tenant.admin));
+    const task = await scoped.agentTasks.insertRoot({ conversationId: conversation, agentId: 'name-agent', agentCardVersion: '0.1.0', idempotencyKey: randomUUID() as UUID, requirementsSnapshot: { business_category: 'alimentos', style_keywords: 'rústico' } });
+    await scoped.agentTasks.claimById(task.id as TaskId);
+    const names = ['Uno', 'Dos', 'Tres', 'Cuatro', 'Cinco'];
+    const { deliverableIds } = await scoped.aiTurns.settleTaskAndEnqueue({
+      conversationId: conversation,
+      taskId: task.id as TaskId,
+      state: 'completed',
+      deliverableKind: 'business_name',
+      artifacts: names.map((inline, index) => ({ kind: 'text', inline, metadata: { rationale: `Razón ${index + 1}.`, promptVersion: 'name-agent.v1' } })),
+    });
+    expect(deliverableIds).toHaveLength(5);
+    const rows = await withTenantTransaction({ id: tenant.id }, { id: tenant.admin.id }, (tx) =>
+      tx.query<{ kind: string; content_url: string | null; content_inline: Record<string, unknown> }>(
+        `SELECT kind, content_url, content_inline FROM deliverables WHERE tenant_id=$1 AND agent_task_id=$2 ORDER BY created_at, id`,
+        [tenant.id, task.id],
+      ),
+    );
+    expect(rows.rows.every((row) => row.kind === 'business_name' && row.content_url === null)).toBe(true);
+    expect(rows.rows.map((row) => row.content_inline.value).sort()).toEqual([...names].sort());
+    expect(rows.rows[0].content_inline).toMatchObject({ kind: 'text', metadata: { promptVersion: 'name-agent.v1' } });
+  });
+
   it('atomically stores task artifacts/status/outbox once and isolates trace deletion from replay', async () => {
     const tenant = tenants[0];
     const conversation = await newPinnedConversation(tenant, tenant.admin);

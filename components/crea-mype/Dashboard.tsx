@@ -8,13 +8,15 @@ import { type BrandAssets, type Tab } from './types';
 import { LandingPageRenderer } from './LandingPageRenderer';
 
 
-export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls, briefPanel }: {
+export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls, nameControls, briefPanel }: {
   assets: BrandAssets;
   processingAgents: Set<string>;
   step: number;
   setActiveTab: (tab: Tab) => void;
   /** KAN-28: server-derived logo state and command buttons (DeliverableCommands). */
   logoControls?: React.ReactNode;
+  /** KAN-31: name candidates and their commands (DeliverableCommands). */
+  nameControls?: React.ReactNode;
   /** KAN-26: the editable brief (BriefPanel). Replaces the brand placeholder when present. */
   briefPanel?: React.ReactNode;
 }) {
@@ -90,6 +92,7 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
                   Esperando definición de marca...
                 </div>
               ))}
+              {nameControls}
             </motion.div>
 
             {/* Step 2 & 3: Visual Assets */}

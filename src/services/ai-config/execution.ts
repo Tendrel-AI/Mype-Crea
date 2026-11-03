@@ -416,30 +416,42 @@ function captureAttempt(
             }
             if (!enabled) throw new ProviderCallError('provider_unavailable');
             capture.startedAt = Date.now();
-            const estimatedCostUsd = estimateLlmCostUsd(params);
-            const completion = await runWithUsage(usage, {
-              request: {
-                kind: 'llm',
-                estimatedCostUsd,
-                provider: model.provider,
-                model: params.model,
-                conversationId: input.conversationId,
-                turnId: input.turnId,
-                attemptId,
-              },
-              call: () => original.chat.completions.create(params),
-              actualCostUsd: (result) => llmCostUsd(params.model, result.usage) ?? estimatedCostUsd,
-              // A typed non-ambiguous provider failure was not billed; anything else may have been.
-              failureCostUsd: (error) => error instanceof ProviderCallError && error.category !== 'ambiguous' ? 0 : estimatedCostUsd,
-            });
-            capture.completion = completion;
-            validateProductCompletion(params, completion);
-            return completion;
+            return usageGatedCompletion(original, params, usage, {
+              provider: model.provider,
+              conversationId: input.conversationId,
+              turnId: input.turnId,
+              attemptId,
+            }, (completion) => { capture.completion = completion; });
           },
         }),
       }),
     }),
   });
+}
+
+/**
+ * THE gated LLM call (KAN-43): reserve, call the provider, settle, then validate the
+ * completion. Chat attempts reach it through `captureAttempt`; agent tasks (KAN-31
+ * name-agent) through `src/services/llm/agent-completion.ts`, which has no chat turn.
+ */
+export async function usageGatedCompletion(
+  client: ResolvedModel['client'],
+  params: ChatRequest,
+  usage: UsageLedger,
+  correlation: { readonly provider?: string; readonly conversationId?: string; readonly turnId?: string; readonly attemptId?: string; readonly agentTaskId?: string },
+  onCompletion?: (completion: ChatCompletion) => void,
+): Promise<ChatCompletion> {
+  const estimatedCostUsd = estimateLlmCostUsd(params);
+  const completion = await runWithUsage(usage, {
+    request: { kind: 'llm', estimatedCostUsd, model: params.model, ...correlation },
+    call: () => client.chat.completions.create(params),
+    actualCostUsd: (result) => llmCostUsd(params.model, result.usage) ?? estimatedCostUsd,
+    // A typed non-ambiguous provider failure was not billed; anything else may have been.
+    failureCostUsd: (error) => error instanceof ProviderCallError && error.category !== 'ambiguous' ? 0 : estimatedCostUsd,
+  });
+  onCompletion?.(completion);
+  validateProductCompletion(params, completion);
+  return completion;
 }
 
 function validateProductCompletion(params: ChatRequest, completion: ChatCompletion): void {

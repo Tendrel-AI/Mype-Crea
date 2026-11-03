@@ -35,8 +35,10 @@ import { usageLimitMessage } from '../../src/services/usage/policy';
 const log = loggerFor('controller.deliverable-command');
 
 const COMMAND_KINDS: ReadonlyArray<DeliverableCommandKind> = ['generate', 'iterate', 'approve', 'retry', 'cancel'];
-/** Commands that start an image generation (KAN-43 preflight). */
+/** Commands that start a generation (KAN-43 preflight). */
 const GENERATING_COMMANDS: ReadonlyArray<DeliverableCommandKind> = ['generate', 'iterate', 'retry'];
+/** Agents whose generation is one LLM call (KAN-31); every other live agent generates an image. */
+const LLM_AGENTS: ReadonlyArray<string> = ['name-agent'];
 const STATE_KINDS: ReadonlyArray<DeliverableStateKind> = [
   'blocked',
   'enabled',
@@ -129,7 +131,7 @@ export async function deliverableCommandAction(
     // KAN-43: refuse before any task row exists. The worker's reservation stays the guarantee.
     if (GENERATING_COMMANDS.includes(command.kind)) {
       const preflight = await repos(authorized.identity.tenant, authorized.identity.user).usage.preflight({
-        kind: 'image',
+        kind: LLM_AGENTS.includes(command.agentId) ? 'llm' : 'image',
         estimatedCostUsd: 0,
         conversationId: command.conversationId,
       });

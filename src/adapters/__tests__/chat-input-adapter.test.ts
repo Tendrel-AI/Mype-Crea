@@ -370,6 +370,24 @@ describe('ChatInputAdapter', () => {
     })).rejects.toThrow(/does not match the runtime agent registry/);
     expect(provider.create).not.toHaveBeenCalled();
   });
+
+  it('accepts a frozen field whose owners or required flag changed (a new card shares it)', async () => {
+    const provider = makeExtractorProvider('{"fields":{}}');
+    const { registry } = buildSingleAgentFixtureRegistry();
+    // Same name and hint as the fixture registry; optional and owned by another agent when frozen.
+    const behavior = createCurrentAdapterBehaviorSnapshot([
+      { name: 'business_name', required: false, promptHint: '¿Cómo se llama el negocio?', agents: ['some-older-owner'] },
+    ]);
+    const adapter = new ChatInputAdapter(buildFakeCore(), registry);
+
+    await adapter.extract({
+      conversationId,
+      userMessage: 'hola',
+      llmContext: ctx,
+      execution: { model: { ...provider.resolve('extractor'), provider: 'openrouter' }, behavior },
+    });
+    expect(provider.create).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

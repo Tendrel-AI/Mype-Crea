@@ -208,7 +208,8 @@ export class InMemoryDeliverableWorkflowStore implements IDeliverableWorkflowSto
         agentTaskId: input.taskId,
         kind: input.deliverableKind,
         contentUrl: artifact.url ?? null,
-        contentInline: artifact.url ? null : { value: artifact.inline ?? null, kind: artifact.kind },
+        // Same shape as the Postgres settlement (`settleTaskAndEnqueue`).
+        contentInline: artifact.url ? null : { value: artifact.inline ?? null, kind: artifact.kind, metadata: artifact.metadata ?? {} },
         createdAt: this.nextTimestamp(),
       });
     });

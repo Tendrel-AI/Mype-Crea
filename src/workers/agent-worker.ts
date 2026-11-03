@@ -1,31 +1,29 @@
 /**
- * MYPES Platform — Logo agent worker
- * ===================================
+ * MYPES Platform — Agent worker (Redis-dispatched agents)
+ * =======================================================
  *
- * Subscribes to the logo-agent dispatch channel published by
- * RedisQueueAdapter and runs the local handler against the
- * authoritative agent_tasks row from Postgres (architecture §2.5).
+ * Subscribes to one agent's dispatch channel published by RedisQueueAdapter
+ * and runs that agent's registered handler against the authoritative
+ * agent_tasks row from Postgres (architecture §2.5). One worker per entry of
+ * `REDIS_DISPATCH_AGENTS` (runtime.ts): `LOGO_WORKER`, `NAME_WORKER` (KAN-31).
  *
  * Flow per wake-up:
- *   1. Receive `{ taskId, tenantId }` on `mypes:agent_task:dispatch:logo-agent`.
+ *   1. Receive `{ taskId, tenantId }` on `mypes:agent_task:dispatch:<agentId>`.
  *   2. Re-read the canonical row from Postgres (tenant-scoped via repos).
  *      The notification is a trigger, not a payload — never trusted.
  *   3. Skip rows addressed to another agent without touching them, so they
  *      stay `pending` for their owner. Otherwise atomically claim the row
  *      (`pending` -> `in_progress`, conditional on `agent_id`); skip if it's
  *      already been claimed by a peer worker or moved past pending.
- *   4. Build an A2AMessage from the row, invoke the registry's logo handler.
+ *   4. Build an A2AMessage from the row, invoke the registry's handler.
  *   5. Copy generated images into the private bucket (KAN-52) BEFORE the
  *      durable settlement; a storage failure fails the task durably
  *      (`storage_unavailable`, transient) and no deliverable is written.
+ *      Text artifacts (no URL) pass through unchanged.
  *   6. Hand the resulting TaskState back to OrchestratorCoreImpl.onTaskSettled,
  *      which is the same callback LocalAdapter uses — so the rest of the
  *      pipeline (markCompleted/markFailed, artifact pub/sub, SSE -> UI)
  *      is unchanged.
- *
- * Phase-1 scope: this worker only handles `logo-agent`. The other agent
- * cards (`tagline`, `label`, `social`) keep running through the
- * LocalAdapter fallback in RedisQueueAdapter until they are migrated.
  *
  * Process locality: in Phase 1 the worker boots in the same Node process as
  * the orchestrator runtime (see runtime.ts). In Phase 2 the same module
@@ -43,7 +41,8 @@ import type { DispatchNotification } from '../transport/redis-queue-adapter';
 import { parseNotification } from '../core/contracts/notifications';
 import { classifyTaskError, taskErrorFromThrown } from '../core/task-errors';
 import { splitRequirementsSnapshot } from '../core/refinement';
-import { loggerFor } from '../services/logger';
+import { loggerFor, type Logger } from '../services/logger';
+import type { DeliverableKind } from '../repos/models';
 import { storeArtifactImages } from '../services/storage/artifact-store';
 import type { StoredArtifact } from '../services/storage/types';
 import { clientDeliverableUrl } from '../core/deliverable-url';
@@ -51,51 +50,57 @@ import type { DeliverablesRepoLike, WorkerContext } from './_kit';
 
 export type { DeliverablesRepoLike } from './_kit';
 
-const log = loggerFor('worker.logo-agent');
+/** Which agent a worker drains and the deliverable_kind it stores. */
+export interface AgentWorkerSpec {
+  readonly agentId: AgentId;
+  readonly deliverableKind: DeliverableKind;
+  /** Prefix of the worker's log events, e.g. `worker.logo`. */
+  readonly logScope: string;
+}
 
-const LOGO_AGENT_ID = 'logo-agent' as AgentId;
-/**
- * deliverable_kind for everything this worker produces. Hardcoded because
- * a worker is per-agent — generalizing this is the next worker's problem.
- */
-const LOGO_DELIVERABLE_KIND = 'logo' as const;
+export const LOGO_WORKER: AgentWorkerSpec = { agentId: 'logo-agent' as AgentId, deliverableKind: 'logo', logScope: 'worker.logo' };
+export const NAME_WORKER: AgentWorkerSpec = { agentId: 'name-agent' as AgentId, deliverableKind: 'business_name', logScope: 'worker.name' };
 
-/** Back-compat alias. New code should reference `WorkerContext` from `./_kit`. */
-export type LogoAgentWorkerDeps = WorkerContext;
-
-export interface LogoAgentWorkerHandle {
+export interface AgentWorkerHandle {
   /** Tear down the subscription and drop the message listener. */
   stop(): Promise<void>;
 }
 
-export async function startLogoAgentWorker(
+export function startLogoAgentWorker(deps: WorkerContext): Promise<AgentWorkerHandle> {
+  return startAgentWorker(deps, LOGO_WORKER);
+}
+
+export async function startAgentWorker(
   deps: WorkerContext,
-): Promise<LogoAgentWorkerHandle> {
-  const channel = channelForAgent(LOGO_AGENT_ID);
+  spec: AgentWorkerSpec,
+): Promise<AgentWorkerHandle> {
+  const { agentId: AGENT_ID, deliverableKind, logScope } = spec;
+  const log = loggerFor(`worker.${AGENT_ID}`);
+  const channel = channelForAgent(AGENT_ID);
 
   const onMessage = async (incomingChannel: string, raw: string): Promise<void> => {
     if (incomingChannel !== channel) return;
 
     log.info(
       { channel: incomingChannel, payloadBytes: raw.length },
-      'worker.logo.notification_received',
+      `${logScope}.notification_received`,
     );
 
     const wakeUp = parseNotification(raw, ['task_dispatch']);
     if (!wakeUp.ok) {
       log.error(
         { channel: incomingChannel, reason: wakeUp.reason, detail: wakeUp.detail },
-        'worker.logo.parse_failed',
+        `${logScope}.parse_failed`,
       );
       return;
     }
     const parsed: DispatchNotification = wakeUp.notification;
 
     const { taskId, tenantId } = parsed;
-    const child = log.child({ tenantId, taskId, agentId: LOGO_AGENT_ID });
+    const child = log.child({ tenantId, taskId, agentId: AGENT_ID });
     child.info(
       { taskId, tenantId, agentId: parsed.agentId },
-      'worker.logo.notification_parsed',
+      `${logScope}.notification_parsed`,
     );
 
     const repo = deps.systemReposFor({ id: tenantId as UUID }).agentTasks;
@@ -107,11 +112,11 @@ export async function startLogoAgentWorker(
     try {
       preClaim = await repo.findById(taskId);
     } catch (err) {
-      child.error({ err }, 'worker.logo.lookup_failed');
+      child.error({ err }, `${logScope}.lookup_failed`);
       return;
     }
     if (!preClaim) {
-      child.warn('worker.logo.row_not_found_in_db');
+      child.warn(`${logScope}.row_not_found_in_db`);
       return;
     }
     child.info(
@@ -123,31 +128,31 @@ export async function startLogoAgentWorker(
         iterationNumber: preClaim.iterationNumber,
         requirementKeys: Object.keys(preClaim.requirementsSnapshot),
       },
-      'worker.logo.row_loaded',
+      `${logScope}.row_loaded`,
     );
 
     // A task for another agent must stay claimable by its owner: never move
     // it to in_progress here. The claim below is also conditional on the
     // agent id, so this holds even if the row changed in between.
-    if (preClaim.agentId !== LOGO_AGENT_ID) {
+    if (preClaim.agentId !== AGENT_ID) {
       child.warn(
         { actualAgent: preClaim.agentId },
-        'worker.logo.skip_wrong_agent_on_channel',
+        `${logScope}.skip_wrong_agent_on_channel`,
       );
       return;
     }
 
     let claimed;
     try {
-      claimed = await repo.claimById(taskId, LOGO_AGENT_ID);
+      claimed = await repo.claimById(taskId, AGENT_ID);
     } catch (err) {
-      child.error({ err }, 'worker.logo.claim_failed');
+      child.error({ err }, `${logScope}.claim_failed`);
       return;
     }
     if (!claimed) {
       child.info(
         { statusBeforeClaim: preClaim.status },
-        'worker.logo.skip_not_claimable',
+        `${logScope}.skip_not_claimable`,
       );
       return;
     }
@@ -157,7 +162,7 @@ export async function startLogoAgentWorker(
         attempts: claimed.attempts,
         dispatchedAt: claimed.dispatchedAt,
       },
-      'worker.logo.claimed',
+      `${logScope}.claimed`,
     );
 
     // Publish a lifecycle event so the UI shows a spinner immediately. This
@@ -168,16 +173,16 @@ export async function startLogoAgentWorker(
       try {
         deps.lifecycleNotifier.publishProcessing({
           conversationId: claimed.conversationId,
-          agentId: LOGO_AGENT_ID,
+          agentId: AGENT_ID,
           taskId: claimed.id,
           claimedAt,
         });
-        child.info({ claimedAt }, 'worker.logo.lifecycle_published');
+        child.info({ claimedAt }, `${logScope}.lifecycle_published`);
       } catch (err) {
-        child.error({ err }, 'worker.logo.lifecycle_publish_failed');
+        child.error({ err }, `${logScope}.lifecycle_publish_failed`);
       }
     }
-    const entry = deps.registry.get(LOGO_AGENT_ID);
+    const entry = deps.registry.get(AGENT_ID);
 
     // KAN-28: an «Iterar» task carries its refinement under the reserved
     // `refinement` key; it goes to `iteration`, never into `requirements`.
@@ -185,7 +190,7 @@ export async function startLogoAgentWorker(
     const a2a: A2AMessage = {
       taskId: claimed.id,
       tenantId: tenantId as UUID,
-      agentId: LOGO_AGENT_ID,
+      agentId: AGENT_ID,
       agentCardVersion: claimed.agentCardVersion,
       requirements,
       ...(claimed.parentTaskId
@@ -211,7 +216,7 @@ export async function startLogoAgentWorker(
         requirementKeys: Object.keys(requirements),
         agentCardVersion: claimed.agentCardVersion,
       },
-      'worker.logo.handler.start',
+      `${logScope}.handler.start`,
     );
 
     const handlerStartedAt = Date.now();
@@ -219,7 +224,7 @@ export async function startLogoAgentWorker(
     try {
       result = await entry.handler(a2a, entry.handlerDeps);
     } catch (err) {
-      child.error({ err }, 'worker.logo.handler.threw');
+      child.error({ err }, `${logScope}.handler.threw`);
       result = {
         status: 'failed',
         taskId: claimed.id,
@@ -241,11 +246,11 @@ export async function startLogoAgentWorker(
         });
         child.info(
           { storedCount: storedArtifacts.filter((artifact) => artifact.storageKey).length },
-          'worker.logo.assets_stored',
+          `${logScope}.assets_stored`,
         );
       } catch (err) {
         const error = taskErrorFromThrown(err);
-        child.error({ err, errorKind: error.kind }, 'worker.logo.asset_storage_failed');
+        child.error({ err, errorKind: error.kind }, `${logScope}.asset_storage_failed`);
         result = { status: 'failed', taskId: claimed.id, error, completedAt: new Date().toISOString() };
       }
     }
@@ -262,7 +267,7 @@ export async function startLogoAgentWorker(
         artifactCount:
           finalState.status === 'completed' ? finalState.result.artifacts.length : 0,
       },
-      'worker.logo.handler.settled',
+      `${logScope}.handler.settled`,
     );
 
     // Persist artifacts as `deliverables` rows. This is the worker's
@@ -277,7 +282,7 @@ export async function startLogoAgentWorker(
         claimed.conversationId,
       );
     } catch (err) {
-      child.error({ err }, 'worker.logo.owner_lookup_failed');
+      child.error({ err }, `${logScope}.owner_lookup_failed`);
     }
     let durableSettlement = false;
     if (ownerUserId && deps.settleTaskFor) {
@@ -286,7 +291,7 @@ export async function startLogoAgentWorker(
           conversationId: claimed.conversationId,
           taskId: claimed.id,
           state: finalState.status,
-          deliverableKind: LOGO_DELIVERABLE_KIND,
+          deliverableKind,
           artifacts: finalState.status === 'completed' ? storedArtifacts : [],
           ...(finalState.status === 'failed'
             ? {
@@ -304,7 +309,7 @@ export async function startLogoAgentWorker(
         // Nothing was committed: the row stays in_progress, which is the
         // operator review signal (architecture §2.5). Do not announce a
         // settlement that is not durable, and never reject the listener.
-        child.error({ err, status: finalState.status }, 'worker.logo.settlement_failed');
+        child.error({ err, status: finalState.status }, `${logScope}.settlement_failed`);
         return;
       }
     } else if (
@@ -315,12 +320,15 @@ export async function startLogoAgentWorker(
       if (!ownerUserId) {
         child.warn(
           { conversationId: claimed.conversationId },
-          'worker.logo.owner_unresolved_skipping_persistence',
+          `${logScope}.owner_unresolved_skipping_persistence`,
         );
       } else {
         const repo = deps.deliverablesFor(tenantId as UUID, ownerUserId);
         deliverableIds = await persistArtifacts(
           repo,
+          deliverableKind,
+          log,
+          logScope,
           claimed.id,
           claimed.conversationId,
           storedArtifacts,
@@ -334,7 +342,7 @@ export async function startLogoAgentWorker(
         deliverableCount: deliverableIds.length,
         status: finalState.status,
       },
-      'worker.logo.on_settled.invoking',
+      `${logScope}.on_settled.invoking`,
     );
     try {
       if (!ownerUserId) {
@@ -356,9 +364,9 @@ export async function startLogoAgentWorker(
         agentId: claimed.agentId,
         ...(durableSettlement ? { durableSettlement: true as const } : {}),
       });
-      child.info('worker.logo.on_settled.returned');
+      child.info(`${logScope}.on_settled.returned`);
     } catch (err) {
-      child.error({ err }, 'worker.logo.on_settled_threw');
+      child.error({ err }, `${logScope}.on_settled_threw`);
     }
   };
 
@@ -368,7 +376,7 @@ export async function startLogoAgentWorker(
   deps.subscriber.on('message', onMessage);
   await deps.subscriber.subscribe(channel);
 
-  log.info({ channel }, 'worker.logo.subscribed');
+  log.info({ channel }, `${logScope}.subscribed`);
 
   return {
     async stop(): Promise<void> {
@@ -376,9 +384,9 @@ export async function startLogoAgentWorker(
       try {
         await deps.subscriber.unsubscribe(channel);
       } catch (err) {
-        log.error({ err, channel }, 'worker.logo.unsubscribe_failed');
+        log.error({ err, channel }, `${logScope}.unsubscribe_failed`);
       }
-      log.info({ channel }, 'worker.logo.stopped');
+      log.info({ channel }, `${logScope}.stopped`);
     },
   };
 }
@@ -406,6 +414,9 @@ function clientArtifacts(
 
 async function persistArtifacts(
   repo: DeliverablesRepoLike,
+  deliverableKind: DeliverableKind,
+  log: Logger,
+  logScope: string,
   taskId: TaskId,
   conversationId: ConversationId,
   artifacts: ReadonlyArray<StoredArtifact>,
@@ -417,7 +428,7 @@ async function persistArtifacts(
       const inserted = await repo.insert({
         conversationId,
         agentTaskId: taskId,
-        kind: LOGO_DELIVERABLE_KIND,
+        kind: deliverableKind,
         contentUrl: artifact.url ?? null,
         contentInline:
           artifact.url == null && artifact.inline !== undefined
@@ -428,10 +439,10 @@ async function persistArtifacts(
       ids.push(inserted.id as DeliverableId);
       log.info(
         { ...ctx, deliverableId: inserted.id, hasUrl: Boolean(artifact.url) },
-        'worker.logo.deliverable.persisted',
+        `${logScope}.deliverable.persisted`,
       );
     } catch (err) {
-      log.error({ ...ctx, err }, 'worker.logo.deliverable.persist_failed');
+      log.error({ ...ctx, err }, `${logScope}.deliverable.persist_failed`);
     }
   }
   return ids;

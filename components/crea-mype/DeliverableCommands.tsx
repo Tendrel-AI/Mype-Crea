@@ -18,6 +18,9 @@ import type { DeliverableCommandKind, DeliverableStateKind, DeliverableStateView
 import { failedCardMessage } from './failure-copy';
 import { briefFieldSpec } from '../../src/core/brief';
 
+/** Owner decision 2026-11-02 (KAN-31): shown on every set of name candidates. No availability claims. */
+export const NAME_AVAILABILITY_NOTE = 'Verifica la disponibilidad del nombre en INDECOPI antes de usarlo.';
+
 /** Mirrors MAX_ITERATION_OBSERVATION_LENGTH; the server enforces it in code points. */
 export const OBSERVATION_MAX_LENGTH = 500;
 
@@ -76,9 +79,23 @@ export function iterateSubmission(
   return { kind: 'iterate', deliverableId: anchorId, observation: trimmed };
 }
 
+/**
+ * A text candidate (KAN-31 names): the inline value and the one-line
+ * rationale the agent stored in its metadata. Null for image candidates.
+ */
+export function textCandidate(
+  candidate: DeliverableStateView['candidates'][number],
+): { readonly text: string; readonly rationale: string | null } | null {
+  const inline = candidate.contentInline;
+  if (candidate.contentUrl || typeof inline?.value !== 'string') return null;
+  const metadata = inline.metadata as Readonly<Record<string, unknown>> | undefined;
+  return { text: inline.value, rationale: typeof metadata?.rationale === 'string' ? metadata.rationale : null };
+}
+
 export function DeliverableCommands({
   view,
   label,
+  note,
   busy,
   error,
   onCommand,
@@ -87,6 +104,8 @@ export function DeliverableCommands({
   view: DeliverableStateView | undefined;
   /** Lowercase noun for copy, e.g. "logo". */
   label: string;
+  /** Shown under the candidates whenever there are any (e.g. the INDECOPI note on names). */
+  note?: string;
   busy: boolean;
   error: string;
   onCommand: (request: DeliverableCommandRequest) => void;
@@ -143,15 +162,24 @@ export function DeliverableCommands({
       )}
 
       {view.candidates.length > 0 && (
-        <ul className="grid grid-cols-3 gap-2" aria-label="Propuestas">
+        <ul
+          className={view.candidates.every((candidate) => textCandidate(candidate)) ? 'space-y-2' : 'grid grid-cols-3 gap-2'}
+          aria-label="Propuestas"
+        >
           {view.candidates.map((candidate, index) => {
             const isApproved = candidate.deliverableId === view.approvedDeliverableId;
+            const text = textCandidate(candidate);
             return (
               <li
                 key={candidate.deliverableId}
                 className={`flex flex-col gap-1 rounded-lg border p-1 ${isApproved ? 'border-emerald-500' : 'border-neutral-200'}`}
               >
-                {candidate.contentUrl ? (
+                {text ? (
+                  <div className="px-1">
+                    <p className="text-sm font-semibold text-neutral-900">{text.text}</p>
+                    {text.rationale && <p className="text-xs text-neutral-600">{text.rationale}</p>}
+                  </div>
+                ) : candidate.contentUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={candidate.contentUrl}
@@ -181,6 +209,11 @@ export function DeliverableCommands({
             );
           })}
         </ul>
+      )}
+      {view.candidates.length > 0 && note && (
+        <p role="note" className="text-xs text-neutral-600">
+          {note}
+        </p>
       )}
 
       <div className="flex flex-wrap gap-2">

@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { DeliverableCommands, iterateSubmission } from '../DeliverableCommands';
+import { DeliverableCommands, NAME_AVAILABILITY_NOTE, iterateSubmission } from '../DeliverableCommands';
 import { developerFailureChatText, failedCardMessage } from '../failure-copy';
 import { usageLimitMessage } from '../../../src/services/usage/policy';
 import { Dashboard } from '../Dashboard';
@@ -104,6 +104,34 @@ describe('DeliverableCommands (KAN-28)', () => {
     expect(buttons(markup)).toEqual(['Generar', 'Iterar']);
   });
 
+  it('name candidates (KAN-31): name and rationale as text, Aprobar each, and the INDECOPI note', () => {
+    const nameCandidate = (n: number, name: string) => ({
+      ...candidate(n),
+      contentUrl: null,
+      contentInline: { value: name, kind: 'text', metadata: { rationale: `Por qué ${name} encaja.` } },
+    });
+    const names = view({
+      agentId: 'name-agent',
+      deliverableKind: 'business_name',
+      state: 'in_review',
+      allowedCommands: ['iterate', 'approve'],
+      candidates: [nameCandidate(1, 'Dulce Andino'), nameCandidate(2, 'Sabor de Altura')],
+    });
+    const markup = renderToStaticMarkup(
+      <DeliverableCommands view={names} label="nombre" note={NAME_AVAILABILITY_NOTE} busy={false} error="" onCommand={noop} />,
+    );
+    expect(markup).toContain('Dulce Andino');
+    expect(markup).toContain('Por qué Sabor de Altura encaja.');
+    expect(markup).not.toContain('<img');
+    expect(markup).toContain('<p role="note" class="text-xs text-neutral-600">Verifica la disponibilidad del nombre en INDECOPI antes de usarlo.</p>');
+    expect(buttons(markup)).toEqual(['Aprobar', 'Aprobar', 'Iterar']);
+    // No note before there is anything to verify.
+    const empty = renderToStaticMarkup(
+      <DeliverableCommands view={view({ ...names, state: 'enabled', allowedCommands: ['generate'], candidates: [] })} label="nombre" note={NAME_AVAILABILITY_NOTE} busy={false} error="" onCommand={noop} />,
+    );
+    expect(empty).not.toContain('INDECOPI');
+  });
+
   const failedView = (
     errorCategory: 'transient' | 'content_policy' | 'permanent_bug' | null,
     allowedCommands: DeliverableStateView['allowedCommands'],
@@ -120,6 +148,11 @@ describe('DeliverableCommands (KAN-28)', () => {
     expect(markup).toContain(usageLimitMessage('user_image_daily'));
     expect(markup).not.toContain('No pudimos generar tu logo.');
     expect(markup).not.toContain('usage_limited');
+  });
+
+  it('a worker-side usage denial on names shows the LLM-limit copy (KAN-31)', () => {
+    const failed = { ...failedView('transient', ['retry'], 'usage_limited'), deliverableKind: 'business_name' };
+    expect(failedCardMessage(failed, 'nombre')).toBe(usageLimitMessage('user_llm_hourly'));
   });
 
   it.each([

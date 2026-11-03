@@ -16,6 +16,7 @@ import { ProviderCallError, providerErrorFromStatus, providerErrorFromUnknown } 
 const DEFAULT_MODEL_BY_PURPOSE: Readonly<Record<ModelPurpose, string>> = {
   extractor: 'claude-haiku-5-5',
   responder: 'claude-sonnet-5-5',
+  naming: 'claude-haiku-5-5',
 };
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -60,10 +61,12 @@ export class AnthropicProvider implements ILLMProvider {
             DEFAULT_MODEL_BY_PURPOSE.responder,
             isAnthropicModelId,
           ),
+          naming: DEFAULT_MODEL_BY_PURPOSE.naming,
         }
       : {
           extractor: explicitModel(modelIds.extractor, DEFAULT_MODEL_BY_PURPOSE.extractor),
           responder: explicitModel(modelIds.responder, DEFAULT_MODEL_BY_PURPOSE.responder),
+          naming: explicitModel(modelIds.naming, DEFAULT_MODEL_BY_PURPOSE.naming),
         };
     this.client = new AnthropicChatClient(apiKey);
   }

@@ -21,10 +21,16 @@ plain Spanish and offers at least one way out.
 2. **Render.** `components/crea-mype/DeliverableCommands.tsx:DeliverableCommands` draws buttons
    from `allowedCommands` (advisory only). Failure copy comes from
    `components/crea-mype/failure-copy.ts:failedCardMessage`. «Avanzar» is UI navigation, not a
-   command.
+   command. Image candidates render as a grid of thumbnails; text candidates (the names of
+   KAN-31, `textCandidate`) render as a list of name plus one-line reason, followed by the note
+   «Verifica la disponibilidad del nombre en INDECOPI antes de usarlo.»
+   (`NAME_AVAILABILITY_NOTE`). The «Nombre comercial» card sits in step 1 of the dashboard and in
+   the mobile panel (`components/CreaMype.tsx:renderNameCommands`).
 3. **Send a command.** `app/actions/deliverable-command.ts:deliverableCommandAction`
    authenticates, checks the terms gate, authorizes the owner's pinned conversation, checks the
-   shape (an exact key set: a forged actor or a smuggled brief field is refused), and calls `OrchestratorCoreImpl.executeCommand`
+   shape (an exact key set: a forged actor or a smuggled brief field is refused), runs the KAN-43
+   usage preflight for Generar/Iterar/Reintentar (kind `llm` for `name-agent`, `image`
+   otherwise), and calls `OrchestratorCoreImpl.executeCommand`
    (`src/core/orchestrator/orchestrator-core.ts`), which adds a per-conversation lock and an
    in-memory replay cache. Every refused command, whether its shape, a foreign conversation or a
    core rejection, is logged in `write_rejections`
@@ -82,6 +88,13 @@ plain Spanish and offers at least one way out.
   approve (trigger in `migrations/1792800002400_approval-owner-only.js`). Enforced by
   `src/repos/__tests__/approval-store.test.ts` and `src/repos/__tests__/approvals.integration.test.ts`
   (real DB, run only with approval).
+- **A name is chosen with the same «Aprobar», and the copy never promises it is free to use.**
+  Five candidates per run; the name card needs `business_category` and `style_keywords`
+  (`product_name` optional). No copy, prompt or hint claims availability or uniqueness; the
+  INDECOPI note is shown instead. Enforced by `app/actions/__tests__/name-agent-flow.test.ts`
+  (Generar → five candidates → Aprobar, replaced with history; refused without the rubro, nothing
+  dispatched), `agents/name-agent/__tests__/handler.test.ts` and
+  `components/crea-mype/__tests__/DeliverableCommands.test.tsx`.
 - **A failure always offers a recovery button when the brief allows it.** Enforced by
   `src/core/__tests__/task-errors.test.ts`, `deliverable-state.test.ts` and
   `components/crea-mype/__tests__/DeliverableCommands.test.tsx`.
@@ -104,9 +117,11 @@ plain Spanish and offers at least one way out.
   observation or parameters. The in-process cache compares the whole command.
 - Retry and iteration have no per-deliverable cap; only the KAN-43 image and budget limits bound them ([13-usage-limits.md](13-usage-limits.md)).
 - Staleness does not yet compare the inputs each candidate was generated from with current
-  approvals (future KAN-35 work).
+  approvals (future KAN-35 work). Name candidates already store their input values and
+  fingerprints for it. No card depends on `business_name`, so approving or replacing a name marks
+  nothing stale, and an approved name is not written back to the brief's `business_name`.
 - `dependsOn` is empty on every card, so «Bloqueado» by an upstream approval does not occur in
-  practice with only the logo live.
+  practice.
 - A Reintentar after a failed Iterar drops that refinement (owner decision, kept).
 
 ## See also

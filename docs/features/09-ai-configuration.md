@@ -49,6 +49,10 @@ tokens, and tenant admins see a usage summary. Logo images always come from fal.
    `src/services/llm-logger.ts:withLlmLogging`, which writes one `llm_calls` row
    (`src/repos/llm-calls.ts`) with the effective provider, purpose, model, prompt version,
    tokens and latency. Cost is computed at read time, never stored.
+   Agent LLM calls (KAN-31 `name-agent`, purpose `naming`) are not chat turns: they skip the
+   release runtime (no pinned profile, no `ai_turn_attempts` row; the model is the provider's
+   default for `naming`), but go through the same KAN-43 gate (`usageGatedCompletion`) and the
+   same call log (`src/services/llm/agent-completion.ts`).
 8. **Usage summary.** `src/repos/ai-turns.ts` aggregates `ai_turn_attempts` per tenant (and
    optionally per user and period) through `src/repos/usage-summary.ts:summarizeUsage`, exposed
    to tenant admins by `src/services/ai-config/admin-service.ts:AiAdminService` (`getUsage`) on
@@ -90,6 +94,8 @@ tokens, and tenant admins see a usage summary. Logo images always come from fal.
 - A fresh database has no release: a platform admin must capture, freeze and activate one before
   the first conversation, or new conversations fail.
 - Monetary budgets and usage caps are enforced before each call ([13-usage-limits.md](13-usage-limits.md)).
+- The admin usage summary reads `ai_turn_attempts`, so agent LLM calls (names) are not in it;
+  they are in `llm_calls` and in the KAN-43 usage ledger.
 - A turn whose provider request may have been accepted becomes `uncertain` after its lease
   expires; this is a recoverable report, not an exactly-once guarantee.
 - The KAN-70 migration and repository integration test were not run against PostgreSQL when the
