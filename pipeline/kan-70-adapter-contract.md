@@ -33,7 +33,7 @@ renderer, prompt/renderer/parser versions, temperature/token limit, and history 
 neutral Spanish, tuteo, and no-voseo guardrails are mandatory. It renders from the supplied frozen
 template and fragments. A zero history limit means no prior messages.
 
-The current extractor prompt is `extractor.v4`; the Responder remains
+The current extractor prompt is `extractor.v5` (KAN-26 added the product brief fields); the Responder remains
 `responder.chat-step1.v5`. Renderer/parser version labels describe executable code compatibility;
 they do not make old code available after a deployment. Unknown versions fail before provider
 invocation. Runtime registry matching checks the extractor field schema and hints. Matching full

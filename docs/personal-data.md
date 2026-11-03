@@ -37,7 +37,7 @@ Items marked **Por definir** are open owner decisions; do not treat them as sett
 | WorkOS user id, email | `users` (Postgres) | Identify the signed-in user and bind every row to them (RLS). Name is read from the WorkOS session for the greeting and is not stored locally |
 | Organization membership and role | `users.tenant_id`, `users.role`, `users.status` | Tenant isolation and authorization (member vs. tenant admin) |
 | Chat messages (user and assistant) | `messages`, `ai_turns.input_content` / `response_content` | Hold the conversation and recover an interrupted turn without repeating it |
-| Business brief extracted from the chat (business name, style, product, etc.) | `conversations.agent_states` | The requirements each agent needs to produce a deliverable; only fields declared in the agent cards are extracted |
+| Business and product brief, from the chat or edited in the brief panel (business name, category, style, colors, product, composition, presentation, manufacturer) | `conversations.agent_states` | The requirements each agent needs to produce a deliverable; only fields declared in the agent cards are stored, each with the channel that wrote it (`source`) |
 | Provider requests and responses per turn | `ai_turn_attempts.request_content` / `response_content` | Recovery and audit of uncertain provider outcomes; tenant admins can scrub this content (`app.scrub_ai_turn_trace`) |
 | LLM usage metadata (model, tokens, latency) | `llm_calls`, `ai_turn_attempts` | Cost and audit; no message content |
 | Brief copy per generation, iteration observations | `agent_tasks.requirements_snapshot` | What the agent was asked to produce, for replay and iteration |
