@@ -403,3 +403,47 @@ Decided (KAN-18 / KAN-63, reversible local defaults):
 - Production scan interval, batch size, alerting, and process ownership.
 - When an `in_progress` task counts as stale, and who may retry it or mark it terminal.
 - Maximum attempts and backoff for image-provider failures.
+
+## 11. Tenant accounts (KAN-41)
+
+Decision: [`pipeline/decisions/KAN-66-account-operations-roles.md`](../pipeline/decisions/KAN-66-account-operations-roles.md)
+(Option B, approved 2026-11-02). One WorkOS organization per tenant (`tenants.workos_org_id`).
+Sign-in needs **both** an active WorkOS organization membership and an active local `users` row.
+
+**Tenant admin (institution staff), at `/admin/accounts`** (linked from `/admin/ai` as «Cuentas»):
+
+- **Create an account:** enter the email (optional reason). The app finds or creates the WorkOS
+  user and an active membership in the tenant's organization, then a local `member` row. No
+  email is sent: share the CreaMype login link (`<app URL>/login`) yourself. Creating the same
+  email again does nothing new.
+- **Deactivate / Reactivate:** from the list. Deactivation sets the local row `inactive` first
+  (access ends on the user's next request or stream recheck), then deactivates the WorkOS
+  membership. Conversations and deliverables are kept. Refused: your own account, the last
+  active admin, and any id outside your tenant.
+- **History:** the page shows the tenant's `tenant_account_audit_events` (newest 50): who, what,
+  target, before/after status, reason and outcome (success, refused, failed).
+
+**When something half-fails** (each case writes a `failed` audit row and a server log line):
+
+- Create: WorkOS ok but database failed (`tenant_accounts.provision.db_failed_after_workos`).
+  The WorkOS membership grants nothing without the local row. Run «Crear cuenta» again with the
+  same email; it reuses the WorkOS user and finishes.
+- Deactivate: database ok but WorkOS failed (`outcome_code = 'workos_sync_failed'`). Access is
+  already blocked: the leftover WorkOS membership grants nothing without the active local row.
+  Deactivate the membership in the WorkOS dashboard when convenient; a later reactivation reuses
+  it either way.
+- Reactivate: WorkOS failed (`workos_failed`). Nothing changed locally; try again.
+
+**Platform operator only (not in the app yet):**
+
+- **First tenant admin, and any admin grant or revocation.** There is no console flow. With the
+  owner's approval: create the user and organization membership in the WorkOS dashboard, then
+  as the migration owner (`MIGRATION_DATABASE_URL`, never `app_user`) run
+  `INSERT INTO users (tenant_id, workos_user_id, email, role, status) VALUES ('<tenant>', '<user_…>', '<email>', 'admin', 'active');`
+  or `UPDATE users SET role = 'admin' | 'member' WHERE tenant_id = '<tenant>' AND id = '<user>';`.
+  Record the change (who, when, why) in the platform audit notes; these SQL edits are not
+  written to `platform_audit_events`.
+- Never leave a tenant with no active admin.
+
+**Pending:** no deletion or anonymization of accounts (needs retention and legal input), no
+in-tenant role changes, no invitation emails, no bulk import (KAN-66 Option C items).

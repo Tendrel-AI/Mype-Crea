@@ -144,6 +144,8 @@ describe('resolveIdentity', () => {
 
   it('does not treat tenant admin status as platform authority', async () => {
     await expect(requireTenantAdmin()).rejects.toThrow('No tienes permiso para administrar la configuración de esta organización.');
+    // KAN-41: typed refusal carrying the identity, so callers can log who was refused.
+    await expect(requireTenantAdmin()).rejects.toMatchObject({ name: 'TenantAdminRequiredError', identity: { tenantRole: 'member' } });
 
     mocks.isSuperadmin.mockResolvedValueOnce(true);
     mocks.resolveMember.mockResolvedValueOnce({ userId: localUserId, role: 'admin' });

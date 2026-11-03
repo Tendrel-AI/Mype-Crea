@@ -8,8 +8,9 @@ Platform operators (superadmins) get a separate console, «Panel de plataforma»
 create, rename and deactivate organizations (each linked to a WorkOS organization), grant or
 revoke other operators, publish and roll out module versions (today the AI module) to
 organizations, see monthly metrics per organization, and read an append-only audit trail.
-Tenant admins do not see this console; they get `/admin/ai` and read access to their members'
-data within the tenant.
+Tenant admins do not see this console; they get `/admin/ai`, read access to their members'
+data within the tenant, and `/admin/accounts` to create, deactivate and reactivate the
+accounts of their own tenant (KAN-41).
 
 ## How it works
 
@@ -54,6 +55,28 @@ data within the tenant.
 7. **Tenant admin.** A tenant admin uses `/admin/ai` for the tenant's AI releases, provider
    availability, usage summary and turn traces ([09-ai-configuration.md](09-ai-configuration.md)),
    and RLS lets them read (not write) their members' conversations and approvals.
+8. **Tenant accounts (KAN-41).** `app/admin/accounts/page.tsx` + `components/TenantAccountsAdmin.tsx`;
+   actions `getTenantAccounts`, `provisionTenantMember`, `deactivateTenantMember`,
+   `reactivateTenantMember` in `app/actions/tenant-accounts.ts`. Each re-resolves the session
+   with `requireTenantAdmin` (`src/auth/resolve-identity.ts`, the reusable guard; it throws
+   `TenantAdminRequiredError` carrying the identity, so callers log refusals). A refused member
+   is logged (`tenant_accounts.refused_not_admin`) and nothing is touched.
+   `src/services/tenant-accounts.ts:TenantAccountService` holds the rules and talks to WorkOS
+   only through `WorkosAccountsClient` (`createWorkosAccountsClient`; tests inject a fake):
+   - **Provision** (email → WorkOS user + organization membership, then a local `member` row):
+     WorkOS first, then the DB. Idempotent by email. If the DB fails after WorkOS, the
+     membership grants nothing (sign-in also needs the local active row) and a retry reuses it.
+     No invitation email is sent; the admin shares the login link.
+   - **Deactivate**: local `status = 'inactive'` first (access ends on the next request or
+     stream recheck), then the WorkOS membership. A WorkOS failure is audited
+     (`workos_sync_failed`). Data is kept.
+   - **Reactivate**: WorkOS first, then the DB, for the same reason as provision.
+   - Guards: no self-deactivation, never the last active admin, forged or other-tenant ids
+     answer «No encontramos esa cuenta en tu organización.» and never reach WorkOS.
+   `src/repos/tenant-accounts.ts:tenantAccountsRepo` (via `repos(t,u).tenantAccounts`) checks
+   `app.has_tenant_admin()` in every transaction, locks the tenant's active admins before a
+   status change (two admins removing each other leave one), and writes the
+   `tenant_account_audit_events` row in the same transaction as the change.
 
 ## Key rules / invariants
 
@@ -66,6 +89,13 @@ data within the tenant.
 - **Rollouts are previewed, per-organization, and reversible; versions are immutable.** Enforced
   by `src/services/platform/rollout/__tests__/service.test.ts` and the database triggers
   `platform_module_versions_immutable` / `platform_audit_append_only`.
+- **A tenant admin manages only their own tenant's accounts, and every step is audited.** Only an
+  active tenant admin can write `users` (RLS + column grants: insert a new active `member`,
+  update `status`; no role change, no delete) or read and append `tenant_account_audit_events`.
+  Enforced by `src/repos/__tests__/tenant-accounts.integration.test.ts` (goal flow, refusals,
+  concurrent last-admin race, grants/RLS), the KAN-41 case in the CI suite
+  `src/core/__tests__/cross-tenant-isolation.integration.test.ts`,
+  `src/services/__tests__/tenant-accounts.test.ts` and `app/actions/__tests__/tenant-accounts.test.ts`.
 - **Metrics are aggregates only: no user or content columns.** Enforced by the shape of
   `app.platform_monthly_metrics` and `src/repos/__tests__/platform-metrics.test.ts`.
 
@@ -76,13 +106,19 @@ data within the tenant.
 - 2026-10-21 — KAN-77: new conversations on the platform path materialize the effective platform
   release into the tenant. Validation:
   [`pipeline/kan-77-db-validation-2026-10-21.md`](../../pipeline/kan-77-db-validation-2026-10-21.md).
-- Tenant-admin member management (provision, deactivate, reactivate members) is KAN-66,
-  **proposed, awaiting owner approval**
+- 2026-11-02 — KAN-66 approved (Option B): tenant admins provision, list, deactivate and
+  reactivate members; no in-tenant role changes, no deletion, no invitation emails; first admin
+  and admin changes stay with platform operators
   ([`pipeline/decisions/KAN-66-account-operations-roles.md`](../../pipeline/decisions/KAN-66-account-operations-roles.md)).
+  Implemented by KAN-41 (migration `1792800012000_tenant-account-admin`).
 
 ## Limits & known gaps
 
-- No member management for tenant admins yet (KAN-66); members are provisioned outside the app.
+- The first tenant admin and any admin grant or revocation have no console flow yet: a platform
+  operator does them in WorkOS plus SQL as the migration owner, outside `platform_audit_events`
+  ([`docs/operations.md`](../operations.md) section 11).
+- No account deletion/anonymization, role changes, invitations or bulk import (KAN-66 Option C).
+- ⚠️ Unverified: the account flows against real WorkOS and in a browser.
 - The AI module is the only platform module.
 - Cost figures are estimates; unknown cost stays unknown.
 - ⚠️ Unverified: whether the platform console flows (organization create, rollout) were exercised

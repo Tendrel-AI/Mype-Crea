@@ -45,6 +45,7 @@ Items marked **Por definir** are open owner decisions; do not treat them as sett
 | Approvals and staleness marks | `deliverable_approvals`, `deliverable_stale_marks` | Who approved which deliverable and when |
 | Terms acceptance | `terms_acceptances` | Evidence of informed consent per terms version |
 | Refused write attempts (KAN-44): actor, channel, conversation id, field name, reason, and a SHA-256 hash of the refused value (never the value itself) | `write_rejections` | Security audit of attempts to write fields outside the catalog; read by the actor and tenant admins |
+| Account administration (KAN-41): acting admin, action, target user id and email, before/after status, optional reason, outcome | `tenant_account_audit_events` | Append-only audit of account provisioning, deactivation and reactivation; read only by the tenant's active admins. The account email is also sent to WorkOS to create the user (no invitation email is sent) |
 | Identifiers in logs (tenant, user, conversation ids) | application logs | Operations and debugging; message content is not meant to be logged (not audited in KAN-27) |
 
 Not collected by design: national ID (DNI), address, phone, payment data, health data. The terms

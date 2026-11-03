@@ -276,9 +276,22 @@ async function resolveRealIdentity(): Promise<ResolvedIdentity> {
   return { tenant: { id: organization.tenantId }, user: { id: membership.userId }, tenantRole: membership.role, workosUserId: workosUser.id, organizationId, platformAdmin };
 }
 
+/** A resolved member who is not an effective tenant admin. Carries the identity for refusal logs. */
+export class TenantAdminRequiredError extends Error {
+  constructor(readonly identity: ResolvedIdentity) {
+    super('No tienes permiso para administrar la configuración de esta organización.');
+    this.name = 'TenantAdminRequiredError';
+  }
+}
+
+/**
+ * Reusable tenant-admin guard (AI settings, account management KAN-41, trace reads): the
+ * EFFECTIVE tenant role from the live identity. Repositories re-check the persisted role with
+ * `app.has_tenant_admin()`.
+ */
 export async function requireTenantAdmin(): Promise<ResolvedIdentity> {
   const identity = await resolveIdentity();
-  if (identity.tenantRole !== 'admin') throw new Error('No tienes permiso para administrar la configuración de esta organización.');
+  if (identity.tenantRole !== 'admin') throw new TenantAdminRequiredError(identity);
   return identity;
 }
 
