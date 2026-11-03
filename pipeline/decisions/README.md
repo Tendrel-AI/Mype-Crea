@@ -7,6 +7,7 @@ regulatory, or institutional input say so explicitly.
 
 | Decision | Unblocks | Status | Recommendation (one line) |
 |---|---|---|---|
+| [KAN-42 — Trace access, reconstruction, sampling and pilot metrics](KAN-42-trace-access-metrics.md) | KAN-42 (SYS-07) | **approved 2026-11-02** | Owner and same-tenant admin download the full ordered trace; platform operators get metadata and aggregates only. Monthly random sample and a metrics report (p95, per-deliverable latency, cost per set vs. the USD 0.48 thesis reference, not a cap); availability stays a documented gap. |
 | [KAN-43 — Usage limits before calling models](KAN-43-usage-limits-policy.md) | KAN-43 (SYS-08) | **approved 2026-11-02** | USD 30/month per tenant, 60 LLM calls/hour and 15 images/day per user, 4,000-character messages. Reserve under a lock before every provider call, then reconcile with the real cost. |
 | [KAN-64 — Dispatch model and Phase 1 transitions](KAN-64-dispatch-model.md) | KAN-28 (SYS-03) | **approved 2026-10-25** | Replace auto-dispatch with typed, server-revalidated commands (Generar/Iterar/Aprobar/Reintentar/Cancelar) over a pure per-deliverable state function. "Avanzar" is navigation only. |
 | [KAN-65 — Selection, approval, refinement channels](KAN-65-selection-approval-refinement.md) | KAN-34 (RF-06) | **approved 2026-10-25** | One explicit "Aprobar" act per type (replaceable, with history and RF-07 staleness). Refinement uses panel parameters plus anchored observations and never writes the brief. |

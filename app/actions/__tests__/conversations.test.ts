@@ -34,7 +34,12 @@ const mocks = vi.hoisted(() => {
   const listRecent = vi.fn(async (): Promise<Array<{
     conversationId: string; startedAt: string; lastActivityAt: string; businessName: string | null;
   }>> => []);
-  const repos = vi.fn(() => ({
+  const timeline = vi.fn(async (): Promise<Record<string, unknown> | undefined> => ({
+    conversationId: '11111111-1111-4111-8111-111111111111', access: 'owner', generatedAt: '2026-11-02T15:00:00.000Z',
+    events: [{ seq: 1, kind: 'conversation', refId: '11111111-1111-4111-8111-111111111111', meta: {}, content: null }],
+  }));
+  const repos = vi.fn((..._args: unknown[]) => ({
+    trace: { timeline },
     conversations: { ensurePinnedConversation, readPinnedConversation, listRecent },
     messages: { listByConversation: listMessages },
     deliverables: { listByConversation },
@@ -46,11 +51,14 @@ const mocks = vi.hoisted(() => {
   return {
     identity, pinned, ensurePinnedConversation, readPinnedConversation,
     listTurns, listNotices, listAttempts, listByConversation, listMessages, getPinnedRelease,
-    startConversation, repos, getOrchestrator, getFieldSchemas, listRecent,
+    startConversation, repos, getOrchestrator, getFieldSchemas, listRecent, timeline,
   };
 });
 
-vi.mock('../../../src/auth/resolve-identity', () => ({ resolveIdentity: vi.fn(async () => mocks.identity) }));
+vi.mock('../../../src/auth/resolve-identity', () => ({
+  resolveIdentity: vi.fn(async () => mocks.identity),
+  repositoryActor: vi.fn(() => ({ workosUserId: 'workos-user-1', platformAdmin: false, tenantRole: 'admin' })),
+}));
 vi.mock('../../../src/repos', () => ({ repos: mocks.repos }));
 vi.mock('../../../src/core/orchestrator/runtime', () => ({ getOrchestrator: mocks.getOrchestrator }));
 vi.mock('../../../src/core/orchestrator/bootstrap-registry', () => ({
@@ -162,41 +170,27 @@ describe('conversation actions', () => {
     expect(mocks.listTurns).not.toHaveBeenCalled();
   });
 
-  it('exports a stored image as its asset route, without the provider URL or bucket key (KAN-52)', async () => {
-    mocks.listByConversation.mockResolvedValueOnce([{
-      id: 'deliverable-stored', kind: 'logo', contentUrl: 'https://fal.example/provider.png', contentInline: null,
-      storageKey: 'tenants/tenant-1/conversations/c/tasks/t/0.png', selectedAt: null, createdAt: '2026-01-01T00:00:01.000Z',
-    }]);
-    const result = await exportConversationTraceAction({ conversationId: '11111111-1111-4111-8111-111111111111' });
+  it('exports the KAN-42 timeline read with the caller identity and actor (owner or tenant admin)', async () => {
+    const result = await exportConversationTraceAction({ conversationId: CONVERSATION_ID });
     if (!result.ok) throw new Error('expected ok');
-    expect(JSON.parse(result.content).deliverables).toEqual([expect.objectContaining({
-      id: 'deliverable-stored', contentUrl: '/api/assets/deliverable-stored',
-    })]);
-    expect(result.content).not.toContain('fal.example');
-    expect(result.content).not.toContain('storageKey');
+    expect(JSON.parse(result.content)).toMatchObject({ conversationId: CONVERSATION_ID, access: 'owner', events: [{ seq: 1, kind: 'conversation' }] });
+    expect(mocks.repos).toHaveBeenCalledWith(mocks.identity.tenant, mocks.identity.user, { workosUserId: 'workos-user-1', platformAdmin: false, tenantRole: 'admin' });
+    expect(mocks.timeline).toHaveBeenCalledWith(CONVERSATION_ID);
   });
 
-  it('exports only the authenticated owner’s persisted conversation evidence', async () => {
-    const conversationId = '11111111-1111-4111-8111-111111111111';
-    const result = await exportConversationTraceAction({ conversationId });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(JSON.parse(result.content)).toMatchObject({
-      conversation: { id: conversationId, configurationState: 'pinned', releaseId: 'release-1', releaseContentHash: 'hash-1' },
-      turns: [{ turn: { id: 'turn-1' }, attempts: [{ id: 'attempt-1' }], notices: [{ code: 'approved_fallback_used' }] }],
-      messages: [{ id: 'message-1' }],
-    });
-    expect(mocks.repos).toHaveBeenCalledWith(mocks.identity.tenant, mocks.identity.user);
-    expect(mocks.readPinnedConversation).toHaveBeenCalledWith(conversationId, []);
-    expect(mocks.listAttempts).toHaveBeenCalledWith({ turnId: 'turn-1' });
+  it('answers a foreign or missing conversation with the same not-found result, and never reads a malformed id', async () => {
+    mocks.timeline.mockResolvedValueOnce(undefined);
+    const foreign = await exportConversationTraceAction({ conversationId: CONVERSATION_ID });
+    const malformed = await exportConversationTraceAction({ conversationId: 'not-a-uuid' });
+    expect(foreign).toEqual(malformed);
+    expect(foreign).toMatchObject({ ok: false, code: 'conversation_unavailable' });
+    expect(mocks.timeline).toHaveBeenCalledTimes(1);
   });
 
-  it('does not read or export another owner’s conversation', async () => {
-    mocks.readPinnedConversation.mockResolvedValueOnce(undefined);
-    const result = await exportConversationTraceAction({ conversationId: '11111111-1111-4111-8111-111111111111' });
-    expect(result).toMatchObject({ ok: false, code: 'conversation_unavailable' });
-    expect(mocks.listTurns).not.toHaveBeenCalled();
-    expect(mocks.listAttempts).not.toHaveBeenCalled();
+  it('fails safely when the trace read throws', async () => {
+    mocks.timeline.mockRejectedValueOnce(new Error('db down'));
+    const result = await exportConversationTraceAction({ conversationId: CONVERSATION_ID });
+    expect(result).toEqual({ ok: false, code: 'conversation_unavailable', message: 'No pudimos exportar esta conversación. Inténtalo de nuevo.' });
   });
   it('lists the caller’s recent conversations with server-side labels (KAN-25)', async () => {
     mocks.listRecent.mockResolvedValueOnce([

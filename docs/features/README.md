@@ -54,6 +54,7 @@ No chat text can start a paid generation: generation starts only from the typed 
 | Product brief | Chat and an editable panel write the same validated brief, with origin and missing preconditions shown | [12-product-brief.md](12-product-brief.md) |
 | Usage limits | Budget and rate limits checked before every paid model or image call | [13-usage-limits.md](13-usage-limits.md) |
 | Backup and restore | RPO/RTO targets, runbook and a scripted restore rehearsal | [14-backup-restore.md](14-backup-restore.md) |
+| Trace and pilot metrics | A downloadable, ordered trace of each conversation; metadata-only views, monthly samples and pilot metrics for operators | [15-trace-and-metrics.md](15-trace-and-metrics.md) |
 
 The wizard UI (`components/CreaMype.tsx`) still shows five steps (Nombre, Logo, Etiqueta, Web,
 Marketing). Only the brief, the name and the logo are wired to the orchestrator; the other steps are not.
