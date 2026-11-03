@@ -45,6 +45,7 @@ import {
   type DeliverableCandidateView,
   type DeliverableCommandKind,
   type DeliverableId,
+  type DeliverableProvenance,
   type DeliverableStateKind,
   type DeliverableStateView,
   type FieldSlot,
@@ -206,6 +207,42 @@ export function deriveStaleCandidateIds(
   return out;
 }
 
+/**
+ * How a candidate was made (KAN-29): picked, key by key, from its recorded
+ * artifact metadata and its task's recorded upstream approvals. Pure. Never
+ * copies anything else (the logo's full prompt stays server-side).
+ */
+export function candidateProvenance(
+  candidate: WorkflowCandidate,
+  facts: Pick<DeliverableWorkflowFacts, 'tasks' | 'candidates'>,
+): DeliverableProvenance {
+  const metadata = candidate.metadata ?? {};
+  const text = (key: string) => (typeof metadata[key] === 'string' ? (metadata[key] as string) : null);
+  const recorded = metadata.inputs && typeof metadata.inputs === 'object' && !Array.isArray(metadata.inputs)
+    ? (metadata.inputs as Record<string, unknown>)
+    : {};
+  // An entry with a `deliverableId` is an upstream reference; it is listed under `upstream`.
+  const inputs = Object.entries(recorded).flatMap(([field, entry]) => {
+    const { value, deliverableId } = (entry ?? {}) as { value?: unknown; deliverableId?: unknown };
+    return typeof value === 'string' && deliverableId === undefined ? [{ field, value }] : [];
+  });
+  const approvals = facts.tasks.find((t) => t.id === candidate.agentTaskId)?.upstreamApprovals ?? {};
+  const upstream = Object.entries(approvals)
+    .sort(([a], [b]) => compare(a, b))
+    .map(([kind, deliverableId]) => {
+      const value = facts.candidates.find((c) => c.deliverableId === deliverableId)?.contentInline?.value;
+      return { kind, deliverableId, value: typeof value === 'string' ? value : null };
+    });
+  return {
+    promptVersion: text('promptVersion'),
+    agentCardVersion: text('agentCardVersion'),
+    provider: text('provider'),
+    model: text('model'),
+    inputs,
+    upstream,
+  };
+}
+
 export interface DeriveDeliverableStateInput {
   readonly spec: DeliverableSpec;
   readonly facts: DeliverableWorkflowFacts;
@@ -236,6 +273,10 @@ export function deriveDeliverableState(
     .slice()
     .sort(byCreation);
   const latest = ownTasks.length > 0 ? ownTasks[ownTasks.length - 1] : null;
+  const iterationOf = (taskId: string) => {
+    const index = ownTasks.findIndex((task) => task.id === taskId);
+    return index < 0 ? null : index + 1;
+  };
 
   const candidates: DeliverableCandidateView[] = facts.candidates
     .filter((candidate) => candidate.kind === spec.deliverableKind)
@@ -247,6 +288,9 @@ export function deriveDeliverableState(
       contentUrl: candidate.contentUrl,
       contentInline: candidate.contentInline,
       createdAt: candidate.createdAt,
+      iteration: iterationOf(candidate.agentTaskId),
+      stale: input.staleCandidateIds.has(candidate.deliverableId),
+      provenance: candidateProvenance(candidate, facts),
     }));
 
   const approval = facts.approvals.find((a) => a.deliverableKind === spec.deliverableKind) ?? null;
@@ -288,12 +332,13 @@ export function deriveDeliverableState(
   const allowedCommands = DELIVERABLE_COMMAND_ORDER.filter((kind) => allowed.has(kind));
   const activeTask =
     latest && (latest.status === 'pending' || latest.status === 'in_progress')
-      ? { taskId: latest.id, status: latest.status }
+      ? { taskId: latest.id, status: latest.status, iteration: ownTasks.length }
       : null;
   const lastFailure =
     latest && latest.status === 'failed'
       ? {
           taskId: latest.id,
+          iteration: ownTasks.length,
           errorCategory: latest.errorCategory,
           errorKind: latest.errorKind ?? null,
           retryable: latest.errorCategory === 'transient',

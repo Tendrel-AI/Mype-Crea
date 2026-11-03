@@ -34,6 +34,9 @@ const candidate = (n: number) => ({
   contentUrl: `https://cdn.test/logo-${n}.png`,
   contentInline: null,
   createdAt: `2026-10-25T00:00:0${n}.000Z`,
+  iteration: n,
+  stale: false,
+  provenance: { promptVersion: null, agentCardVersion: null, provider: null, model: null, inputs: [], upstream: [] },
 });
 
 const render = (v: DeliverableStateView | undefined, extra: { onAdvance?: () => void; error?: string } = {}) =>
@@ -155,7 +158,7 @@ describe('DeliverableCommands (KAN-28)', () => {
     view({
       state: 'failed',
       allowedCommands,
-      lastFailure: { taskId: candidate(1).taskId, errorCategory, errorKind, retryable: errorCategory === 'transient' },
+      lastFailure: { taskId: candidate(1).taskId, iteration: 2, errorCategory, errorKind, retryable: errorCategory === 'transient' },
     });
 
   it('a worker-side usage denial shows the image-limit copy from the usage policy (KAN-43)', () => {

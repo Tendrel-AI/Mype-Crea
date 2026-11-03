@@ -58,12 +58,37 @@ export const DELIVERABLE_COMMAND_ORDER: ReadonlyArray<DeliverableCommandKind> = 
  */
 export const MAX_ITERATION_OBSERVATION_LENGTH = 500;
 
+/**
+ * How a candidate was made (KAN-29), picked from its recorded artifact
+ * metadata and task. Only these keys reach the client (never the raw prompt).
+ * Fields an older row did not record are null / empty.
+ */
+export interface DeliverableProvenance {
+  readonly promptVersion: string | null;
+  readonly agentCardVersion: string | null;
+  readonly provider: string | null;
+  readonly model: string | null;
+  /** Brief fields the handler recorded as used (`metadata.inputs`), with their values. */
+  readonly inputs: ReadonlyArray<{ readonly field: string; readonly value: string }>;
+  /** Approved upstream deliverables the task was created under (derived deliverables only). */
+  readonly upstream: ReadonlyArray<{ readonly kind: string; readonly deliverableId: string; readonly value: string | null }>;
+}
+
 export interface DeliverableCandidateView {
   readonly deliverableId: DeliverableId;
   readonly taskId: TaskId;
   readonly contentUrl: string | null;
   readonly contentInline: Readonly<Record<string, unknown>> | null;
+  /** Generation time (the deliverable row's creation). */
   readonly createdAt: ISOTimestamp;
+  /**
+   * 1-based ordinal of the producing task among this type's non-canceled
+   * tasks, in creation order (KAN-29). Null if that task is not listed.
+   */
+  readonly iteration: number | null;
+  /** RF-07 (KAN-35): this candidate was generated from inputs that changed since. */
+  readonly stale: boolean;
+  readonly provenance: DeliverableProvenance;
 }
 
 /**
@@ -88,9 +113,11 @@ export interface DeliverableStateView {
   readonly missingFields: ReadonlyArray<string>;
   /** Upstream deliverable kinds (dependency map) without a current approval, sorted. */
   readonly missingUpstream: ReadonlyArray<string>;
-  readonly activeTask: { readonly taskId: TaskId; readonly status: 'pending' | 'in_progress' } | null;
+  /** `iteration`: same ordinal as `DeliverableCandidateView.iteration` (KAN-29). */
+  readonly activeTask: { readonly taskId: TaskId; readonly status: 'pending' | 'in_progress'; readonly iteration: number } | null;
   readonly lastFailure: {
     readonly taskId: TaskId;
+    readonly iteration: number;
     readonly errorCategory: TaskErrorCategory | null;
     /** The failed task's `error.kind` (e.g. `usage_limited`), so the card can explain it. */
     readonly errorKind: string | null;

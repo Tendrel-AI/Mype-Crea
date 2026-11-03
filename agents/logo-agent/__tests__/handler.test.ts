@@ -8,7 +8,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { buildLogoPrompt, handler } from '../handler';
+import { LOGO_PROMPT_VERSION, buildLogoPrompt, handler } from '../handler';
 import { resetImageGenerator, setImageGenerator } from '../../../src/services/image';
 import type { ImageRequest, ImageResult } from '../../../src/services/image';
 import type { A2AMessage } from '../../../src/core/agent-types';
@@ -68,6 +68,9 @@ describe('logo-agent handler', () => {
       provider: 'fake-provider',
       model: 'fake-model/1',
       purpose: 'logo',
+      // KAN-29: the provenance the deliverables panel shows.
+      promptVersion: LOGO_PROMPT_VERSION,
+      agentCardVersion: '0.1.0',
     });
     expect(artifact.metadata?.prompt).toContain('Café Andino');
     // KAN-35: the fields the prompt used, with the shared sha256 fingerprint.

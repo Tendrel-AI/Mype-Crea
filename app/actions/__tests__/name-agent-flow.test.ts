@@ -211,7 +211,22 @@ describe('name-agent flow (KAN-31)', () => {
     await command('approve', { deliverableId: second.deliverableId, expectedApprovedId: first.deliverableId });
     const flagged = await nameView('logo-agent');
     expect(flagged).toMatchObject({ state: 'in_review', stale: true, activeTask: null });
-    expect(flagged.candidates).toEqual(logo.candidates);
+    // History rows are unchanged; only the derived per-candidate flag (KAN-29) turns on.
+    expect(flagged.candidates.map((c) => ({ ...c, stale: false }))).toEqual(logo.candidates);
+    expect(flagged.candidates.map((c) => c.stale)).toEqual([true]);
+    // KAN-29: the logo's details name its iteration, its recorded versions and inputs, and the approved name it used.
+    expect(logo.candidates[0]).toMatchObject({
+      iteration: 1,
+      provenance: {
+        promptVersion: 'logo-agent.v1',
+        agentCardVersion: expect.any(String),
+        provider: 'fake',
+        model: 'fake/img',
+        inputs: expect.arrayContaining([{ field: 'business_name', value: 'Dulce Andino' }, { field: 'style_keywords', value: 'rústico' }]),
+        upstream: [{ kind: 'business_name', deliverableId: first.deliverableId, value: expect.any(String) }],
+      },
+    });
+    expect(JSON.stringify(logo.candidates[0].provenance)).not.toContain('Diseña');
     expect(runtime.dispatched).toHaveLength(2);
     expect(image).toHaveBeenCalledTimes(1);
     expect((await nameView()).stale).toBe(false);

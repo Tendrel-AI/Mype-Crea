@@ -52,6 +52,8 @@ export interface WorkflowCandidate {
   readonly createdAt: ISOTimestamp;
   /** Brief field versions the handler recorded as used (`metadata.inputs`, KAN-35). Null/absent when none. */
   readonly inputVersions?: Readonly<Record<string, string>> | null;
+  /** The artifact's recorded metadata; provenance (KAN-29) is picked from it. Null/absent when none. */
+  readonly metadata?: Readonly<Record<string, unknown>> | null;
 }
 
 export interface CreateTaskInput {
@@ -221,6 +223,7 @@ export class InMemoryDeliverableWorkflowStore implements IDeliverableWorkflowSto
         contentInline: artifact.url ? null : { value: artifact.inline ?? null, kind: artifact.kind, metadata: artifact.metadata ?? {} },
         createdAt: this.nextTimestamp(),
         inputVersions: recordedFieldVersions(artifact.metadata),
+        metadata: artifact.metadata ?? null,
       });
     });
     this.candidates.set(input.conversationId, bucket);

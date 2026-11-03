@@ -237,7 +237,15 @@ describe('tagline-agent flow (KAN-32)', () => {
     await command('name-agent', 'approve', { deliverableId: second.deliverableId, expectedApprovedId: first.deliverableId });
     const flagged = await viewOf('tagline-agent');
     expect(flagged).toMatchObject({ state: 'approved', stale: true, approvedDeliverableId: t2.deliverableId, activeTask: null });
-    expect(flagged.candidates).toEqual(approved.candidates);
+    // History rows are unchanged; only the derived per-candidate flag (KAN-29) turns on.
+    expect(flagged.candidates.map((c) => ({ ...c, stale: false }))).toEqual(approved.candidates);
+    expect(flagged.candidates.every((c) => c.stale)).toBe(true);
+    // KAN-29: the approved name the tagline used is its upstream, not a brief input.
+    expect(flagged.candidates[1].provenance).toMatchObject({
+      promptVersion: 'tagline-agent.v1',
+      upstream: [{ kind: 'business_name', deliverableId: first.deliverableId, value: NAMES[0] }],
+    });
+    expect(flagged.candidates[1].provenance.inputs.map((i) => i.field)).not.toContain('business_name');
     expect(flagged.allowedCommands).toContain('generate');
     expect(runtime.dispatched).toHaveLength(dispatchCount);
     expect(llm).toHaveBeenCalledTimes(2);

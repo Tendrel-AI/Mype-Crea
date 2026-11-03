@@ -14,6 +14,7 @@ import type {
 import type { DeliverableSpec } from '../agent-registry';
 import {
   FAILURE_RECOVERY_COMMANDS,
+  candidateProvenance,
   dependentKindsOf,
   deriveDeliverableStates,
   deriveStaleCandidateIds,
@@ -322,14 +323,14 @@ describe('deriveDeliverableState — KAN-64 table (single deliverable)', () => {
     expect(stateOf(LOGO_MISSING_STYLE, [LOGO_SPEC], facts({})).missingFields).toEqual(['style']);
 
     const pending = stateOf(LOGO_READY, [LOGO_SPEC], facts({ tasks: [task({ id: 't1', status: 'pending' })] }));
-    expect(pending.activeTask).toEqual({ taskId: 't1', status: 'pending' });
+    expect(pending.activeTask).toEqual({ taskId: 't1', status: 'pending', iteration: 1 });
 
     const failed = stateOf(
       LOGO_READY,
       [LOGO_SPEC],
       facts({ tasks: [task({ id: 't1', status: 'failed', errorCategory: 'content_policy' })] }),
     );
-    expect(failed.lastFailure).toEqual({ taskId: 't1', errorCategory: 'content_policy', errorKind: null, retryable: false });
+    expect(failed.lastFailure).toEqual({ taskId: 't1', iteration: 1, errorCategory: 'content_policy', errorKind: null, retryable: false });
 
     const review = stateOf(LOGO_READY, [LOGO_SPEC], facts({ tasks: [DONE, DONE2], candidates: [C2, C1] }));
     expect(review.candidates.map((c) => c.deliverableId)).toEqual(['d1', 'd2']);
@@ -586,6 +587,69 @@ describe('KAN-35 — staleness from recorded inputs (RF-07)', () => {
     const f = { ...withNameB, tasks: [...withNameB.tasks, logoTask2], candidates: [...withNameB.candidates, L2] };
     expect(stateOf(brief(BRIEF), specs, f).stale).toBe(false);
     expect([...deriveStaleCandidateIds(brief(BRIEF), specs, f)]).toEqual(['L1']);
+  });
+
+  describe('KAN-29 — iteration, per-candidate staleness and provenance', () => {
+    const logoTask2 = task({
+      id: 't2',
+      status: 'completed',
+      parentTaskId: 't1',
+      iterationRootId: 't1',
+      iterationNumber: 2,
+      iterationTrigger: 'user_regenerate',
+      upstreamApprovals: { business_name: 'nB' },
+      createdAt: '2026-10-25T00:00:06.000Z',
+    });
+    const metadata = {
+      provider: 'fal',
+      model: 'flux/schnell',
+      prompt: 'Diseña un logo profesional…',
+      promptVersion: 'logo-agent.v1',
+      agentCardVersion: '0.1.0',
+      inputs: { business_name: { value: 'Panadería Sol', version: inputVersion('Panadería Sol') }, style_keywords: { value: 'rústico', version: inputVersion('rústico') } },
+    };
+    const L2 = { ...candidate('L2', 't2', '2026-10-25T00:00:07.000Z'), inputVersions: L1.inputVersions, metadata };
+    const named = (c: WorkflowCandidate, value: string) => ({ ...c, contentInline: { value, kind: 'text', metadata: {} } });
+    const f: DeliverableWorkflowFacts = {
+      ...withNameB,
+      tasks: [...withNameB.tasks, task({ id: 'tx', status: 'canceled', createdAt: '2026-10-25T00:00:05.000Z' }), logoTask2],
+      candidates: [named(nameA, 'Panadería Sol'), named(nameB, 'Sol de Oro'), L1, S1, L2],
+    };
+
+    it('numbers each candidate by its task within the type (canceled tasks skipped) and flags only the stale one', () => {
+      const view = stateOf(brief(BRIEF), specs, f);
+      expect(view.candidates.map((c) => [c.deliverableId, c.iteration, c.stale])).toEqual([['L1', 1, true], ['L2', 2, false]]);
+    });
+
+    it('the active or failed attempt carries the next iteration number', () => {
+      const failing = { ...f, tasks: [...f.tasks, task({ id: 't3', status: 'failed', createdAt: '2026-10-25T00:00:08.000Z' })] };
+      expect(stateOf(brief(BRIEF), specs, failing).lastFailure?.iteration).toBe(3);
+      const running = { ...f, tasks: [...f.tasks, task({ id: 't3', status: 'in_progress', createdAt: '2026-10-25T00:00:08.000Z' })] };
+      expect(stateOf(brief(BRIEF), specs, running).activeTask).toEqual({ taskId: 't3', status: 'in_progress', iteration: 3 });
+    });
+
+    it('provenance: recorded versions, model and inputs, plus the approved name the task used; never the raw prompt', () => {
+      const [old, current] = stateOf(brief(BRIEF), specs, f).candidates;
+      expect(current.provenance).toEqual({
+        promptVersion: 'logo-agent.v1',
+        agentCardVersion: '0.1.0',
+        provider: 'fal',
+        model: 'flux/schnell',
+        inputs: [{ field: 'business_name', value: 'Panadería Sol' }, { field: 'style_keywords', value: 'rústico' }],
+        upstream: [{ kind: 'business_name', deliverableId: 'nB', value: 'Sol de Oro' }],
+      });
+      expect(JSON.stringify(current.provenance)).not.toContain('Diseña');
+      // A row that recorded nothing: empty, not invented.
+      expect(old.provenance).toEqual({
+        promptVersion: null, agentCardVersion: null, provider: null, model: null, inputs: [],
+        upstream: [{ kind: 'business_name', deliverableId: 'nA', value: 'Panadería Sol' }],
+      });
+    });
+
+    it('a recorded upstream reference in the inputs is listed once, as upstream', () => {
+      const tagline = { ...candidate('T1', 't1', '2026-10-25T00:00:09.000Z', 'tagline'), metadata: { inputs: { business_name: { value: 'Sol de Oro', version: 'v', deliverableId: 'nB' } } } };
+      expect(candidateProvenance(tagline, f).inputs).toEqual([]);
+    });
   });
 
   it('one hop per real change: a flagged logo leaves its label alone and unblocked until the logo is replaced', () => {

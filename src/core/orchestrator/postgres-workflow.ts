@@ -52,6 +52,8 @@ function toWorkflowTask(row: AgentTaskRow): WorkflowTask {
 }
 
 function toCandidate(row: DeliverableRow): WorkflowCandidate {
+  // Rows written before KAN-81 keep the artifact metadata only inside content_inline.
+  const metadata = row.artifactMetadata ?? (row.contentInline?.metadata as Record<string, unknown> | undefined) ?? null;
   return {
     deliverableId: row.id as DeliverableId,
     agentTaskId: row.agentTaskId as TaskId,
@@ -60,8 +62,8 @@ function toCandidate(row: DeliverableRow): WorkflowCandidate {
     contentUrl: clientDeliverableUrl(row),
     contentInline: row.contentInline,
     createdAt: row.createdAt,
-    // Rows written before KAN-81 keep the artifact metadata only inside content_inline.
-    inputVersions: recordedFieldVersions(row.artifactMetadata ?? row.contentInline?.metadata),
+    inputVersions: recordedFieldVersions(metadata),
+    metadata,
   };
 }
 
