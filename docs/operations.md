@@ -372,9 +372,9 @@ settlement then fails leaves an unreferenced object, which is acceptable under t
 - PR preview environments and their data and secret policy.
 - TLS, encryption at rest, network boundaries, audit-log access, and secret rotation.
 - Branch protection and required CI checks are not verified.
-- Asset storage (KAN-52): the `BUCKET_*` variables are not yet set on any Railway environment,
-  and the path-style versus virtual-hosted setting and checksum behavior have not been tested
-  against the real bucket.
+- Asset storage (KAN-52): the five `BUCKET_*` variables are set on the `development` service
+  (checked 2026-11-03, names only), but no deploy has run with them yet, so the path-style versus
+  virtual-hosted setting and checksum behavior are untested against the real bucket.
 
 ## 10. Recovery
 
