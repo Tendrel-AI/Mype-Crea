@@ -26,8 +26,12 @@ const mocks = vi.hoisted(() => {
   const listTurns = vi.fn(async () => []);
   const aiTurns = { claimTurn, ensureUserMessage, checkpointTurn, failTurn, completeTurn, listNotices, listTurns };
   const messages = { listByConversation: vi.fn(async () => [{ role: 'user', content: 'Quiero un logo' }]) };
+  // KAN-27: the caller's accepted terms versions (the fake applies the exact-version rule).
+  const acceptedVersions = new Set<string>(['terminos-v1']);
+  const hasAccepted = vi.fn(async (version: string) => acceptedVersions.has(version));
   const repository = {
     conversations: { ensurePinnedConversation }, aiTurns, messages,
+    termsAcceptances: { hasAccepted },
     aiConfig: { getPinnedRelease: vi.fn(async () => undefined), getProviderAvailability: vi.fn(async () => ({ enabled: true, version: 0 })) },
   };
   const repos = vi.fn(() => repository);
@@ -48,7 +52,7 @@ const mocks = vi.hoisted(() => {
     calls, identity, turn, snapshot, delta, decision, ensurePinnedConversation, claimTurn,
     ensureUserMessage, checkpointTurn, failTurn, completeTurn, listNotices, listTurns,
     repository, repos, startConversation, applyDelta, peekNextDecision, acknowledgeDecisions,
-    getSnapshot, extract, render, runPurpose, childInfo,
+    getSnapshot, extract, render, runPurpose, childInfo, acceptedVersions, hasAccepted,
   };
 });
 
@@ -78,6 +82,7 @@ vi.mock('../../../src/services/logger', () => ({
 }));
 
 import { chatAction } from '../chat';
+import { CURRENT_TERMS_VERSION, TERMS_REQUIRED_MESSAGE } from '../../../src/consent/terms';
 
 const input = {
   conversationId: '11111111-1111-4111-8111-111111111111',
@@ -89,6 +94,9 @@ describe('chatAction durable turn boundary', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.calls.length = 0;
+    mocks.acceptedVersions.clear();
+    mocks.acceptedVersions.add('terminos-v1');
+    mocks.hasAccepted.mockImplementation(async (version: string) => mocks.acceptedVersions.has(version));
     mocks.ensurePinnedConversation.mockResolvedValue({ state: 'pinned', snapshot: mocks.snapshot, releaseId: 'release-1' });
     mocks.claimTurn.mockResolvedValue({ kind: 'acquired', turn: { ...mocks.turn }, ownerToken: 'owner-1' });
     mocks.completeTurn.mockImplementation(async ({ responseContent }) => ({
@@ -113,6 +121,47 @@ describe('chatAction durable turn boundary', () => {
     expect(mocks.ensureUserMessage).toHaveBeenCalledWith(expect.objectContaining({ content: 'Quiero un logo' }));
     expect(mocks.checkpointTurn.mock.calls.map(([value]) => value.stage)).toEqual(['extracted', 'effects_started', 'effects_committed']);
     expect(mocks.completeTurn).toHaveBeenCalledWith(expect.objectContaining({ responseContent: '¡Listo!' }));
+  });
+
+  describe('KAN-27 consent gate', () => {
+    const expectNothingProcessed = () => {
+      expect(mocks.ensurePinnedConversation).not.toHaveBeenCalled();
+      expect(mocks.startConversation).not.toHaveBeenCalled();
+      expect(mocks.claimTurn).not.toHaveBeenCalled();
+      expect(mocks.ensureUserMessage).not.toHaveBeenCalled();
+      expect(mocks.runPurpose).not.toHaveBeenCalled();
+      expect(mocks.extract).not.toHaveBeenCalled();
+      expect(mocks.render).not.toHaveBeenCalled();
+    };
+
+    it('checks the CURRENT terms version for the session identity before any processing', async () => {
+      await chatAction(input);
+      expect(mocks.hasAccepted).toHaveBeenCalledWith(CURRENT_TERMS_VERSION);
+      expect(mocks.repos).toHaveBeenCalledWith(mocks.identity.tenant, mocks.identity.user);
+      expect(mocks.hasAccepted.mock.invocationCallOrder[0]).toBeLessThan(mocks.ensurePinnedConversation.mock.invocationCallOrder[0]);
+    });
+
+    it('rejects a direct call from a user who never accepted, with no LLM or agent work', async () => {
+      mocks.acceptedVersions.clear();
+      const result = await chatAction(input);
+      expect(result).toMatchObject({ ok: false, code: 'terms_required', message: TERMS_REQUIRED_MESSAGE, retryable: false });
+      expectNothingProcessed();
+    });
+
+    it('rejects a user who accepted only an older version (version bump forces re-acceptance)', async () => {
+      mocks.acceptedVersions.clear();
+      mocks.acceptedVersions.add('terminos-v0');
+      const result = await chatAction(input);
+      expect(result).toMatchObject({ ok: false, code: 'terms_required' });
+      expectNothingProcessed();
+    });
+
+    it('fails closed when the acceptance cannot be verified', async () => {
+      mocks.hasAccepted.mockRejectedValueOnce(new Error('db down'));
+      const result = await chatAction(input);
+      expect(result).toMatchObject({ ok: false, code: 'terms_unavailable', retryable: true });
+      expectNothingProcessed();
+    });
   });
 
   it('returns a stored result for a duplicate completed request without invoking adapters', async () => {

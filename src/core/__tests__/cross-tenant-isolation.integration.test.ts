@@ -10,6 +10,7 @@ import { closePool } from '../../db/pool';
 import { repos, type Tenant, type User } from '../../repos';
 import { withTenantTransaction } from '../../db/with-transaction';
 import type { UUID } from '../contracts';
+import { CURRENT_TERMS_VERSION } from '../../consent/terms';
 
 interface Fixture {
   tenant: Tenant;
@@ -391,5 +392,46 @@ describe('cross-tenant isolation (PostgreSQL integration)', () => {
     expect((await ownA.conversations.readPinnedConversation(tenantA.conversationId, schemas))?.state)
       .toBe('legacy_unversioned');
   });
-});
+  it('KAN-27: terms acceptances are owner-only, per version, server-timestamped and append-only', async () => {
+    const ownA = repos(tenantA.tenant, tenantA.user);
+    const otherUserA = repos(tenantA.tenant, tenantA.otherUser);
+    const ownB = repos(tenantB.tenant, tenantB.user);
+    expect(await ownA.termsAcceptances.hasAccepted(CURRENT_TERMS_VERSION)).toBe(false);
 
+    const before = Date.now();
+    const accepted = await ownA.termsAcceptances.accept(CURRENT_TERMS_VERSION);
+    expect(accepted).toMatchObject({ userId: tenantA.user.id, termsVersion: CURRENT_TERMS_VERSION });
+    expect(Date.parse(accepted.acceptedAt)).toBeGreaterThanOrEqual(before - 60_000);
+    // Re-accepting the same version is a no-op that returns the original evidence row.
+    expect(await ownA.termsAcceptances.accept(CURRENT_TERMS_VERSION)).toEqual(accepted);
+    expect(await ownA.termsAcceptances.hasAccepted(CURRENT_TERMS_VERSION)).toBe(true);
+    // A bumped version is not covered by the old acceptance.
+    expect(await ownA.termsAcceptances.hasAccepted('terminos-v999')).toBe(false);
+
+    // Another member of tenant A and a user of tenant B are not covered, and cannot see the row.
+    expect(await otherUserA.termsAcceptances.hasAccepted(CURRENT_TERMS_VERSION)).toBe(false);
+    expect(await ownB.termsAcceptances.hasAccepted(CURRENT_TERMS_VERSION)).toBe(false);
+    for (const [tenant, user] of [[tenantB.tenant, tenantB.user], [tenantA.tenant, tenantA.otherUser]] as const) {
+      const hidden = await withTenantTransaction(tenant, user, (tx) =>
+        tx.query(`SELECT id FROM terms_acceptances WHERE id = $1`, [accepted.id]));
+      expect(hidden.rowCount).toBe(0);
+    }
+
+    // Forged writes: for another user, into another tenant, or with a client timestamp.
+    const forged: Array<[string, unknown[]]> = [
+      [`INSERT INTO terms_acceptances (tenant_id, user_id, terms_version) VALUES ($1, $2, $3)`,
+        [tenantA.tenant.id, tenantA.otherUser.id, CURRENT_TERMS_VERSION]],
+      [`INSERT INTO terms_acceptances (tenant_id, user_id, terms_version) VALUES ($1, $2, $3)`,
+        [tenantB.tenant.id, tenantB.user.id, CURRENT_TERMS_VERSION]],
+      [`INSERT INTO terms_acceptances (tenant_id, user_id, terms_version, accepted_at) VALUES ($1, $2, 'terminos-v998', '2000-01-01')`,
+        [tenantA.tenant.id, tenantA.user.id]],
+      [`UPDATE terms_acceptances SET terms_version = 'terminos-v997' WHERE id = $1`, [accepted.id]],
+      [`DELETE FROM terms_acceptances WHERE id = $1`, [accepted.id]],
+    ];
+    for (const [sql, params] of forged) {
+      await expect(withTenantTransaction(tenantA.tenant, tenantA.user, (tx) => tx.query(sql, params)))
+        .rejects.toMatchObject({ code: '42501' });
+    }
+    expect(await ownA.termsAcceptances.hasAccepted(CURRENT_TERMS_VERSION)).toBe(true);
+  });
+});

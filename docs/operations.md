@@ -24,6 +24,9 @@ provider switch).
   the deliverable is marked available. Browsers reach them only through the authorized
   `GET /api/assets/<deliverableId>` route (KAN-52, section 9).
 - Evals are a manual metrics report, not a CI gate, and run only with owner approval.
+- Users must accept the current terms (`terminos-v1`) before any chat turn or deliverable
+  command is processed (KAN-27). The personal-data catalog, processors and consent mechanism
+  are in [`personal-data.md`](personal-data.md).
 
 ## 2. Prerequisites
 
