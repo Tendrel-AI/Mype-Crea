@@ -49,7 +49,7 @@ tokens, and tenant admins see a usage summary. Logo images always come from fal.
    `src/services/llm-logger.ts:withLlmLogging`, which writes one `llm_calls` row
    (`src/repos/llm-calls.ts`) with the effective provider, purpose, model, prompt version,
    tokens and latency. Cost is computed at read time, never stored.
-   Agent LLM calls (KAN-31 `name-agent`, purpose `naming`) are not chat turns: they skip the
+   Agent LLM calls (KAN-31 `name-agent` and KAN-32 `tagline-agent`, purpose `naming`) are not chat turns: they skip the
    release runtime (no pinned profile, no `ai_turn_attempts` row; the model is the provider's
    default for `naming`), but go through the same KAN-43 gate (`usageGatedCompletion`) and the
    same call log (`src/services/llm/agent-completion.ts`).

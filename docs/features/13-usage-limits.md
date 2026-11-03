@@ -17,11 +17,11 @@ Every paid call checks the limits before it reaches a provider. This covers each
 2. **Reserve, call, settle.** `src/services/usage/gateway.ts:runWithUsage` calls `usage.reserve`, which inserts an estimated row into `usage_reservations` under a per-tenant advisory transaction lock. Concurrent calls therefore cannot overspend. On denial it throws `UsageLimitError` and no provider is called. Otherwise it calls the provider and then `settle`s the row with the actual cost (or the failure cost).
 3. **Hook points.**
    - `captureAttempt` in `src/services/ai-config/execution.ts`: the new category `usage_limited` is never eligible for fallback.
-   - `usageGatedCompletion` (same file), shared by `captureAttempt` and `src/services/llm/agent-completion.ts:AgentLlmService` (KAN-31 names). An agent call is charged to the conversation owner, resolved from the task; it fails closed when the owner cannot be found.
+   - `usageGatedCompletion` (same file), shared by `captureAttempt` and `src/services/llm/agent-completion.ts:AgentLlmService` (KAN-31 names, KAN-32 taglines). An agent call is charged to the conversation owner, resolved from the task; it fails closed when the owner cannot be found.
    - `ImageGeneratorService.generate`.
 4. **Early checks.**
    - `app/actions/chat.ts` runs `usage.preflight` before the turn. It skips the check when the request was already answered, so a retry still returns the stored reply.
-   - `app/actions/deliverable-command.ts` runs the check before Generar, Iterar and Reintentar: kind `llm` for `name-agent`, `image` for the rest.
+   - `app/actions/deliverable-command.ts` runs the check before Generar, Iterar and Reintentar: kind `llm` for `name-agent` and `tagline-agent`, `image` for the rest.
    - The cards map `lastFailure.errorKind = usage_limited` to the image-limit message, or to the LLM-limit message on the name card (`components/crea-mype/failure-copy.ts`).
 5. **Table.** `migrations/1792800006000_usage-reservations.js`: tenant-scoped, RLS forced, no DELETE for the app role.
 

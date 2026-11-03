@@ -26,13 +26,15 @@ plain Spanish and offers at least one way out.
    command. Image candidates render as a grid of thumbnails; text candidates (the names of
    KAN-31, `textCandidate`) render as a list of name plus one-line reason, followed by the note
    «Verifica la disponibilidad del nombre en INDECOPI antes de usarlo.»
-   (`NAME_AVAILABILITY_NOTE`). The «Nombre comercial» card sits in step 1 of the dashboard and in
-   the mobile panel (`components/CreaMype.tsx:renderNameCommands`).
+   (`NAME_AVAILABILITY_NOTE`). The «Nombre comercial» card and, under it, the «Lema» card
+   (KAN-32 taglines, same text list) sit in step 1 of the dashboard and in the mobile panel
+   (`components/CreaMype.tsx:renderNameCommands`). A card blocked by an unapproved upstream names
+   it (`missingUpstreamMessage`: «Primero aprueba tu nombre comercial.»).
 3. **Send a command.** `app/actions/deliverable-command.ts:deliverableCommandAction`
    authenticates, checks the terms gate, authorizes the owner's pinned conversation, checks the
    shape (an exact key set: a forged actor or a smuggled brief field is refused), runs the KAN-43
-   usage preflight for Generar/Iterar/Reintentar (kind `llm` for `name-agent`, `image`
-   otherwise), and calls `OrchestratorCoreImpl.executeCommand`
+   usage preflight for Generar/Iterar/Reintentar (kind `llm` for `name-agent` and `tagline-agent`,
+   `image` otherwise), and calls `OrchestratorCoreImpl.executeCommand`
    (`src/core/orchestrator/orchestrator-core.ts`), which adds a per-conversation lock and an
    in-memory replay cache. Every refused command, whether its shape, a foreign conversation or a
    core rejection, is logged in `write_rejections`
@@ -58,14 +60,17 @@ plain Spanish and offers at least one way out.
      `src/repos/approval-store.ts:createPostgresApprovalStore`) that records the approval and
      appends a stale mark for every transitive dependent (`dependentKindsOf`) in one transaction.
    - Every task-creating command also stores the approved id of each `dependsOn` kind in the
-     task's `requirements_snapshot.upstream_approvals` (workers strip it before the handler).
+     task's `requirements_snapshot.upstream_approvals` (workers strip it before the handler),
+     and, when that approved candidate is text, its id and value in
+     `requirements_snapshot.upstream_inputs` (KAN-32), which reaches the handler as
+     `A2AMessage.upstream` (the tagline reads the approved name from it).
    - **Cancelar** → `pending → canceled` only; a result that arrives later never overwrites it.
 6. **Staleness (RF-07, KAN-35).** «Potencialmente desactualizado» shows on an approved or
    in-review deliverable when its current candidate (approved, else newest) was generated from
    inputs that changed since (`deriveStaleCandidateIds`): a brief field the handler recorded as
    used in `metadata.inputs` (`sha256:` version from `src/core/deliverable-inputs.ts:inputVersion`)
    has another value, or an upstream approval recorded on its task was replaced (one hop per real
-   change; a flagged approval stays approved and keeps unblocking its dependents). The dependency map is `mypes:deliverable.dependsOn` (today `business_name` → `logo`).
+   change; a flagged approval stays approved and keeps unblocking its dependents). The dependency map is `mypes:deliverable.dependsOn` (today `business_name` → `logo` and `business_name` → `tagline`).
    The card shows the notice from `components/crea-mype/DeliverableCommands.tsx:staleNotice` and
    offers Generar and Iterar; nothing is regenerated automatically and an approved deliverable
    stays approved. Tasks created before KAN-35 fall back to the KAN-34 stale marks
@@ -106,6 +111,14 @@ plain Spanish and offers at least one way out.
   (Generar → five candidates → Aprobar, replaced with history; refused without the rubro, nothing
   dispatched), `agents/name-agent/__tests__/handler.test.ts` and
   `components/crea-mype/__tests__/DeliverableCommands.test.tsx`.
+- **A tagline needs an approved name and is chosen with the same «Aprobar».** Five candidates
+  per run, each with its reason and the approved name's id and fingerprint in
+  `metadata.inputs.business_name`; without an approved name the card is «Bloqueado» and a forged
+  Generar is refused (`not_allowed`). Approving another name flags it without regenerating.
+  Enforced by `app/actions/__tests__/tagline-agent-flow.test.ts`,
+  `agents/tagline-agent/__tests__/handler.test.ts`, the `upstream_inputs` case of
+  `src/core/__tests__/deliverable-commands.postgres.integration.test.ts` and
+  `src/workers/__tests__/logo-agent-worker.test.ts` (tagline worker).
 - **Staleness is computed, never stored, and never regenerates.** History rows are not
   rewritten; a reload re-derives the same flag; unrelated deliverables are untouched; going back
   to the original name or value clears it. Enforced by `deliverable-state.test.ts` («KAN-35»
@@ -137,9 +150,10 @@ plain Spanish and offers at least one way out.
 - A durable replay compares the agent, the kind and the conversation, but not an Iterar's
   observation or parameters. The in-process cache compares the whole command.
 - Retry and iteration have no per-deliverable cap; only the KAN-43 image and budget limits bound them ([13-usage-limits.md](13-usage-limits.md)).
-- The logo needs an approved name («Bloqueado» with «Primero aprueba los entregables
-  anteriores.» until then), but an approved name is not written back to the brief's
-  `business_name`: the logo prompt still reads the brief field. Both changes flag the logo.
+- The logo needs an approved name («Bloqueado» with «Primero aprueba tu nombre comercial.» until
+  then), but an approved name is not written back to the brief's `business_name`: the logo
+  prompt still reads the brief field. Both changes flag the logo. The tagline reads the approved
+  name itself, so editing the brief's `business_name` does not flag it.
 - The staleness notice is in the card only; the chat Responder does not mention it (no planner
   decision for it).
 - Logos generated before KAN-35 record no inputs, so a brief edit does not flag them; their

@@ -5,10 +5,11 @@
 ## What it does
 
 Each deliverable (logo, tagline, label, social pack) is produced by a sub-agent. The agent
-declares which facts it needs, so the chat knows what to ask. Two agents are live:
+declares which facts it needs, so the chat knows what to ask. Three agents are live:
 **logo-agent** turns the brief (business name, style, optional colors) into a logo image generated
-by fal.ai, and **name-agent** (KAN-31) proposes five business names, each with a one-line reason,
-from the rubro, the style and the optional product.
+by fal.ai, **name-agent** (KAN-31) proposes five business names, each with a one-line reason,
+from the rubro, the style and the optional product, and **tagline-agent** (KAN-32) proposes five
+taglines («Lema»), each with a one-line reason, from the approved name plus the same brief fields.
 
 ## How it works
 
@@ -18,7 +19,7 @@ from the rubro, the style and the optional product.
      shown to the user (see `agents/logo-agent/agent-card.json`: `business_name`,
      `style_keywords`, optional `color_palette`);
    - `mypes:deliverable` — the deliverable `kind` and `dependsOn` (the upstream kinds that must be
-     approved first; today only the logo declares one, `["business_name"]`, KAN-35);
+     approved first; the logo and the tagline declare `["business_name"]`, KAN-35/KAN-32);
    - `mypes:ui` — tab label, icon, display order (display only, never used for decisions).
 2. **Registry.** `src/core/orchestrator/bootstrap-registry.ts:buildDefaultRegistry` registers
    cards with their handlers into `src/core/orchestrator/agent-registry.ts:AgentRegistry`, the
@@ -28,7 +29,11 @@ from the rubro, the style and the optional product.
    The core inserts the `agent_tasks` row and calls `IAgentTransport.dispatch`
    (`src/core/agent-types.ts:IAgentTransport`). The transport is chosen in
    `src/core/orchestrator/runtime.ts` (`REDIS_DISPATCH_AGENTS` = `logo-agent`, `name-agent`,
-   derived from `REDIS_WORKERS`):
+   `tagline-agent`, derived from `REDIS_WORKERS`). The task's `requirements_snapshot` holds the
+   brief values, the approved upstream ids (`upstream_approvals`, KAN-35) and, for upstreams with
+   a text value, `upstream_inputs` (`{ <kind>: { deliverableId, value } }`, KAN-32); the worker
+   (`splitRequirementsSnapshot` in `src/core/refinement.ts`) and the core's local dispatch hand the
+   last one to the handler as `A2AMessage.upstream`, never inside `requirements`:
    - `src/transport/redis-queue-adapter.ts:RedisQueueAdapter` publishes a `task_dispatch`
      wake-up (`dispatchWakeUp`) on `mypes:agent_task:dispatch:<agentId>`. Postgres
      `agent_tasks` is the queue; Redis only says "look now".
@@ -39,7 +44,7 @@ from the rubro, the style and the optional product.
      (`queueMicrotask`) for registered agents without a worker (none today).
      `waitForSettlement` is the test barrier.
 4. **Worker.** `src/workers/agent-worker.ts:startAgentWorker` runs one worker per entry of
-   `REDIS_WORKERS` (`LOGO_WORKER`, `NAME_WORKER`: agent id, deliverable kind, log scope) inside the
+   `REDIS_WORKERS` (`LOGO_WORKER`, `NAME_WORKER`, `TAGLINE_WORKER`: agent id, deliverable kind, log scope) inside the
    Next.js process, with or without Redis. On a wake-up it re-reads the row, skips rows addressed
    to another agent, claims atomically (`claimById` in `src/repos/agent-tasks.ts`: only a `pending`
    row of that agent), publishes `task_processing`, and runs the handler. Shared worker types are
@@ -57,6 +62,11 @@ from the rubro, the style and the optional product.
    It returns five `text` artifacts; each one's metadata carries the rationale, the input values
    with a `sha256:` fingerprint per field (the brief has no per-field version), the card and
    prompt versions, provider, model and time.
+   `agents/tagline-agent/handler.ts:handler` does the same with `propose_taglines`
+   (`TAGLINE_PROMPT_VERSION` = `tagline-agent.v1`, same `naming` purpose). It reads the approved
+   name from `message.upstream.business_name` and records it in `metadata.inputs.business_name`
+   with its `sha256:` version and `deliverableId`; an input entry with a `deliverableId` is an
+   upstream reference, so staleness follows the name approval, never the brief's `business_name`.
 6. **Persist and settle.** The worker copies an image to the private bucket (text passes through)
    ([06-assets-storage.md](06-assets-storage.md)), then
    `settleTaskAndEnqueue` (`src/repos/ai-turns.ts`) atomically writes the deliverable, marks the
@@ -74,7 +84,7 @@ from the rubro, the style and the optional product.
 |---|---|---|
 | `logo-agent` | `logo` | Live: registered, Redis worker, fal.ai |
 | `name-agent` | `business_name` | Live (KAN-31): registered, Redis worker, LLM (`naming` purpose) |
-| `tagline-agent` | `tagline` | Stub: handler returns `not_implemented`; not registered |
+| `tagline-agent` | `tagline` | Live (KAN-32): registered, Redis worker, LLM (`naming` purpose), needs an approved `business_name` |
 | `label-agent` | `label` | Stub: handler returns `not_implemented`; not registered |
 | `social-agent` | `social_pack` | Stub: handler returns `not_implemented`; not registered |
 
@@ -91,7 +101,8 @@ from the rubro, the style and the optional product.
 - **Handlers never write to the database or call vendor SDKs directly.** They go through
   `src/services/image` / `src/services/llm`; the worker persists. Enforced by
   `agents/logo-agent/__tests__/handler.test.ts` (fake generator),
-  `agents/name-agent/__tests__/handler.test.ts` (fake `IAgentLlm`) and code review.
+  `agents/name-agent/__tests__/handler.test.ts`, `agents/tagline-agent/__tests__/handler.test.ts`
+  (fake `IAgentLlm`) and code review.
 - **A stub is never registered.** The planner offers the lexically first ready agent, so a stub
   could win and fail when the user taps Generar. Enforced by review only: no test pins the
   registry contents.
@@ -120,7 +131,12 @@ from the rubro, the style and the optional product.
   each frozen field's name and hint: the prompt is rendered from the frozen fields, and owners
   and the live required flag only drive routing and the planner. Changing an existing field's
   hint still breaks releases pinned before the change.
-- The name prompt (`name-agent.v1`) has no real-model eval yet; only fakes test it.
+- The name and tagline prompts (`name-agent.v1`, `tagline-agent.v1`) have no real-model eval yet;
+  only fakes test them.
+- `upstream_inputs` carries only inline text values; an agent that needs an image upstream (a
+  future label using the logo) gets only the approved id until a URL is added there.
+- The tagline card reuses the name card's fields with the same hints, so pinned releases keep
+  working; changing those hints on one card breaks them.
 - Without Redis, the in-process bus reaches only workers in the same process; a dispatch made
   by another process (or lost by a restart mid-task) waits for the periodic recovery.
 - No stale-`in_progress` threshold, max attempts or backoff yet; production scan interval and
