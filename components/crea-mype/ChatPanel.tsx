@@ -6,9 +6,10 @@ import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
 import { Send, Loader2, Sparkles, PlusCircle, Download } from 'lucide-react';
 import { type BrandAssets, type Message } from './types';
+import { LIVE_CONNECTION_LOST_MESSAGE } from './live-updates';
 
 
-export function ChatPanel({ assets, processingAgents, conversationId, handleExportConversation, step, setShowRestartModal, messages, isLoading, messagesEndRef, conversationError, retryTurn, submitTurn, inputText, setInputText, handleKeyDown, handleSend, needsNewConversation, mobileDeliverablePanel, conversationMenu, conversationNotFound = false }: { assets: BrandAssets; processingAgents: Set<string>; conversationId: string; handleExportConversation: () => void; step: number; setShowRestartModal: (open: boolean) => void; messages: Message[]; isLoading: boolean; messagesEndRef: React.RefObject<HTMLDivElement | null>; conversationError: string; retryTurn: { requestId: string; userMessage: string } | null; submitTurn: (text: string, requestId: string) => void; inputText: string; setInputText: (text: string) => void; handleKeyDown: (e: React.KeyboardEvent) => void; handleSend: () => void; needsNewConversation: boolean; /** KAN-28: deliverable commands for small screens, where the dashboard is hidden. */ mobileDeliverablePanel?: React.ReactNode; /** KAN-25: «Mis conversaciones» dropdown, next to the restart button. */ conversationMenu?: React.ReactNode; /** KAN-25: the requested conversation is not the caller's (or does not exist). */ conversationNotFound?: boolean }) {
+export function ChatPanel({ assets, processingAgents, conversationId, handleExportConversation, step, setShowRestartModal, messages, isLoading, messagesEndRef, conversationError, retryTurn, submitTurn, inputText, setInputText, handleKeyDown, handleSend, needsNewConversation, mobileDeliverablePanel, conversationMenu, conversationNotFound = false, liveConnectionLost = false }: { assets: BrandAssets; processingAgents: Set<string>; conversationId: string; handleExportConversation: () => void; step: number; setShowRestartModal: (open: boolean) => void; messages: Message[]; isLoading: boolean; messagesEndRef: React.RefObject<HTMLDivElement | null>; conversationError: string; retryTurn: { requestId: string; userMessage: string } | null; submitTurn: (text: string, requestId: string) => void; inputText: string; setInputText: (text: string) => void; handleKeyDown: (e: React.KeyboardEvent) => void; handleSend: () => void; needsNewConversation: boolean; /** KAN-28: deliverable commands for small screens, where the dashboard is hidden. */ mobileDeliverablePanel?: React.ReactNode; /** KAN-25: «Mis conversaciones» dropdown, next to the restart button. */ conversationMenu?: React.ReactNode; /** KAN-25: the requested conversation is not the caller's (or does not exist). */ conversationNotFound?: boolean; /** KAN-30: the SSE stream is gone; offer a reload of the durable state. */ liveConnectionLost?: boolean }) {
   return (
 <>
           {/* Left Panel: Chat Interface */}
@@ -122,6 +123,18 @@ export function ChatPanel({ assets, processingAgents, conversationId, handleExpo
               >
                 Ir a mi última conversación
               </Link>
+            </div>
+          )}
+          {liveConnectionLost && (
+            <div role="status" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <p>{LIVE_CONNECTION_LOST_MESSAGE}</p>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="mt-2 rounded-lg border border-amber-300 px-3 py-2 font-medium hover:bg-amber-100"
+              >
+                Recargar
+              </button>
             </div>
           )}
           {conversationError && (

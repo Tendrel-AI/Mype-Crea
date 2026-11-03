@@ -19,6 +19,7 @@ import type { DeliverableStateView } from '../src/core/contracts';
 import { CLIENT_NOTIFICATION_KINDS, parseNotification } from '../src/core/contracts/notifications';
 import { developerFailureChatText } from './crea-mype/failure-copy';
 import { LOGO_AGENT_ID, completedLogoUrl } from './crea-mype/live-logo';
+import { liveConnectionLost, nextProcessingAgents } from './crea-mype/live-updates';
 
 interface CreaMypeProps {
   userEmail: string;
@@ -127,6 +128,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   // KAN-28: server-derived deliverable states. Buttons are rendered from
   // `allowedCommands`, but the server re-validates every command.
   const [deliverableStates, setDeliverableStates] = useState<ReadonlyArray<DeliverableStateView>>(initialStates);
+  // KAN-30: the SSE stream is gone; the chat stays usable and a reload re-reads durable state.
+  const [liveLost, setLiveLost] = useState(false);
   const [commandBusy, setCommandBusy] = useState(false);
   const [commandError, setCommandError] = useState('');
   // The card whose command produced `commandError`; only that card shows it.
@@ -225,10 +228,15 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     if (!conversationId) return;
     const url = `/api/agents/stream?conversationId=${conversationId}`;
     const source = new EventSource(url);
+    let errorsSinceOpen = 0;
     source.addEventListener('open', () => {
       console.info('[SSE] connected', { conversationId, readyState: source.readyState });
+      errorsSinceOpen = 0;
+      setLiveLost(false);
     });
     source.addEventListener('error', () => {
+      errorsSinceOpen += 1;
+      if (liveConnectionLost(source.readyState, errorsSinceOpen)) setLiveLost(true);
       // EventSource doesn't expose status codes; readyState tells us whether
       // the browser will retry (CONNECTING=0) or has given up (CLOSED=2).
       // CLOSED here means the server returned a non-2xx (e.g. 404 from the
@@ -248,14 +256,6 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     });
     // Every frame is a notification of the shared contract; the SSE event name
     // is its kind. One parser, one exhaustive switch.
-    const stopProcessing = (agentId: string) => {
-      setProcessingAgents((prev) => {
-        if (!prev.has(agentId)) return prev;
-        const next = new Set(prev);
-        next.delete(agentId);
-        return next;
-      });
-    };
     const onNotification = (raw: MessageEvent<string>) => {
       const parsed = parseNotification(raw.data, CLIENT_NOTIFICATION_KINDS);
       if (!parsed.ok) {
@@ -263,19 +263,17 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
         return;
       }
       const event = parsed.notification;
+      // A completion or a terminal failure clears the agent's spinner; shown deliverables stay.
+      setProcessingAgents((prev) => nextProcessingAgents(prev, event));
       switch (event.kind) {
         case 'task_processing':
-          setProcessingAgents((prev) => new Set(prev).add(event.agentId));
           break;
         case 'task_completed': {
-          // Whatever the agent produced, its spinner disappears.
-          stopProcessing(event.agentId);
           const imgUrl = completedLogoUrl(event);
           if (imgUrl) setAssets((prev) => ({ ...prev, logoUrl: imgUrl }));
           break;
         }
         case 'task_failed':
-          stopProcessing(event.agentId);
           // The server sends the technical detail only in developer mode (KAN-58);
           // otherwise the card alone shows the failed state and its recovery commands.
           if (event.detail) {
@@ -447,6 +445,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
         setNeedsNewConversation(false);
         setConversationError('');
         setProcessingAgents(new Set());
+        setLiveLost(false);
         setDeliverableStates([]);
         setBriefFields([]);
         setBriefError(null);
@@ -498,7 +497,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
               {renderNameCommands()}
               {renderTextCommands(LOGO_AGENT_ID, logoView, 'Logo', 'logo')}
             </>
-          ) : undefined} conversationNotFound={notFound} conversationMenu={
+          ) : undefined} conversationNotFound={notFound} liveConnectionLost={liveLost} conversationMenu={
             <ConversationMenu initialConversations={initialConversations} currentConversationId={conversationId} onNewConversation={() => setShowRestartModal(true)} loadConversations={listConversationsAction} />
           } />
           <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
