@@ -72,6 +72,8 @@ export type CreateTaskResult =
   | { readonly ok: false; readonly reason: 'active_task_exists' }
   /** This command id already created a task (concurrent replay). */
   | { readonly ok: false; readonly reason: 'duplicate_command'; readonly task: WorkflowTask }
+  /** This command id already created a task in ANOTHER conversation (KAN-44); nothing about it is returned. */
+  | { readonly ok: false; readonly reason: 'command_id_conflict' }
   /**
    * The iteration's parent (or the refinement anchor) is no longer usable:
    * not the conversation's own task of this agent, wrong status for the

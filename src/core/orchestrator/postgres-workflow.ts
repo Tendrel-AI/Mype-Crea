@@ -103,6 +103,8 @@ export class PostgresDeliverableWorkflowStore implements IDeliverableWorkflowSto
     });
     if (result.ok) return { ok: true, task: toWorkflowTask(result.row) };
     if (result.reason === 'duplicate_command') {
+      // The key is unique per tenant: never hand back another conversation's task (KAN-44).
+      if (result.row.conversationId !== input.conversationId) return { ok: false, reason: 'command_id_conflict' };
       return { ok: false, reason: 'duplicate_command', task: toWorkflowTask(result.row) };
     }
     if (result.reason === 'invalid_parent') return { ok: false, reason: 'parent_unavailable' };

@@ -5,8 +5,9 @@
  * The ONE definition of the brief fields a user can give in chat or edit in
  * the brief panel: name, type, validation, and Spanish label. Merge applies
  * `validateBriefValue` to every catalog field, so chat and panel values are
- * normalized and validated by the same rule. KAN-44 reuses this list to
- * reject unknown fields.
+ * normalized and validated by the same rule. KAN-44: merge accepts only a
+ * catalog field or a field a registered Agent Card declares, and validates
+ * both (`fieldRule`); the panel accepts only catalog fields.
  *
  * Field names match the Agent Cards that own them (`agents/<id>/agent-card.json`);
  * a test checks that the default registry owns every catalog field and that
@@ -43,18 +44,31 @@ export function briefFieldSpec(name: string): BriefFieldSpec | undefined {
   return BRIEF_CATALOG.find((field) => field.name === name);
 }
 
+/** Max length of a field a registered Agent Card declares outside the catalog (KAN-44). */
+const UNCATALOGED_MAX_LENGTH = 500;
+
+/**
+ * The validation rule merge applies to a field the registry already accepted:
+ * the catalog spec, or plain text for a card field outside the catalog (KAN-44).
+ */
+export function fieldRule(name: string): BriefFieldSpec {
+  return briefFieldSpec(name) ?? { name, type: 'string', label: name, maxLength: UNCATALOGED_MAX_LENGTH };
+}
+
 export type BriefValueResult =
   | { readonly ok: true; readonly value: string }
   | { readonly ok: false; readonly message: string };
 
 /**
  * Normalize and validate one value for a catalog field: control characters
- * and runs of whitespace become one space, the result is trimmed, and it must
- * be 1..maxLength code points. Messages are neutral Spanish (tú).
+ * other than tab and line breaks are rejected (KAN-44), runs of whitespace
+ * become one space, the result is trimmed, and it must be 1..maxLength code
+ * points. Messages are neutral Spanish (tú).
  */
 export function validateBriefValue(spec: BriefFieldSpec, value: unknown): BriefValueResult {
   if (typeof value !== 'string') return { ok: false, message: 'No pudimos validar este dato.' };
-  const normalized = value.normalize('NFC').replace(/[\p{Cc}\s]+/gu, ' ').trim();
+  if (/[^\P{Cc}\t\n\r]/u.test(value)) return { ok: false, message: `«${spec.label}» tiene caracteres no permitidos.` };
+  const normalized = value.normalize('NFC').replace(/\s+/gu, ' ').trim();
   if (normalized.length === 0) return { ok: false, message: `Escribe un valor para «${spec.label}».` };
   if ([...normalized].length > spec.maxLength) {
     return { ok: false, message: `«${spec.label}» puede tener hasta ${spec.maxLength} caracteres.` };

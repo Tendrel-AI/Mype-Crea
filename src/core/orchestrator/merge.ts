@@ -39,6 +39,12 @@
  * produced it; an invalid value is `rejected_invalid_value` (no write). The
  * slot records `delta.source` for provenance; nothing here branches on it.
  *
+ * KAN-44: only a field a registered Agent Card declares is accepted, and
+ * every one is validated (`fieldRule`: the catalog rule, else plain text).
+ * An undeclared field is rejected before the confidence check, and a
+ * confidence outside [0, 1] is `rejected_invalid_value`. Merge only REPORTS
+ * rejections (`MergeResult`); the controller writes the rejection log.
+ *
  * This function does NOT dispatch agents. Dispatch is the orchestrator's
  * responsibility, triggered AFTER merge completes.
  *
@@ -52,10 +58,11 @@ import {
   type AgentRequirementState,
   type FieldDelta,
   type FieldSlot,
+  type RejectedFieldWrite,
   type UserIntent,
 } from '../contracts';
 import { loggerFor } from '../../services/logger';
-import { briefFieldSpec, validateBriefValue } from '../brief';
+import { fieldRule, validateBriefValue } from '../brief';
 import type { AgentRegistry } from './agent-registry';
 import type { AgentFieldSchema, IConversationStore } from './in-memory-store';
 
@@ -98,6 +105,25 @@ export interface MergeResult {
   readonly mutationsApplied: number;
   readonly fieldOutcomes: ReadonlyArray<MergeFieldOutcome>;
   readonly intentOutcomes: ReadonlyArray<MergeIntentOutcome>;
+}
+
+const REJECTION_REASONS: Readonly<Record<string, RejectedFieldWrite['reason']>> = {
+  rejected_unknown_agent: 'unknown_agent',
+  rejected_unknown_field: 'unknown_field',
+  rejected_invalid_value: 'invalid_value',
+};
+
+/** The writes a merge refused as outside the schema or invalid (KAN-44); low confidence, conflicts and stale answers are normal flow. */
+export function rejectedWrites(result: MergeResult): RejectedFieldWrite[] {
+  const values = result.fieldOutcomes.flatMap(({ agentId, fieldName, outcome }) =>
+    REJECTION_REASONS[outcome] ? [{ agentId, fieldName, target: 'value' as const, reason: REJECTION_REASONS[outcome] }] : [],
+  );
+  const resets = result.intentOutcomes.flatMap(({ agentId, fieldName, outcome }) =>
+    REJECTION_REASONS[outcome] && agentId !== undefined && fieldName !== undefined
+      ? [{ agentId, fieldName, target: 'reset' as const, reason: REJECTION_REASONS[outcome] }]
+      : [],
+  );
+  return [...values, ...resets];
 }
 
 type FieldResolution =
@@ -210,6 +236,27 @@ export async function mergeFieldDelta(
         continue;
       }
 
+      // KAN-44: an undeclared field is rejected whatever its confidence.
+      if (resolution.kind === 'unknown_field') {
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_unknown_field' });
+        child.debug(
+          {
+            agentId,
+            fieldName,
+            outcome: 'rejected_unknown_field' satisfies FieldOutcome,
+          },
+          'merge.field.rejected',
+        );
+        continue; // unknown field for this agent
+      }
+
+      // KAN-44: a confidence outside [0, 1] (or not a number) is an invalid value, not a low one.
+      if (typeof incoming?.confidence !== 'number' || !(incoming.confidence >= 0 && incoming.confidence <= 1)) {
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_invalid_value' });
+        child.debug({ agentId, fieldName, outcome: 'rejected_invalid_value' satisfies FieldOutcome }, 'merge.field.rejected');
+        continue;
+      }
+
       if (incoming.confidence < CONFIDENCE_THRESHOLDS.STORE_AND_CONFIRM) {
         fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_low_confidence', confidence: incoming.confidence });
         child.debug(
@@ -224,22 +271,8 @@ export async function mergeFieldDelta(
         continue; // too low — we'll re-ask explicitly
       }
 
-      if (resolution.kind === 'unknown_field') {
-        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_unknown_field' });
-        child.debug(
-          {
-            agentId,
-            fieldName,
-            outcome: 'rejected_unknown_field' satisfies FieldOutcome,
-          },
-          'merge.field.rejected',
-        );
-        continue; // unknown field for this agent
-      }
-
-      // shortcut: fields outside the brief catalog are stored unvalidated until KAN-44 rejects them.
-      const spec = briefFieldSpec(fieldName);
-      const checked = spec ? validateBriefValue(spec, incoming.value) : { ok: true as const, value: incoming.value };
+      // Every accepted field is validated: the catalog rule, or plain text for a card field outside it (KAN-44).
+      const checked = validateBriefValue(fieldRule(fieldName), incoming.value);
       if (!checked.ok) {
         fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_invalid_value', confidence: incoming.confidence });
         child.debug(

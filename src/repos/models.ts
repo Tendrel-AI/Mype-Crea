@@ -93,6 +93,22 @@ export interface TermsAcceptanceRow {
   readonly acceptedAt: string;
 }
 
+/** KAN-44 channels a write can be rejected on. */
+export type WriteChannel = 'chat' | 'panel' | 'command' | 'other';
+
+/** One rejected write attempt (KAN-44). The offending payload is only ever a SHA-256 hex. */
+export interface WriteRejectionRow {
+  readonly id: UUID;
+  readonly userId: UUID;
+  readonly channel: WriteChannel;
+  readonly conversationId: UUID | null;
+  readonly agentId: string | null;
+  readonly fieldName: string | null;
+  readonly reason: string;
+  readonly payloadHash: string;
+  readonly createdAt: string;
+}
+
 export interface AiTurnRow {
   readonly id: UUID;
   readonly userId: UUID;

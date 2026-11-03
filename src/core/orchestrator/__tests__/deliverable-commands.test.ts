@@ -230,6 +230,33 @@ describe('executeDeliverableCommand — Generar', () => {
     expect(h.dispatch).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a replayed command id with a different payload, without a second row or dispatch (KAN-44)', async () => {
+    const h = harness({ specs: [LOGO, { ...LABEL, dependsOn: [] }] });
+    const commandId = randomUUID();
+    const first = okOf(await h.run({ kind: 'generate' }, 'logo-agent', commandId));
+    const otherAgent = await h.run({ kind: 'generate' }, 'label-agent', commandId);
+    const otherKind = await h.run({ kind: 'retry', failedTaskId: first.taskId }, 'logo-agent', commandId);
+    for (const result of [otherAgent, otherKind]) {
+      expect(result).toMatchObject({ ok: false, reason: 'invalid', message: COMMAND_MESSAGES.replayConflict });
+    }
+    expect(await h.workflow.listTasks(CONVERSATION)).toHaveLength(1);
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a command id the store already used in another conversation, or for another task (KAN-44)', async () => {
+    const h = harness();
+    const createTask = vi.spyOn(h.workflow, 'createTask');
+    createTask.mockResolvedValueOnce({ ok: false, reason: 'command_id_conflict' });
+    expect(await h.run({ kind: 'generate' })).toMatchObject({ ok: false, reason: 'invalid', message: COMMAND_MESSAGES.replayConflict });
+    createTask.mockResolvedValueOnce({
+      ok: false,
+      reason: 'duplicate_command',
+      task: { id: 'task-x' as TaskId, agentId: 'other-agent', status: 'pending', errorCategory: null, parentTaskId: null, iterationRootId: 'task-x' as TaskId, iterationNumber: 1, iterationTrigger: null, createdAt: '2026-10-25T00:00:00.000Z' },
+    });
+    expect(await h.run({ kind: 'generate' })).toMatchObject({ ok: false, reason: 'invalid' });
+    expect(h.dispatch).not.toHaveBeenCalled();
+  });
+
   it('rejects an unknown agent and an empty command id', async () => {
     const h = harness();
     const unknown = await executeDeliverableCommand(h.ctx, {

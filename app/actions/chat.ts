@@ -14,6 +14,12 @@ import { loggerFor } from '../../src/services/logger';
 import { checkCurrentTerms } from '../../src/consent/gate';
 import { TERMS_REQUIRED_MESSAGE, TERMS_UNAVAILABLE_MESSAGE } from '../../src/consent/terms';
 import { inputChars, usageLimitMessage } from '../../src/services/usage/policy';
+import { ConversationUnavailableError } from '../../src/repos/conversations';
+import { hasOnlyKeys, recordRejectedWrites } from './write-rejections';
+import { isUuid as isAnyUuid } from './conversation-access';
+
+/** The only keys a chat turn may carry (KAN-44). */
+const CHAT_KEYS = ['conversationId', 'requestId', 'userMessage'] as const;
 
 const log = loggerFor('controller.chat');
 
@@ -42,12 +48,19 @@ export async function chatAction(params: {
   readonly requestId: string;
   readonly userMessage: string;
 }): Promise<ChatActionResult> {
-  const conversationId = params.conversationId as ConversationId;
-  const requestId = params.requestId as UUID;
-  const userMessage = params.userMessage.trim();
-  if (!isUuid(requestId)) {
+  const conversationId = (params as { conversationId?: unknown } | null)?.conversationId as ConversationId;
+  const requestId = (params as { requestId?: unknown } | null)?.requestId as UUID;
+  // KAN-44: only a chat message is accepted here (no panel field, forged actor or tenant); a refusal is logged.
+  if (
+    !hasOnlyKeys(params, CHAT_KEYS) ||
+    typeof requestId !== 'string' || !isUuid(requestId) ||
+    !isAnyUuid(conversationId) ||
+    typeof params.userMessage !== 'string'
+  ) {
+    await recordRejectedWrites(undefined, [{ channel: 'chat', reason: 'invalid_request', offending: params, conversationId }]);
     return failure(conversationId, requestId, 'invalid_request', 'No pudimos validar tu solicitud.', false, false);
   }
+  const userMessage = params.userMessage.trim();
   if (!userMessage) {
     return failure(conversationId, requestId, 'empty_message', 'Escribe un mensaje para continuar.', false, false);
   }
@@ -110,6 +123,7 @@ export async function chatAction(params: {
 
     const claim = await repository.aiTurns.claimTurn({ conversationId, requestId, inputContent: userMessage });
     if (claim.kind === 'conflict') {
+      await recordRejectedWrites(identity, [{ channel: 'chat', reason: 'request_conflict', offending: userMessage, conversationId }]);
       return failure(conversationId, requestId, 'request_conflict', 'Esta solicitud ya se usó con otro mensaje. Inicia una nueva solicitud.', false, false);
     }
     if (claim.kind === 'in_progress') {
@@ -152,11 +166,23 @@ export async function chatAction(params: {
       const previous = [...priorPlan].reverse().find((candidate) => candidate.id !== turn.id && candidate.stage === 'responded');
       const priorDecisions = decisionArray(previous?.payload['decisions']);
       const priorConfirm = priorDecisions.find((decision) => decision.kind === 'confirm_field');
+      const unasked = new Map<string, unknown>();
       const extracted = await configRuntime.runPurpose(
         identity,
         { conversationId, turnId: turn.id, ownerToken: claim.ownerToken, purpose: 'extractor' },
-        (execution) => inputAdapter.extract({ conversationId, userMessage, priorDecision: priorConfirm, llmContext, execution }),
+        (execution) => inputAdapter.extract({
+          conversationId,
+          userMessage,
+          priorDecision: priorConfirm,
+          llmContext,
+          execution,
+          onUnaskedFields: (fields) => fields.forEach(({ name, value }) => unasked.set(name, value)),
+        }),
       );
+      // KAN-44: fields the model returned outside what this turn asked for are never stored; log the refusal.
+      await recordRejectedWrites(identity, [...unasked].map(([name, value]) => ({
+        channel: 'chat' as const, reason: 'unknown_field', offending: value, conversationId, fieldName: name,
+      })));
       payload = {
         ...payload,
         delta: extracted.value as unknown as JsonValue,
@@ -172,7 +198,17 @@ export async function chatAction(params: {
       // Fence before side effects. A crash after this point is uncertain and never replayed.
       turn = await repository.aiTurns.checkpointTurn({ turnId: turn.id, ownerToken: claim.ownerToken, expectedVersion: turn.version, stage: 'effects_started', payload: asJsonRecord(payload) });
       safeStage = turn.stage;
-      await orchestrator.applyDelta(delta);
+      const { rejected } = await orchestrator.applyDelta(delta);
+      await recordRejectedWrites(identity, rejected.map((write) => ({
+        channel: 'chat' as const,
+        reason: write.reason,
+        offending: write.target === 'value'
+          ? delta.fields[write.agentId]?.[write.fieldName]?.value
+          : delta.intents?.find((intent) => intent.kind === 'reset_field' && intent.agentId === write.agentId && intent.fieldName === write.fieldName),
+        conversationId,
+        agentId: write.agentId,
+        fieldName: write.fieldName,
+      })));
       const decisions = await orchestrator.peekNextDecision(conversationId);
       const snapshot = await orchestrator.getSnapshot(conversationId);
       payload = { ...payload, decisions: decisions as unknown as JsonValue, snapshot: snapshot as unknown as JsonValue };
@@ -203,6 +239,11 @@ export async function chatAction(params: {
       notices: completed.notices.map(({ code, content }) => ({ code, content })),
     };
   } catch (error) {
+    if (error instanceof ConversationUnavailableError) {
+      // A forged id that belongs to another user or tenant: nothing was created (KAN-44).
+      await recordRejectedWrites(identity, [{ channel: 'chat', reason: 'conversation_unavailable', offending: params, conversationId }]);
+      return failure(conversationId, requestId, 'conversation_unavailable', 'No encontramos esta conversación.', false, false);
+    }
     const executionError = error instanceof AiConfigExecutionError ? error : undefined;
     const ambiguous = Boolean(executionError?.ambiguous);
     if (activeTurn && activeOwnerToken) {

@@ -14,13 +14,16 @@ import { randomUUID } from 'node:crypto';
 const mocks = vi.hoisted(() => {
   const state: { core: unknown } = { core: null };
   const acceptedVersions = new Set<string>(['terminos-v1']);
+  const record = vi.fn(async () => undefined);
+  const readPinnedConversation = vi.fn(async () => ({ state: 'pinned' }));
   const repos = vi.fn(() => ({
-    conversations: { readPinnedConversation: vi.fn(async () => ({ state: 'pinned' })) },
+    writeRejections: { record },
+    conversations: { readPinnedConversation },
     termsAcceptances: { hasAccepted: vi.fn(async (version: string) => acceptedVersions.has(version)) },
     llmCalls: { record: vi.fn(async () => 'fake-llm-call-id') },
     usage: { preflight: vi.fn(async () => ({ allowed: true, reservationId: null })) },
   }));
-  return { state, acceptedVersions, repos };
+  return { state, acceptedVersions, repos, record, readPinnedConversation };
 });
 
 vi.mock('../../../src/auth/resolve-identity', () => ({
@@ -218,7 +221,9 @@ describe('brief actions (KAN-26)', () => {
     const runtime = buildRuntime();
     const result = await updateBriefFieldAction({ conversationId: CONVERSATION, ...input });
     expect(result).toEqual({ ok: false, code, message });
-    expect(mocks.repos).not.toHaveBeenCalled();
+    // KAN-44: only the refusal is logged; the conversation is never read.
+    expect(mocks.readPinnedConversation).not.toHaveBeenCalled();
+    expect(mocks.record).toHaveBeenCalledTimes(1);
     await runtime.core.startConversation(CONVERSATION, TEST_TENANT_ID, TEST_USER_ID);
     const snapshot = await runtime.core.getSnapshot(CONVERSATION);
     expect(Object.values(snapshot.agentStates['logo-agent'].requiredFields).every((s) => s.status === 'empty')).toBe(true);

@@ -11,7 +11,8 @@
  *   1. shape (`invalid`)
  *   2. idempotent replay — an already-applied command id returns the
  *      original outcome with `replayed: true` and never repeats the effect
- *      (task commands are durable through the task idempotency key)
+ *      (task commands are durable through the task idempotency key); the
+ *      same id with a different payload is `invalid` (KAN-44)
  *   3. unknown agent (`not_found`)
  *   4. stale view: `expectedState` / `stateToken` differ from the fresh view
  *      (`stale`)
@@ -63,6 +64,7 @@ export const COMMAND_MESSAGES = {
   approveNotCandidate: 'Esta propuesta no está disponible para aprobar.',
   approveStale: 'La aprobación cambió mientras decidías. Revisa la propuesta aprobada actual e inténtalo de nuevo.',
   iterateNeedsChange: 'Cuéntanos qué quieres cambiar para intentarlo de nuevo.',
+  replayConflict: 'Esta acción ya se usó con otros datos. Inténtalo de nuevo desde el panel.',
 } as const;
 
 /** Everything the handler needs, already scoped to one conversation's tenant/user. */
@@ -193,7 +195,10 @@ export async function executeDeliverableCommand(
   // 2. Durable replay of task-creating commands (the command id is the task's idempotency key).
   if (command.kind === 'generate' || command.kind === 'iterate' || command.kind === 'retry') {
     const existing = await ctx.workflow.findTaskByCommandId(command.conversationId, command.commandId);
-    if (existing) return accept(true, { taskId: existing.id });
+    if (existing) {
+      if (!replayMatches(existing, command)) return reject('invalid', COMMAND_MESSAGES.replayConflict);
+      return accept(true, { taskId: existing.id });
+    }
   }
 
   // 3. Unknown agent.
@@ -326,7 +331,12 @@ export async function executeDeliverableCommand(
         iteration,
       });
       if (!created.ok) {
-        if (created.reason === 'duplicate_command') return accept(true, { taskId: created.task.id });
+        if (created.reason === 'duplicate_command' && replayMatches(created.task, command)) {
+          return accept(true, { taskId: created.task.id });
+        }
+        if (created.reason === 'duplicate_command' || created.reason === 'command_id_conflict') {
+          return reject('invalid', COMMAND_MESSAGES.replayConflict);
+        }
         return reject('stale', COMMAND_MESSAGES.stale);
       }
 
@@ -340,6 +350,24 @@ export async function executeDeliverableCommand(
       return accept(false, { taskId: created.task.id });
     }
   }
+}
+
+/**
+ * A replayed task command must name the task it created: same agent, same
+ * kind of task (KAN-44).
+ * shortcut: an Iterar replay's observation/anchor is not compared durably (it lives in the requirements snapshot); the core's in-process replay cache compares the whole command.
+ */
+function replayMatches(task: WorkflowTask, command: DeliverableCommand): boolean {
+  if (task.agentId !== command.agentId) return false;
+  if (command.kind === 'generate') return task.parentTaskId === null;
+  if (command.kind === 'retry') return task.parentTaskId === command.failedTaskId;
+  return task.parentTaskId !== null;
+}
+
+/** What a replay must repeat exactly: the command minus the client's view (KAN-44). */
+export function commandFingerprint(command: DeliverableCommand): string {
+  const { expectedState: _state, stateToken: _token, ...rest } = command;
+  return JSON.stringify(Object.entries(rest).sort(([a], [b]) => (a < b ? -1 : 1)));
 }
 
 /** Iteration fields for a new task chained onto `parent`. */

@@ -168,6 +168,12 @@ export interface ExtractInput {
   readonly llmContext: LlmLoggingContext;
   /** Explicit frozen execution for product turns; omitted by legacy/eval callers. */
   readonly execution?: AdapterExecution;
+  /**
+   * KAN-44: told about every field the model returned that this turn did not
+   * ask for (outside the catalog, e.g. `tenant_id`, or not in the frozen
+   * release). They are never stored; the controller logs the refusal.
+   */
+  readonly onUnaskedFields?: (fields: ReadonlyArray<{ readonly name: string; readonly value: unknown }>) => void;
 }
 
 interface FieldOwnership {
@@ -495,11 +501,16 @@ export class ChatInputAdapter implements InputAdapter {
       'extractor.llm.raw_response',
     );
 
-    const { accepted: groundedFields, mentioned } = validateAndFilterExtractedFields(
+    const { accepted: groundedFields, mentioned, unasked } = validateAndFilterExtractedFields(
       rawArgs,
       extractedSchema,
+      fieldNames,
       child,
     );
+    if (unasked.length > 0) {
+      child.warn({ unaskedFields: unasked.map((f) => f.name.slice(0, 64)) }, 'extractor.parse.unasked_fields');
+      input.onUnaskedFields?.(unasked);
+    }
 
     // Fan out: each grounded logical field is written into every agent that
     // requires (or optionally accepts) it.
@@ -700,11 +711,14 @@ interface ExtractedFields {
    * used to notice that a pending value was contradicted; never stored.
    */
   readonly mentioned: Record<string, string>;
+  /** Keys the model returned that were not asked for (KAN-44); the schema strips them. */
+  readonly unasked: ReadonlyArray<{ readonly name: string; readonly value: unknown }>;
 }
 
 function validateAndFilterExtractedFields(
   rawArgs: string,
   schema: ReturnType<typeof buildExtractedFieldsSchema>,
+  fieldNames: ReadonlyArray<string>,
   log: ReturnType<typeof loggerFor>,
 ): ExtractedFields {
   let parsed: unknown;
@@ -715,8 +729,16 @@ function validateAndFilterExtractedFields(
       { err: (err as Error).message, rawPreview: rawArgs.slice(0, 400) },
       'extractor.parse.failed',
     );
-    return { accepted: {}, mentioned: {} };
+    return { accepted: {}, mentioned: {}, unasked: [] };
   }
+
+  const returned = (parsed as { fields?: unknown } | null)?.fields;
+  const unasked =
+    returned && typeof returned === 'object' && !Array.isArray(returned)
+      ? Object.entries(returned)
+          .filter(([name]) => !fieldNames.includes(name))
+          .map(([name, value]) => ({ name, value }))
+      : [];
 
   const result = schema.safeParse(parsed);
   if (!result.success) {
@@ -727,7 +749,7 @@ function validateAndFilterExtractedFields(
       },
       'extractor.parse.failed',
     );
-    return { accepted: {}, mentioned: {} };
+    return { accepted: {}, mentioned: {}, unasked };
   }
 
   // Surface the validated, pre-threshold conversion: this is exactly what the
@@ -765,5 +787,5 @@ function validateAndFilterExtractedFields(
     out[name] = { value: slot.value.trim(), confidence: slot.confidence };
     log.debug({ fieldName: name, confidence: slot.confidence }, 'extractor.field.accepted');
   }
-  return { accepted: out, mentioned };
+  return { accepted: out, mentioned, unasked };
 }

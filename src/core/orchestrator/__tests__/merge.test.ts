@@ -14,7 +14,7 @@ import {
 } from '../../contracts';
 import { AgentRegistry } from '../agent-registry';
 import { InMemoryConversationStore } from '../in-memory-store';
-import { mergeFieldDelta } from '../merge';
+import { mergeFieldDelta, rejectedWrites } from '../merge';
 import {
   TEST_CONVERSATION_ID,
   TEST_TENANT_ID,
@@ -448,14 +448,59 @@ describe('mergeFieldDelta: brief catalog validation (KAN-26)', () => {
     expect((await agentState()).requiredFields.business_name).toMatchObject({ value: OLD_VALUE });
   });
 
-  it('passes a field outside the brief catalog through unchanged', async () => {
+  it('validates a field a registered card declares outside the catalog with the plain-text rule (KAN-44)', async () => {
     const other = new AgentRegistry();
     other.register(buildFixtureCard({ id: AGENT, required: [{ name: 'tagline_tone' }] }), fixtureEchoHandler, undefined);
     const otherStore = new InMemoryConversationStore(other.getFieldSchemas());
     await otherStore.getOrCreate(TEST_CONVERSATION_ID, TEST_TENANT_ID, TEST_USER_ID);
     await mergeFieldDelta(buildDelta({ fields: value('tagline_tone', '  cálido  ', HIGH_FILLED) }), otherStore, other);
+    const rejected = await mergeFieldDelta(buildDelta({ fields: value('tagline_tone', 'x\u0000', HIGH_FILLED) }), otherStore, other);
+    expect(rejected.fieldOutcomes.map((o) => o.outcome)).toEqual(['rejected_invalid_value']);
     const snapshot = await otherStore.get(TEST_CONVERSATION_ID);
-    expect(snapshot!.agentStates[AGENT].requiredFields.tagline_tone).toMatchObject({ status: 'filled', value: '  cálido  ' });
+    expect(snapshot!.agentStates[AGENT].requiredFields.tagline_tone).toMatchObject({ status: 'filled', value: 'cálido' });
+  });
+});
+
+describe('mergeFieldDelta: KAN-44 rejections', () => {
+  it('rejects an undeclared field whatever its confidence, and a confidence outside [0, 1]', async () => {
+    const result = await mergeFieldDelta(
+      buildDelta({
+        fields: {
+          [AGENT]: {
+            tenant_id: { value: 'x', confidence: BELOW_STORE },
+            business_name: { value: NEW_VALUE, confidence: 7 },
+            style_keywords: { value: 'moderno', confidence: '1' as unknown as number },
+          },
+        },
+      }),
+      store,
+      registry,
+    );
+    expect(result.fieldOutcomes.map((o) => [o.fieldName, o.outcome])).toEqual([
+      ['tenant_id', 'rejected_unknown_field'],
+      ['business_name', 'rejected_invalid_value'],
+      ['style_keywords', 'rejected_invalid_value'],
+    ]);
+    expect(result.mutationsApplied).toBe(0);
+  });
+
+  it('rejectedWrites lists only schema and validation refusals, values and resets', async () => {
+    const result = await mergeFieldDelta(
+      buildDelta({
+        fields: {
+          [AGENT]: { price: { value: '2', confidence: 1 }, color_palette: { value: 'azul', confidence: BELOW_STORE } },
+          'ghost-agent': { business_name: { value: NEW_VALUE, confidence: 1 } },
+        },
+        intents: [reset('nope')],
+      }),
+      store,
+      registry,
+    );
+    expect(rejectedWrites(result)).toEqual([
+      { agentId: AGENT, fieldName: 'price', target: 'value', reason: 'unknown_field' },
+      { agentId: 'ghost-agent', fieldName: 'business_name', target: 'value', reason: 'unknown_agent' },
+      { agentId: AGENT, fieldName: 'nope', target: 'reset', reason: 'unknown_field' },
+    ]);
   });
 });
 

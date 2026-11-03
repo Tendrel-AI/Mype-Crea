@@ -15,6 +15,8 @@
 
 import { getOrchestrator } from '../../src/core/orchestrator/runtime';
 import { authorizeConversation as authorize, isUuid, type AccessFailureCode } from './conversation-access';
+import { hasOnlyKeys, recordRejectedWrites } from './write-rejections';
+import type { ResolvedIdentity } from '../../src/auth/resolve-identity';
 import { repos } from '../../src/repos';
 import {
   MAX_ITERATION_OBSERVATION_LENGTH,
@@ -86,7 +88,7 @@ const MESSAGES = {
 export async function loadDeliverableStatesAction(input: {
   readonly conversationId: string;
 }): Promise<DeliverableStatesResult> {
-  if (!isUuid(input.conversationId)) return { ok: false, code: 'invalid_request', message: MESSAGES.invalid };
+  if (!isUuid(input?.conversationId)) return { ok: false, code: 'invalid_request', message: MESSAGES.invalid };
   const conversationId = input.conversationId as ConversationId;
   const authorized = await authorize(conversationId, { requireDurability: false, requireTerms: false });
   if (!authorized.ok) return authorized;
@@ -102,14 +104,25 @@ export async function loadDeliverableStatesAction(input: {
 export async function deliverableCommandAction(
   input: DeliverableCommandInput,
 ): Promise<DeliverableCommandActionResult> {
+  // KAN-44: every refused command changes nothing and leaves a `write_rejections` row.
+  const record = (reason: string, identity?: ResolvedIdentity) =>
+    recordRejectedWrites(identity, [{
+      channel: 'command',
+      reason,
+      offending: input,
+      conversationId: (input as { conversationId?: unknown } | null)?.conversationId,
+      agentId: (input as { agentId?: unknown } | null)?.agentId,
+    }]);
   const parsed = parseCommand(input);
   if (!parsed.ok) {
+    await record(parsed.reason);
     return { ok: false, code: 'invalid_request', reason: 'invalid', message: parsed.message, states: [] };
   }
   const command = parsed.command;
   // Commands dispatch agents with the user's brief: KAN-27 consent is required.
   const authorized = await authorize(command.conversationId, { requireDurability: true, requireTerms: true });
   if (!authorized.ok) {
+    if (authorized.code === 'conversation_unavailable') await record('conversation_unavailable');
     return { ok: false, code: authorized.code, reason: 'unavailable', message: authorized.message, states: [] };
   }
   try {
@@ -129,6 +142,7 @@ export async function deliverableCommandAction(
       }
     }
     const result = await getOrchestrator().executeCommand(command);
+    if (!result.ok) await record(`command_${result.reason}`, authorized.identity);
     log.info(
       {
         conversationId: command.conversationId,
@@ -150,11 +164,19 @@ export async function deliverableCommandAction(
   }
 }
 
-type Parsed = { readonly ok: true; readonly command: DeliverableCommand } | { readonly ok: false; readonly message: string };
+type Parsed =
+  | { readonly ok: true; readonly command: DeliverableCommand }
+  | { readonly ok: false; readonly reason: 'invalid_request' | 'invalid_value'; readonly message: string };
+
+/** The only keys a command may carry; anything else (a forged actor, tenant, brief field…) is refused (KAN-44). */
+const COMMAND_KEYS = [
+  'commandId', 'conversationId', 'agentId', 'kind', 'expectedState', 'stateToken',
+  'deliverableId', 'expectedApprovedId', 'taskId', 'failedTaskId', 'observation',
+] as const;
 
 function parseCommand(input: DeliverableCommandInput): Parsed {
-  const invalid: Parsed = { ok: false, message: MESSAGES.invalid };
-  if (typeof input !== 'object' || input === null) return invalid;
+  const invalid: Parsed = { ok: false, reason: 'invalid_request', message: MESSAGES.invalid };
+  if (!hasOnlyKeys(input, COMMAND_KEYS)) return invalid;
   const { commandId, conversationId, agentId, kind, expectedState, stateToken } = input;
   if (!isUuid(commandId) || !isUuid(conversationId)) return invalid;
   if (typeof agentId !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(agentId)) return invalid;
@@ -194,7 +216,7 @@ function parseCommand(input: DeliverableCommandInput): Parsed {
       const observation = input.observation;
       if (observation !== undefined && typeof observation !== 'string') return invalid;
       if (observation !== undefined && codePointLength(observation.trim()) > MAX_ITERATION_OBSERVATION_LENGTH) {
-        return { ok: false, message: MESSAGES.observationTooLong };
+        return { ok: false, reason: 'invalid_value', message: MESSAGES.observationTooLong };
       }
       // Parameter overrides have no UI yet (KAN-28 open question); they are not accepted here.
       return {
