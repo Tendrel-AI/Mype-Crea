@@ -2,7 +2,7 @@
  * Production orchestrator singleton.
  *
  * Builds (and caches) the `Runtime` for the process — registry, Postgres
- * store, agent transport (Redis when REDIS_URL is set, Local otherwise),
+ * store, agent transport (Redis when REDIS_URL is set, an in-process bus otherwise),
  * notifier singletons, and the chat input/output adapters. The wiring lives
  * in `./runtime-config` (`buildRuntime`); this file is just the env-driven
  * factory + the `globalThis` cache.
@@ -14,8 +14,9 @@
  *     re-reads the canonical row from Postgres, runs the handler, and
  *     calls back into core.onTaskSettled. Other agents fall through to
  *     LocalAdapter until they are migrated.
- *   - When Redis is unavailable, every dispatch uses the LocalAdapter
- *     (single-process dev/test only).
+ *   - When Redis is unavailable, the same workers drain an in-process
+ *     wake-up bus (single-process dev/test only), so a settled task still
+ *     gets its deliverables and durable outbox notice (KAN-82).
  *
  * Notifier singletons come from `./notifiers` (Redis-backed when REDIS_URL
  * is set, in-process otherwise — Phase 1).
@@ -31,6 +32,8 @@
  * external image request may already have completed.
  */
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import type { Redis as RedisClient } from 'ioredis';
 import { repos, systemRepos } from '../../repos';
 import { globalRepos } from '../../repos/global';
 import { getConversationOwnerUserId } from '../../repos/conversations';
@@ -77,7 +80,28 @@ const recoveryHolder = globalThis as unknown as RecoveryHolder;
 const PENDING_RECOVERY_INTERVAL_MS = 60_000;
 const PENDING_RECOVERY_BATCH_SIZE = 100;
 
-function buildTransport(
+/**
+ * Stands in for Redis Pub/Sub inside one process: the worker subscribes and
+ * `RedisQueueAdapter` publishes exactly as they would over Redis.
+ */
+function inProcessWakeUpBus(): { publisher: RedisClient; subscriber: RedisClient } {
+  const bus = new EventEmitter();
+  const channels = new Set<string>();
+  const subscriber = Object.assign(bus, {
+    subscribe: async (channel: string) => channels.add(channel).size,
+    unsubscribe: async (channel: string) => Number(channels.delete(channel)),
+  });
+  const publisher = {
+    publish: async (channel: string, message: string) => {
+      bus.emit('message', channel, message);
+      return Number(channels.has(channel));
+    },
+  };
+  return { publisher: publisher as unknown as RedisClient, subscriber: subscriber as unknown as RedisClient };
+}
+
+/** Exported for tests. */
+export function buildTransport(
   registry: ReturnType<typeof buildDefaultRegistry>,
   onTaskSettled: OnTaskSettled,
 ): IAgentTransport {
@@ -87,12 +111,16 @@ function buildTransport(
     onTaskSettled(taskId, state, []),
   );
 
-  const publisher = getRedisPublisher();
-  const subscriber = getRedisSubscriber();
-
-  if (!publisher || !subscriber) {
-    log.warn('orchestrator.runtime.transport.local_only_no_redis');
-    return local;
+  const redisPublisher = getRedisPublisher();
+  const redisSubscriber = getRedisSubscriber();
+  // Without Redis the same workers run over an in-process bus, so settlement
+  // is the worker's durable one: deliverables and outbox notice (KAN-82).
+  const { publisher, subscriber } =
+    redisPublisher && redisSubscriber
+      ? { publisher: redisPublisher, subscriber: redisSubscriber }
+      : inProcessWakeUpBus();
+  if (!redisPublisher || !redisSubscriber) {
+    log.warn('orchestrator.runtime.transport.in_process_bus_no_redis');
   }
 
   // Boot the per-agent workers that drain the Redis dispatch channels.
@@ -115,7 +143,7 @@ function buildTransport(
     if (!recoveryHolder[RECOVERY_STOP_SLOT]) {
       recoveryHolder[RECOVERY_STOP_SLOT] = startPeriodicRecovery({
         intervalMs: PENDING_RECOVERY_INTERVAL_MS,
-        recover: reconcileConfiguredTenantEvents,
+        recover: () => reconcileConfiguredTenantEvents(publisher),
         onError: (err) => log.error({ err }, 'orchestrator.runtime.periodic_recovery_failed'),
       });
     }
@@ -134,15 +162,13 @@ function buildTransport(
   });
 }
 
-async function reconcileConfiguredTenantEvents(): Promise<void> {
+async function reconcileConfiguredTenantEvents(publisher: RedisClient): Promise<void> {
   const organizations = await globalRepos().organizations.list();
   const tenantIds = organizations.filter((organization) => organization.status === 'active').map((organization) => organization.tenantId);
-  const publisher = getRedisPublisher();
   await Promise.all(tenantIds.map(async (tenantId) => {
     try {
       const tenantRepositories = systemRepos({ id: tenantId as UUID });
       await tenantRepositories.aiEvents?.reconcileSettledTasks({ limit: 500 });
-      if (!publisher) return;
       for (const agentId of REDIS_DISPATCH_AGENTS) {
         const republished = await republishPendingDispatches({
           tenantId: tenantId as UUID,

@@ -32,12 +32,15 @@ from the rubro, the style and the optional product.
    - `src/transport/redis-queue-adapter.ts:RedisQueueAdapter` publishes a `task_dispatch`
      wake-up (`dispatchWakeUp`) on `mypes:agent_task:dispatch:<agentId>`. Postgres
      `agent_tasks` is the queue; Redis only says "look now".
+   - When `REDIS_URL` is unset, the same adapter and workers run over an in-process wake-up bus
+     (`inProcessWakeUpBus` in `runtime.ts`, single process only), so a task settles exactly as
+     with Redis: deliverables and the durable notice are written (KAN-82).
    - `src/transport/local-adapter.ts:LocalAdapter` runs the handler in-process
-     (`queueMicrotask`) for agents not on Redis, or for everything when `REDIS_URL` is unset.
+     (`queueMicrotask`) for registered agents without a worker (none today).
      `waitForSettlement` is the test barrier.
 4. **Worker.** `src/workers/agent-worker.ts:startAgentWorker` runs one worker per entry of
    `REDIS_WORKERS` (`LOGO_WORKER`, `NAME_WORKER`: agent id, deliverable kind, log scope) inside the
-   Next.js process when Redis is configured. On a wake-up it re-reads the row, skips rows addressed
+   Next.js process, with or without Redis. On a wake-up it re-reads the row, skips rows addressed
    to another agent, claims atomically (`claimById` in `src/repos/agent-tasks.ts`: only a `pending`
    row of that agent), publishes `task_processing`, and runs the handler. Shared worker types are
    in `src/workers/_kit.ts`.
@@ -95,7 +98,8 @@ from the rubro, the style and the optional product.
 - **Settlement is atomic and awaited.** Deliverable, task status and outbox event commit
   together; a failed settlement leaves the row `in_progress` for operator review and announces
   nothing. Enforced by `src/workers/__tests__/logo-agent-worker.test.ts` ("atomically settles…",
-  "contains a failing durable settlement…").
+  "contains a failing durable settlement…"), and without Redis by
+  `src/core/orchestrator/__tests__/runtime.test.ts` (KAN-82).
 
 ## Decisions
 
@@ -117,8 +121,8 @@ from the rubro, the style and the optional product.
   and the live required flag only drive routing and the planner. Changing an existing field's
   hint still breaks releases pinned before the change.
 - The name prompt (`name-agent.v1`) has no real-model eval yet; only fakes test it.
-- Without Redis, `LocalAdapter` runs the handler but deliverables are not persisted and no
-  durable notice is written (KAN-82).
+- Without Redis, the in-process bus reaches only workers in the same process; a dispatch made
+  by another process (or lost by a restart mid-task) waits for the periodic recovery.
 - No stale-`in_progress` threshold, max attempts or backoff yet; production scan interval and
   multi-instance ownership are open. RabbitMQ is the planned replacement for the Pub/Sub wake-up.
 - The legacy wizard's other steps (label, web page, marketing) are not wired to agents. The
