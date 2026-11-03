@@ -37,8 +37,8 @@ const log = loggerFor('controller.deliverable-command');
 const COMMAND_KINDS: ReadonlyArray<DeliverableCommandKind> = ['generate', 'iterate', 'approve', 'retry', 'cancel'];
 /** Commands that start a generation (KAN-43 preflight). */
 const GENERATING_COMMANDS: ReadonlyArray<DeliverableCommandKind> = ['generate', 'iterate', 'retry'];
-/** Agents whose generation is one LLM call (KAN-31); every other live agent generates an image. */
-const LLM_AGENTS: ReadonlyArray<string> = ['name-agent'];
+/** Agents whose generation is one LLM call (KAN-31, KAN-32); every other live agent generates an image. */
+const LLM_AGENTS: ReadonlyArray<string> = ['name-agent', 'tagline-agent'];
 const STATE_KINDS: ReadonlyArray<DeliverableStateKind> = [
   'blocked',
   'enabled',

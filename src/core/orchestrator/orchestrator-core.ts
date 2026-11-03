@@ -58,6 +58,7 @@ import { planNextDecision } from './planner';
 import type { IArtifactNotifier } from './artifact-notifier';
 import { InProcessNotificationChannel, type NotificationChannel } from './notification-channels';
 import type { IterationRefinement } from '../refinement';
+import type { UpstreamInput } from '../deliverable-inputs';
 import {
   InMemoryDeliverableWorkflowStore,
   type IDeliverableWorkflowStore,
@@ -529,9 +530,10 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
     readonly agentId: string;
     readonly task: WorkflowTask;
     readonly requirements: Record<string, unknown>;
+    readonly upstream: Readonly<Record<string, UpstreamInput>>;
     readonly refinement: IterationRefinement | null;
   }): Promise<void> {
-    const { conversationId, agentId, task, requirements, refinement } = input;
+    const { conversationId, agentId, task, requirements, upstream, refinement } = input;
     const tenantId = this.conversationTenants.get(conversationId)!;
     const entry = this.deps.registry.get(agentId);
     const taskId = task.id;
@@ -543,6 +545,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
       agentId,
       agentCardVersion: entry.card.version,
       requirements,
+      ...(Object.keys(upstream).length > 0 ? { upstream } : {}),
       ...(task.parentTaskId
         ? {
             iteration: {

@@ -58,6 +58,19 @@ export function staleNotice(view: Pick<DeliverableStateView, 'state'>, label: st
   return `Cambió algo que usó este ${label} (un dato de tu marca o un entregable aprobado). No lo regeneramos solo: toca Iterar o Generar si quieres actualizarlo${keep}.`;
 }
 
+/** Spanish nouns of upstream deliverable kinds, for the blocked message (KAN-32). */
+const UPSTREAM_LABELS: Readonly<Record<string, string>> = {
+  business_name: 'nombre comercial',
+  logo: 'logo',
+  tagline: 'lema',
+};
+
+/** Blocked by an unapproved upstream: name it when every missing kind has a label. */
+export function missingUpstreamMessage(kinds: ReadonlyArray<string>): string {
+  const labels = kinds.map((kind) => UPSTREAM_LABELS[kind]);
+  return labels.every(Boolean) ? `Primero aprueba tu ${labels.join(' y ')}.` : 'Primero aprueba los entregables anteriores.';
+}
+
 /** Spanish labels of the server's missing preconditions (KAN-26). */
 function missingLabels(fields: ReadonlyArray<string>): string {
   return fields.map((name) => briefFieldSpec(name)?.label ?? name).join(', ');
@@ -149,7 +162,7 @@ export function DeliverableCommands({
       {view.state === 'blocked' && (
         <p className="text-xs text-neutral-500">
           {view.missingUpstream.length > 0
-            ? 'Primero aprueba los entregables anteriores.'
+            ? missingUpstreamMessage(view.missingUpstream)
             : `Para habilitar tu ${label} falta: ${missingLabels(view.missingFields)}. Complétalo en el chat o en los datos de tu marca.`}
         </p>
       )}

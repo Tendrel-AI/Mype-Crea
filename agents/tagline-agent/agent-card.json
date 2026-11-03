@@ -1,38 +1,38 @@
 {
   "name": "tagline-agent",
-  "description": "Crea un eslogan corto y memorable para la marca.",
+  "description": "Propone lemas para tu marca a partir del nombre que aprobaste.",
   "version": "0.1.0",
   "skills": [],
   "mypes:requirements": {
     "required": [
       {
-        "name": "business_name",
+        "name": "business_category",
         "type": "string",
-        "promptHint": "Confirmemos el nombre del negocio para el eslogan."
+        "promptHint": "¿A qué rubro pertenece tu negocio? (por ejemplo: alimentos, cosmética, artesanía)"
       },
       {
-        "name": "business_profile",
+        "name": "style_keywords",
         "type": "string",
-        "promptHint": "Recuérdame el valor principal o promesa del negocio."
+        "promptHint": "¿Qué estilo quieres para tu marca? (por ejemplo: moderno, tradicional, divertido)"
       }
     ],
     "optional": [
       {
-        "name": "tone",
+        "name": "product_name",
         "type": "string",
-        "promptHint": "¿Qué tono prefieres para el eslogan? (formal, cercano, divertido)"
+        "promptHint": "¿Qué producto vas a lanzar?"
       }
     ]
   },
   "mypes:ui": {
-    "tabLabel": "Eslogan",
+    "tabLabel": "Lema",
     "tabIcon": "quote",
     "displayOrder": 3,
     "outputPreview": "tagline"
   },
   "mypes:deliverable": {
     "kind": "tagline",
-    "dependsOn": []
+    "dependsOn": ["business_name"]
   },
   "supportedInterfaces": [
     { "protocol": "local", "module": "agents/tagline-agent/handler.ts" }

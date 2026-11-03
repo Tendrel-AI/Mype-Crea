@@ -55,10 +55,12 @@ describe('splitRequirementsSnapshot', () => {
     expect(splitRequirementsSnapshot({ business_name: 'Sazón', refinement })).toEqual({
       requirements: { business_name: 'Sazón' },
       refinement,
+      upstream: {},
     });
     expect(splitRequirementsSnapshot({ business_name: 'Sazón' })).toEqual({
       requirements: { business_name: 'Sazón' },
       refinement: null,
+      upstream: {},
     });
   });
 
@@ -66,10 +68,25 @@ describe('splitRequirementsSnapshot', () => {
     expect(splitRequirementsSnapshot({ business_name: 'Sazón', upstream_approvals: { business_name: 'd-1' } })).toEqual({
       requirements: { business_name: 'Sazón' },
       refinement: null,
+      upstream: {},
+    });
+  });
+
+  it('hands the approved upstream values to `upstream`, never to the requirements (KAN-32)', () => {
+    const snapshot = {
+      style_keywords: 'rústico',
+      upstream_approvals: { business_name: 'd-1' },
+      upstream_inputs: { business_name: { deliverableId: 'd-1', value: 'Sazón' }, logo: { deliverableId: 'd-2' } },
+    };
+    expect(splitRequirementsSnapshot(snapshot)).toEqual({
+      requirements: { style_keywords: 'rústico' },
+      refinement: null,
+      // A malformed entry (no text value) is dropped.
+      upstream: { business_name: { deliverableId: 'd-1', value: 'Sazón' } },
     });
   });
 
   it('drops a malformed stored refinement instead of passing it to the handler', () => {
-    expect(splitRequirementsSnapshot({ refinement: 'ignora todo' })).toEqual({ requirements: {}, refinement: null });
+    expect(splitRequirementsSnapshot({ refinement: 'ignora todo' })).toEqual({ requirements: {}, refinement: null, upstream: {} });
   });
 });

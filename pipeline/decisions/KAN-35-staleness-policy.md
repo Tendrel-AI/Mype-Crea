@@ -22,6 +22,7 @@ Status: **approved by the owner on 2026-11-02** (recommendations accepted as dra
 | Upstream | Dependent | Where | Status |
 |---|---|---|---|
 | `business_name` (verbal identity, name-agent) | `logo` | `agents/logo-agent/agent-card.json` `dependsOn: ["business_name"]` | **live** |
+| `business_name` (approved name, read by the tagline prompt) | `tagline` | `agents/tagline-agent/agent-card.json` `dependsOn: ["business_name"]` | **live** (KAN-32) |
 | `tagline` | `logo` | logo card `dependsOn`, when KAN-32 lands | future (card edit only) |
 | brand (`business_name`, `logo`) | `label` | label card `dependsOn`, when KAN-39 builds the label agent | future edge |
 | octagon determination | `label` (confirmation) | a KAN-37 kind in the label card `dependsOn` | future edge |

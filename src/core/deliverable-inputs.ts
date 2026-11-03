@@ -14,6 +14,12 @@
  *     approved deliverable id of every `mypes:deliverable.dependsOn` kind in
  *     the task's `requirements_snapshot` under `UPSTREAM_SNAPSHOT_KEY`.
  *     Workers strip the key, so it never reaches a handler.
+ *   - Upstream values (KAN-32): in the same snapshot, under
+ *     `UPSTREAM_INPUTS_KEY`, the approved upstream deliverable's id and its
+ *     inline text value. Handlers receive it as `A2AMessage.upstream`; a
+ *     handler that uses one records it in `metadata.inputs` with its
+ *     `deliverableId`, and such an entry is an upstream reference (trigger
+ *     (a)), never compared with the brief.
  *
  * Pure apart from hashing; no agent- or field-specific branching.
  */
@@ -22,6 +28,15 @@ import { createHash } from 'node:crypto';
 
 /** Reserved `requirements_snapshot` key: `{ <upstream kind>: <approved deliverable id> }`. */
 export const UPSTREAM_SNAPSHOT_KEY = 'upstream_approvals';
+
+/** Reserved `requirements_snapshot` key: `{ <upstream kind>: { deliverableId, value } }` (KAN-32). */
+export const UPSTREAM_INPUTS_KEY = 'upstream_inputs';
+
+/** An approved upstream deliverable a handler may read (`A2AMessage.upstream`). */
+export interface UpstreamInput {
+  readonly deliverableId: string;
+  readonly value: string;
+}
 
 /** Stable version of a brief value: the same value always yields the same fingerprint. */
 export function inputVersion(value: string): string {
@@ -34,8 +49,9 @@ export function recordedFieldVersions(metadata: unknown): Readonly<Record<string
   if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) return null;
   const out: Record<string, string> = {};
   for (const [field, entry] of Object.entries(inputs as Record<string, unknown>)) {
-    const version = (entry as { version?: unknown } | null)?.version;
-    if (typeof version === 'string') out[field] = version;
+    const { version, deliverableId } = (entry ?? {}) as { version?: unknown; deliverableId?: unknown };
+    // An upstream reference is tracked through the task's upstream approvals, not the brief.
+    if (typeof version === 'string' && deliverableId === undefined) out[field] = version;
   }
   return Object.keys(out).length > 0 ? out : null;
 }
@@ -46,6 +62,20 @@ export function recordedUpstream(snapshot: Readonly<Record<string, unknown>> | n
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   return Object.fromEntries(
     Object.entries(raw as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  );
+}
+
+/** The upstream values recorded in a task snapshot; malformed entries are dropped. */
+export function recordedUpstreamInputs(
+  snapshot: Readonly<Record<string, unknown>> | null | undefined,
+): Readonly<Record<string, UpstreamInput>> {
+  const raw = snapshot?.[UPSTREAM_INPUTS_KEY];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>).flatMap(([kind, entry]) => {
+      const { deliverableId, value } = (entry ?? {}) as { deliverableId?: unknown; value?: unknown };
+      return typeof deliverableId === 'string' && typeof value === 'string' ? [[kind, { deliverableId, value }]] : [];
+    }),
   );
 }
 

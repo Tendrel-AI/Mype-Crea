@@ -17,12 +17,13 @@ export function failedCardMessage(
   view: Pick<DeliverableStateView, 'lastFailure' | 'allowedCommands'> & Partial<Pick<DeliverableStateView, 'deliverableKind'>>,
   label: string,
 ): string {
-  // KAN-43: a usage gate failed the task (a race past the preflight). Names are an LLM call (KAN-31),
-  // every other live deliverable an image.
+  // KAN-43: a usage gate failed the task (a race past the preflight). Names and taglines are an LLM
+  // call (KAN-31, KAN-32), every other live deliverable an image.
   // shortcut: the task error does not carry the denial reason, so a rare tenant-budget denial here
   // also shows the per-user copy; the next command's preflight shows the exact reason.
   if (view.lastFailure?.errorKind === 'usage_limited') {
-    return usageLimitMessage(view.deliverableKind === 'business_name' ? 'user_llm_hourly' : 'user_image_daily');
+    const llm = view.deliverableKind === 'business_name' || view.deliverableKind === 'tagline';
+    return usageLimitMessage(llm ? 'user_llm_hourly' : 'user_image_daily');
   }
   const base = `No pudimos generar tu ${label}.`;
   if (view.allowedCommands.length === 0) {

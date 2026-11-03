@@ -3,7 +3,7 @@
 CreaMype is an AI-assisted brand-creation wizard for Peruvian micro and small businesses
 (MYPEs). The owner chats in Spanish; the app collects the facts each sub-agent needs (business
 name, style, colors…) and, when the owner taps a button, a sub-agent produces a deliverable (today
-the logo and business-name candidates). It is also a thesis project whose claim is **a deterministic decision layer over
+the logo, business-name candidates and tagline candidates). It is also a thesis project whose claim is **a deterministic decision layer over
 LLM-extracted state**: LLMs only read the user's text and write the reply, while a pure,
 table-tested planner decides what happens next.
 
@@ -28,7 +28,7 @@ flowchart TD
   P -. offer_generation .-> B["Owner taps «Generar» in the panel"]
   B --> DC["deliverableCommandAction → executeCommand"]
   DC --> Q["agent_tasks row + IAgentTransport.dispatch"]
-  Q --> W["agent worker (logo: fal.ai → private bucket; name: LLM)"]
+  Q --> W["agent worker (logo: fal.ai → private bucket; name, tagline: LLM)"]
   W --> S["settleTaskAndEnqueue: deliverable + outbox event"]
   S --> SSE["GET /api/agents/stream → task_completed"]
   SSE --> L["Logo card «En revisión» → Iterar / Aprobar"]
@@ -41,7 +41,7 @@ No chat text can start a paid generation: generation starts only from the typed 
 | Feature | What the user gets | Read |
 |---|---|---|
 | Chat turn | A Spanish conversation that collects the brief and asks only what is missing | [01-chat-turn.md](01-chat-turn.md) |
-| Agents and transport | A logo and five business-name candidates generated from the brief; other agents are declared but not live | [02-agents-and-transport.md](02-agents-and-transport.md) |
+| Agents and transport | A logo, five business-name candidates and five taglines (from the approved name) generated from the brief; other agents are declared but not live | [02-agents-and-transport.md](02-agents-and-transport.md) |
 | Deliverable lifecycle | Generar / Iterar / Aprobar / Reintentar / Cancelar buttons with clear states, failure recovery, and a «Potencialmente desactualizado» notice when a name or brief value the deliverable used changes | [03-deliverable-lifecycle.md](03-deliverable-lifecycle.md) |
 | Live updates | «Generando» and the finished logo appear without reloading | [04-live-updates.md](04-live-updates.md) |
 | Auth, tenancy and isolation | Sign-in through the organization; nobody sees another tenant's or member's data | [05-auth-tenancy-isolation.md](05-auth-tenancy-isolation.md) |
@@ -57,8 +57,9 @@ No chat text can start a paid generation: generation starts only from the typed 
 | Trace and pilot metrics | A downloadable, ordered trace of each conversation; metadata-only views, monthly samples and pilot metrics for operators | [15-trace-and-metrics.md](15-trace-and-metrics.md) |
 
 The wizard UI (`components/CreaMype.tsx`) still shows five steps (Nombre, Logo, Etiqueta, Web,
-Marketing). Only the brief, the name and the logo are wired to the orchestrator; the other steps are not.
-The logo needs an approved name first (KAN-35 dependency map).
+Marketing). Only the brief, the name, the tagline («Lema», in the name step) and the logo are wired
+to the orchestrator; the other steps are not. The logo and the tagline need an approved name first
+(KAN-35 dependency map).
 
 ## Other records
 

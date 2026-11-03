@@ -14,7 +14,7 @@
  *       non-ASCII-whitespace character),
  *     anchorDeliverableId: lowercase UUID | null }
  *
- * Pure (no I/O; imports only the reserved snapshot key of ./deliverable-inputs), so both the core (command handler, workers) and
+ * Pure (no I/O; imports only the reserved snapshot keys of ./deliverable-inputs), so both the core (command handler, workers) and
  * the repository layer (`src/repos/refinement-rules.ts` re-exports it) use
  * this module. The same rule is enforced in PostgreSQL by
  * `app.is_valid_refinement(jsonb)` (CHECK `agent_tasks_refinement_valid`,
@@ -27,7 +27,7 @@
  * Lengths are Unicode code points (PostgreSQL `char_length`), not UTF-16 units.
  */
 
-import { UPSTREAM_SNAPSHOT_KEY } from './deliverable-inputs';
+import { UPSTREAM_INPUTS_KEY, UPSTREAM_SNAPSHOT_KEY, recordedUpstreamInputs, type UpstreamInput } from './deliverable-inputs';
 
 export const REFINEMENT_LIMITS = Object.freeze({
   maxObservations: 5,
@@ -229,10 +229,18 @@ export function buildIterationRefinement(input: {
 export function splitRequirementsSnapshot(snapshot: Readonly<Record<string, unknown>>): {
   readonly requirements: Record<string, unknown>;
   readonly refinement: IterationRefinement | null;
+  /** Approved upstream values (KAN-32), for `A2AMessage.upstream`. */
+  readonly upstream: Readonly<Record<string, UpstreamInput>>;
 } {
   // The KAN-35 upstream record is bookkeeping for staleness, not handler input.
-  const { [REFINEMENT_SNAPSHOT_KEY]: raw, [UPSTREAM_SNAPSHOT_KEY]: _upstream, ...requirements } = snapshot;
-  if (raw === undefined) return { requirements, refinement: null };
+  const {
+    [REFINEMENT_SNAPSHOT_KEY]: raw,
+    [UPSTREAM_SNAPSHOT_KEY]: _upstream,
+    [UPSTREAM_INPUTS_KEY]: _upstreamInputs,
+    ...requirements
+  } = snapshot;
+  const upstream = recordedUpstreamInputs(snapshot);
+  if (raw === undefined) return { requirements, refinement: null, upstream };
   const checked = checkStoredRefinement(raw);
-  return { requirements, refinement: checked.ok ? checked.value : null };
+  return { requirements, refinement: checked.ok ? checked.value : null, upstream };
 }
