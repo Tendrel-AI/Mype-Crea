@@ -48,7 +48,10 @@ accounts of their own tenant (KAN-41).
    `src/repos/platform-metrics.ts:platformMetricsRepo`, which reads the SQL function
    `app.platform_monthly_metrics` (migration `migrations/1777500000000_platform_global_access.js`):
    per calendar month and organization, active users, new conversations, errors, provider/model
-   calls and tokens, estimated cost, and active module versions.
+   calls and tokens, estimated cost, and active module versions. `getPlatformMonthlyMetrics`
+   then suppresses small cohorts (KAN-71): a row with fewer than 5 active users in the month
+   (an organization, or the platform total) returns `suppressed: true` and `null` counts and
+   costs, and the pages show «Datos insuficientes para mostrar».
    Per-conversation metadata, the monthly random sample and the pilot metrics report (KAN-42) are
    operator scripts over `globalRepos().trace`, never content: [15-trace-and-metrics.md](15-trace-and-metrics.md).
 6. **Audit trail.** `app/platform/audit/page.tsx` reads `platform_audit_events` through
@@ -101,11 +104,17 @@ accounts of their own tenant (KAN-41).
   `src/services/__tests__/tenant-accounts.test.ts` and `app/actions/__tests__/tenant-accounts.test.ts`.
 - **Metrics are aggregates only: no user or content columns.** Enforced by the shape of
   `app.platform_monthly_metrics` and `src/repos/__tests__/platform-metrics.test.ts`.
+- **Small cohorts expose no counts (k = 5).** Applied server-side, never only in the UI.
+  Enforced by `src/services/platform/metrics/__tests__/monthly.test.ts` and
+  `app/platform/metrics/__tests__/page.test.tsx`.
 
 ## Decisions
 
 - 2026-10-19 — KAN-71 platform administration merged. Spec:
   [`pipeline/kan-71-specs.md`](../../pipeline/kan-71-specs.md).
+- 2026-11-03 — KAN-71 small-cohort suppression approved (k = 5), superseding the spec's
+  "show cells even for one user"
+  ([`pipeline/decisions/KAN-71-small-cohort-suppression.md`](../../pipeline/decisions/KAN-71-small-cohort-suppression.md)).
 - 2026-10-21 — KAN-77: new conversations on the platform path materialize the effective platform
   release into the tenant. Validation:
   [`pipeline/kan-77-db-validation-2026-10-21.md`](../../pipeline/kan-77-db-validation-2026-10-21.md).

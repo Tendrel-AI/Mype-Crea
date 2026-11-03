@@ -36,3 +36,6 @@ export function platformScopeLabel(scope: string): string {
 export function platformReasonLabel(reason: string): string {
   return reasonLabels[reason] ?? reason;
 }
+
+/** KAN-71: shown in place of the counts of a row with fewer than 5 active users in the month. */
+export const suppressedMetricsLabel = 'Datos insuficientes para mostrar: menos de 5 usuarios activos en el mes.';
