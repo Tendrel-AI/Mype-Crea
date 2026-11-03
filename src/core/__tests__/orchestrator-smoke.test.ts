@@ -582,6 +582,7 @@ describe('orchestrator smoke (agent-agnostic)', () => {
   it.each([
     ['content_policy', 'content_policy', ['iterate', 'retry']],
     ['rate_limited', 'transient', ['retry']],
+    ['usage_limited', 'transient', ['retry']],
     ['config_missing', 'permanent_bug', ['retry']],
     ['something_new', 'permanent_bug', ['retry']],
   ] as const)(
@@ -613,7 +614,7 @@ describe('orchestrator smoke (agent-agnostic)', () => {
       const [view] = await core.getDeliverableStates(conversationId);
       expect(view).toMatchObject({
         state: 'failed',
-        lastFailure: { taskId, errorCategory: expectedCategory, retryable: expectedCategory === 'transient' },
+        lastFailure: { taskId, errorCategory: expectedCategory, errorKind: kind, retryable: expectedCategory === 'transient' },
         allowedCommands: expectedAllowed,
       });
     },

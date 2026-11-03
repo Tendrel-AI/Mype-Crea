@@ -94,6 +94,7 @@ export const handler: AgentHandler<undefined> = async (message) => {
     const result = await getImageGenerator().generate({
       prompt,
       purpose: 'logo',
+      usage: { tenantId: message.tenantId, agentTaskId: message.taskId },
     });
     url = result.url;
     providerId = result.providerId;

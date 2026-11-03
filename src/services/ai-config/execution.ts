@@ -5,6 +5,8 @@ import type { ChatCompletion, ChatRequest, ResolvedModel } from '../llm/types';
 import { ProviderRegistry, ProfileUnavailableError } from './provider-registry';
 import { ProviderCallError } from '../llm/provider-error';
 import { freezeManifest, type AiConfigManifestV1, type ModelProfile, type Purpose } from './manifest';
+import { runWithUsage, UsageLimitError, type UsageLedger } from '../usage/gateway';
+import { estimateLlmCostUsd, llmCostUsd, type UsageDenialReason } from '../usage/policy';
 
 export type ExecutionFailureCategory =
   | 'legacy_unversioned'
@@ -14,7 +16,8 @@ export type ExecutionFailureCategory =
   | 'provider_unavailable'
   | 'provider_rejected'
   | 'ambiguous_provider_outcome'
-  | 'execution_evidence_unavailable';
+  | 'execution_evidence_unavailable'
+  | 'usage_limited';
 
 export class AiConfigExecutionError extends Error {
   constructor(
@@ -22,6 +25,8 @@ export class AiConfigExecutionError extends Error {
     readonly correlationId: string,
     readonly ambiguous: boolean,
     readonly retryable: boolean,
+    /** Set only for `usage_limited` (KAN-43): which limit denied the call. */
+    readonly usageDenial?: UsageDenialReason,
   ) {
     super(`AI configuration execution failed: ${category}.`);
     this.name = 'AiConfigExecutionError';
@@ -95,6 +100,8 @@ export interface AttemptWriter {
 export interface RuntimeRepositories {
   readonly config: RuntimeStore;
   readonly attempts: AttemptWriter;
+  /** KAN-43 usage ledger: every provider call reserves and settles here. */
+  readonly usage: UsageLedger;
 }
 
 export type RuntimeRepositoryFactory = (identity: ResolvedIdentity) => RuntimeRepositories;
@@ -131,7 +138,7 @@ export class AiConfigRuntime {
     operation: (execution: AdapterExecution) => Promise<T>,
   ): Promise<PurposeRunResult<T>> {
     const correlationId = randomUUID();
-    const { config: store, attempts } = this.repositoriesFor(identity);
+    const { config: store, attempts, usage } = this.repositoriesFor(identity);
     const pinned = await store.getPinnedRelease(input.conversationId);
     if (!pinned || pinned.state === 'legacy_unversioned' || !pinned.release) {
       throw executionError('legacy_unversioned', correlationId, false, false);
@@ -229,6 +236,7 @@ export class AiConfigRuntime {
         const tracedModel = captureAttempt(
           model,
           attempts,
+          usage,
           attemptId,
           input,
           capture,
@@ -237,6 +245,11 @@ export class AiConfigRuntime {
         );
         value = await operation(Object.freeze({ model: tracedModel, behavior }));
       } catch (error) {
+        if (error instanceof UsageLimitError) {
+          // KAN-43: denied before the provider was called; never substituted by a fallback.
+          await finishAttemptOrThrow(attempts, attemptId, input.turnId, input.ownerToken, { outcome: 'failed', failureCategory: 'usage_limited' }, correlationId);
+          throw new AiConfigExecutionError('usage_limited', correlationId, false, false, error.reason);
+        }
         if (error instanceof AiConfigExecutionError) {
           await finishAttemptOrThrow(attempts, attemptId, input.turnId, input.ownerToken, {
             outcome: 'failed',
@@ -371,6 +384,7 @@ async function finishAttemptOrThrow(
 function captureAttempt(
   model: ResolvedModel,
   writer: AttemptWriter,
+  usage: UsageLedger,
   attemptId: string,
   input: PurposeRunInput,
   capture: { completion?: ChatCompletion; startedAt: number },
@@ -402,7 +416,22 @@ function captureAttempt(
             }
             if (!enabled) throw new ProviderCallError('provider_unavailable');
             capture.startedAt = Date.now();
-            const completion = await original.chat.completions.create(params);
+            const estimatedCostUsd = estimateLlmCostUsd(params);
+            const completion = await runWithUsage(usage, {
+              request: {
+                kind: 'llm',
+                estimatedCostUsd,
+                provider: model.provider,
+                model: params.model,
+                conversationId: input.conversationId,
+                turnId: input.turnId,
+                attemptId,
+              },
+              call: () => original.chat.completions.create(params),
+              actualCostUsd: (result) => llmCostUsd(params.model, result.usage) ?? estimatedCostUsd,
+              // A typed non-ambiguous provider failure was not billed; anything else may have been.
+              failureCostUsd: (error) => error instanceof ProviderCallError && error.category !== 'ambiguous' ? 0 : estimatedCostUsd,
+            });
             capture.completion = completion;
             validateProductCompletion(params, completion);
             return completion;

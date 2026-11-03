@@ -1,4 +1,5 @@
 import type { UsageSummary } from './models';
+import { USAGE_POLICY } from '../services/usage/policy';
 
 export interface UsageAggregate {
   readonly attempts: number;
@@ -11,7 +12,10 @@ export interface UsageAggregate {
 }
 
 /** Preserve unknown accounting separately from any known subtotal. */
-export function summarizeUsage(aggregate: UsageAggregate): UsageSummary {
+export function summarizeUsage(
+  aggregate: UsageAggregate,
+  budget: { readonly committedUsd: number; readonly periodStart: string },
+): UsageSummary {
   const { attempts, unknownCostAttempts } = aggregate;
   const costAccountingStatus = attempts === 0
     ? 'no_attempts'
@@ -30,6 +34,11 @@ export function summarizeUsage(aggregate: UsageAggregate): UsageSummary {
     knownCost: Number(aggregate.knownCost),
     unknownCostAttempts,
     costAccountingStatus,
-    budgetStatus: 'unconfigured',
+    budgetStatus: {
+      state: budget.committedUsd >= USAGE_POLICY.tenantMonthlyBudgetUsd ? 'exhausted' : 'within_budget',
+      limitUsd: USAGE_POLICY.tenantMonthlyBudgetUsd,
+      committedUsd: budget.committedUsd,
+      periodStart: budget.periodStart,
+    },
   };
 }

@@ -24,6 +24,16 @@ export interface ImageRequest {
   /** Empty/absent → base model; non-empty → vendor's edit/refine endpoint. */
   readonly referenceUrls?: ReadonlyArray<string>;
   readonly purpose?: ImagePurpose;
+  /**
+   * KAN-43: who pays for this image. Required whenever the generator has a usage gate (always
+   * in production); the gate resolves the conversation owner from the task.
+   */
+  readonly usage?: ImageUsageScope;
+}
+
+export interface ImageUsageScope {
+  readonly tenantId: string;
+  readonly agentTaskId: string;
 }
 
 export interface ImageResult {

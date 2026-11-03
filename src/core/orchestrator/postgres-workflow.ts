@@ -40,6 +40,7 @@ function toWorkflowTask(row: AgentTaskRow): WorkflowTask {
     agentId: row.agentId,
     status: row.status,
     errorCategory: row.errorCategory,
+    errorKind: typeof row.error?.kind === 'string' ? row.error.kind : null,
     parentTaskId: (row.parentTaskId ?? null) as TaskId | null,
     iterationRootId: row.iterationRootId as TaskId,
     iterationNumber: row.iterationNumber,

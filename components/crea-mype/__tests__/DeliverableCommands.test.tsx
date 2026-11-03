@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { DeliverableCommands, iterateSubmission } from '../DeliverableCommands';
 import { developerFailureChatText, failedCardMessage } from '../failure-copy';
+import { usageLimitMessage } from '../../../src/services/usage/policy';
 import { Dashboard } from '../Dashboard';
 import type { DeliverableStateView } from '../../../src/core/contracts';
 import type { BrandAssets } from '../types';
@@ -103,12 +104,23 @@ describe('DeliverableCommands (KAN-28)', () => {
     expect(buttons(markup)).toEqual(['Generar', 'Iterar']);
   });
 
-  const failedView = (errorCategory: 'transient' | 'content_policy' | 'permanent_bug' | null, allowedCommands: DeliverableStateView['allowedCommands']) =>
+  const failedView = (
+    errorCategory: 'transient' | 'content_policy' | 'permanent_bug' | null,
+    allowedCommands: DeliverableStateView['allowedCommands'],
+    errorKind: string | null = null,
+  ) =>
     view({
       state: 'failed',
       allowedCommands,
-      lastFailure: { taskId: candidate(1).taskId, errorCategory, retryable: errorCategory === 'transient' },
+      lastFailure: { taskId: candidate(1).taskId, errorCategory, errorKind, retryable: errorCategory === 'transient' },
     });
+
+  it('a worker-side usage denial shows the image-limit copy from the usage policy (KAN-43)', () => {
+    const markup = render(failedView('transient', ['retry'], 'usage_limited'));
+    expect(markup).toContain(usageLimitMessage('user_image_daily'));
+    expect(markup).not.toContain('No pudimos generar tu logo.');
+    expect(markup).not.toContain('usage_limited');
+  });
 
   it.each([
     ['transient', ['retry'], ['Reintentar'], 'Fue un problema temporal: toca Reintentar.'],
@@ -161,6 +173,7 @@ describe('DeliverableCommands (KAN-28)', () => {
       render(failedView('permanent_bug', ['retry'])),
       render(failedView('permanent_bug', [])),
       failedCardMessage(failedView(null, ['retry']), 'logo'),
+      failedCardMessage(failedView('transient', ['retry'], 'usage_limited'), 'logo'),
       developerFailureChatText('logo-agent', { errorCategory: 'transient', errorKind: 'timeout', message: 'x' }),
       render(view({ state: 'approved', stale: true, candidates: [candidate(1)], approvedDeliverableId: candidate(1).deliverableId })),
     ].join(' ');

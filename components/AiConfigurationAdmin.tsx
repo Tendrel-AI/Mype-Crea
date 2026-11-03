@@ -59,7 +59,7 @@ type AdminData = {
     knownCost: number;
     unknownCostAttempts: number;
     costAccountingStatus: 'no_attempts' | 'complete' | 'partial' | 'unknown';
-    budgetStatus: 'unconfigured';
+    budgetStatus: { state: 'within_budget' | 'exhausted'; limitUsd: number; committedUsd: number; periodStart: string };
   } | null;
   turns: Array<{ id: string; stage: string; failureCategory: string | null; createdAt: string }>;
 };
@@ -213,7 +213,8 @@ export default function AiConfigurationAdmin({ initialData }: { initialData: Rec
           <h2 className="font-semibold">Uso y presupuesto</h2>
           {data.usage ? <>
             <p className="text-sm text-slate-600">
-              Presupuesto: {data.usage.budgetStatus === 'unconfigured' ? 'sin configurar' : 'estado no disponible'}.
+              Presupuesto del mes: USD {data.usage.budgetStatus.committedUsd.toFixed(2)} de USD {data.usage.budgetStatus.limitUsd.toFixed(2)}
+              {data.usage.budgetStatus.state === 'exhausted' ? ' (agotado: se rechazan nuevas llamadas a modelos)' : ''}.
               {' '}Estado del costo: {data.usage.costAccountingStatus === 'complete' ? 'completo' : data.usage.costAccountingStatus === 'partial' ? 'parcial' : data.usage.costAccountingStatus === 'unknown' ? 'desconocido' : 'sin intentos'}.
             </p>
             <dl className="grid grid-cols-2 gap-2 text-sm">

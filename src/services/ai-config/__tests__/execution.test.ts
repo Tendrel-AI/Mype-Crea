@@ -15,6 +15,8 @@ import { createCurrentAdapterBehaviorSnapshot } from '../adapter-behavior';
 import { AiConfigRuntime, type AttemptWriter, type RuntimeRepositories } from '../execution';
 import { freezeManifest } from '../manifest';
 import { ProviderRegistry } from '../provider-registry';
+import type { UsageLedger } from '../../usage/gateway';
+import { llmCostUsd, type UsageDenialReason } from '../../usage/policy';
 
 const identity = { tenant: { id: 'tenant-a' }, user: { id: 'user-a' }, tenantRole: 'member', workosUserId: 'user_abc', organizationId: 'org_abc', platformAdmin: false } as unknown as ResolvedIdentity;
 const fields = { forced: ['forced-tool-call', 'json-schema'], ordinary: [] as string[] };
@@ -42,7 +44,7 @@ function frozenManifest(fallbackProfileIds: readonly string[] = ['anthropic-extr
   });
 }
 
-function harness(options: { enabled?: Record<string, boolean>; providerFailures?: Set<string>; providerFailureCategory?: ProviderFailureCategory; failEvidence?: boolean; failFinishAfterCall?: boolean; releaseStatus?: 'frozen' | 'retired'; completionMode?: 'normal' | 'refusal' | 'truncated' | 'missing_tool' | 'malformed_tool' | 'secret'; noFallback?: boolean } = {}) {
+function harness(options: { enabled?: Record<string, boolean>; providerFailures?: Set<string>; providerFailureCategory?: ProviderFailureCategory; failEvidence?: boolean; failFinishAfterCall?: boolean; releaseStatus?: 'frozen' | 'retired'; completionMode?: 'normal' | 'refusal' | 'truncated' | 'missing_tool' | 'malformed_tool' | 'secret'; noFallback?: boolean; usageDenied?: UsageDenialReason; settleFails?: boolean } = {}) {
   const frozen = frozenManifest(options.noFallback ? [] : undefined);
   const requests: Array<{ provider: string; request: ChatRequest }> = [];
   const finishes: Array<Record<string, unknown>> = [];
@@ -95,18 +97,34 @@ function harness(options: { enabled?: Record<string, boolean>; providerFailures?
     }),
     recordNotice: vi.fn(async (input) => { notices.push(input); }),
   };
+  // KAN-43 fake ledger: records every reservation and settlement in call order.
+  const ledger: Array<{ op: 'reserve' | 'settle'; [key: string]: unknown }> = [];
+  const usage: UsageLedger = {
+    reserve: vi.fn(async (request) => {
+      ledger.push({ op: 'reserve', ...request, requestsSoFar: requests.length });
+      return options.usageDenied
+        ? { allowed: false as const, reason: options.usageDenied, reservationId: `denied-${ledger.length}` }
+        : { allowed: true as const, reservationId: `reservation-${ledger.length}` };
+    }),
+    settle: vi.fn(async (settlement) => {
+      if (options.settleFails) throw new Error('db unavailable');
+      ledger.push({ op: 'settle', ...settlement });
+      return true;
+    }),
+  };
   const repositories: RuntimeRepositories = {
     config: {
       getPinnedRelease: vi.fn(async () => ({ state: 'pinned' as const, releaseId: 'release-a', release: { id: 'release-a', status: options.releaseStatus ?? 'frozen', manifest: frozen.content, contentHash: frozen.contentHash } })),
       getProviderAvailability: vi.fn(async (provider) => ({ enabled: options.enabled?.[provider] ?? true, version: 1 })),
     },
     attempts,
+    usage,
   };
   const runtime = new AiConfigRuntime(() => repositories, new ProviderRegistry(
     (ref) => ref === 'platform.openrouter' ? 'open-key' : 'anthropic-key',
     (provider, _key, modelIds) => clientProvider(provider, modelIds),
   ), { runtimeVersion: '1.0.0', codeFingerprint: 'a'.repeat(64), dependencyFingerprint: 'b'.repeat(64) });
-  return { runtime, requests, finishes, notices, attempts, requestEvidence };
+  return { runtime, requests, finishes, notices, attempts, requestEvidence, ledger, usage };
 }
 
 async function callExtractor(execution: Parameters<Parameters<AiConfigRuntime['runPurpose']>[2]>[0]) {
@@ -252,5 +270,61 @@ describe('AiConfigRuntime', () => {
     await expect(runtime.runPurpose(identity, input, callExtractor))
       .rejects.toMatchObject({ category: 'ambiguous_provider_outcome', ambiguous: true });
     expect(requests).toHaveLength(1);
+  });
+
+  describe('usage gateway (KAN-43)', () => {
+    const turn = (turnId: string) => ({ conversationId: 'conversation-a', turnId, ownerToken: 'owner-a', purpose: 'extractor' as const });
+
+    it('allowed: reserves an estimate before the provider call and settles the real token cost after it', async () => {
+      const { runtime, requests, ledger } = harness();
+      await runtime.runPurpose(identity, turn('turn-usage-ok'), callExtractor);
+      expect(requests).toHaveLength(1);
+      expect(ledger).toHaveLength(2);
+      expect(ledger[0]).toMatchObject({ op: 'reserve', kind: 'llm', provider: 'openrouter', model: 'google/gemini-2.5-flash', conversationId: 'conversation-a', turnId: 'turn-usage-ok', attemptId: 'attempt-1', requestsSoFar: 0 });
+      expect(ledger[0].estimatedCostUsd as number).toBeGreaterThan(0);
+      expect(ledger[1]).toEqual({ op: 'settle', reservationId: 'reservation-1', outcome: 'succeeded', actualCostUsd: llmCostUsd('google/gemini-2.5-flash', { prompt_tokens: 12, completion_tokens: 4 }) });
+    });
+
+    it('denied: never calls the provider or a fallback, fails the attempt and carries the reason', async () => {
+      const { runtime, requests, finishes, attempts, usage } = harness({ usageDenied: 'tenant_budget' });
+      await expect(runtime.runPurpose(identity, turn('turn-usage-denied'), callExtractor))
+        .rejects.toMatchObject({ category: 'usage_limited', usageDenial: 'tenant_budget', ambiguous: false });
+      expect(requests).toHaveLength(0);
+      expect(attempts.startAttempt).toHaveBeenCalledTimes(1);
+      expect(finishes).toEqual([expect.objectContaining({ outcome: 'failed', failureCategory: 'usage_limited' })]);
+      expect(usage.settle).not.toHaveBeenCalled();
+    });
+
+    it('failure and retry: each attempt reserves; an unbilled failure settles at 0, the fallback at its real cost', async () => {
+      const { runtime, requests, ledger } = harness({ providerFailures: new Set(['openrouter']), providerFailureCategory: 'provider_unavailable' });
+      await runtime.runPurpose(identity, turn('turn-usage-retry'), callExtractor);
+      expect(requests.map((request) => request.provider)).toEqual(['openrouter', 'anthropic']);
+      expect(ledger.map(({ op, outcome, provider }) => ({ op, outcome, provider }))).toEqual([
+        { op: 'reserve', outcome: undefined, provider: 'openrouter' },
+        { op: 'settle', outcome: 'failed', provider: undefined },
+        { op: 'reserve', outcome: undefined, provider: 'anthropic' },
+        { op: 'settle', outcome: 'succeeded', provider: undefined },
+      ]);
+      expect(ledger[1].actualCostUsd).toBe(0);
+      expect(ledger[3].actualCostUsd).toBe(llmCostUsd('claude-haiku-5-5', { prompt_tokens: 12, completion_tokens: 4 }));
+    });
+
+    it('an ambiguous failure keeps the estimate, since the provider may have billed it', async () => {
+      const { runtime, ledger } = harness({ providerFailures: new Set(['openrouter']) });
+      await expect(runtime.runPurpose(identity, turn('turn-usage-ambiguous'), callExtractor)).rejects.toMatchObject({ category: 'ambiguous_provider_outcome' });
+      expect(ledger[1]).toMatchObject({ op: 'settle', outcome: 'failed', actualCostUsd: ledger[0].estimatedCostUsd });
+    });
+
+    it('a refused completion was still billed: settles the real cost before validation fails', async () => {
+      const { runtime, ledger } = harness({ completionMode: 'refusal' });
+      await expect(runtime.runPurpose(identity, turn('turn-usage-refusal'), callExtractor)).rejects.toMatchObject({ category: 'provider_rejected' });
+      expect(ledger[1]).toMatchObject({ op: 'settle', outcome: 'succeeded', actualCostUsd: llmCostUsd('google/gemini-2.5-flash', { prompt_tokens: 12, completion_tokens: 4 }) });
+    });
+
+    it('a lost settlement does not fail a paid call', async () => {
+      const { runtime, requests } = harness({ settleFails: true });
+      await expect(runtime.runPurpose(identity, turn('turn-usage-settle'), callExtractor)).resolves.toMatchObject({ effectiveProfileId: 'openrouter-extractor' });
+      expect(requests).toHaveLength(1);
+    });
   });
 });

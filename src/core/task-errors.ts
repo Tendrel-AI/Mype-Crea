@@ -38,6 +38,8 @@ export const TASK_ERROR_KINDS = [
   'handler_threw',
   /** The generated asset could not be downloaded from the provider or written to object storage. */
   'storage_unavailable',
+  /** KAN-43: a usage limit denied the call before the provider was reached. Retry after the window. */
+  'usage_limited',
 ] as const;
 
 export type TaskErrorKind = (typeof TASK_ERROR_KINDS)[number];
@@ -53,6 +55,7 @@ const CATEGORY_BY_KIND: Readonly<Record<TaskErrorKind, TaskErrorCategory>> = {
   not_implemented: 'permanent_bug',
   handler_threw: 'permanent_bug',
   storage_unavailable: 'transient',
+  usage_limited: 'transient',
 };
 
 /** Category for kinds the classifier does not know. Never retried automatically. */

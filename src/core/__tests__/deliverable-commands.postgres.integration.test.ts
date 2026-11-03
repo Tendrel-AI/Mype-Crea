@@ -307,7 +307,7 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     });
     expect(await h.view()).toMatchObject({
       state: 'failed',
-      lastFailure: { errorCategory: 'content_policy', retryable: false },
+      lastFailure: { errorCategory: 'content_policy', errorKind: 'content_policy', retryable: false },
       allowedCommands: ['iterate', 'retry'],
     });
     const iterate = await h.command({ kind: 'iterate', observation: 'Sin la mascota, solo letras' });
