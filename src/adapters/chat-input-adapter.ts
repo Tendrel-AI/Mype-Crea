@@ -203,18 +203,28 @@ function confirmPendingValue(
       value: decision.pendingValue,
       confidence: 1.0,
       rawInput,
+      // A stale «sí» (the value changed since the question) must not overwrite.
+      expectedPendingValue: decision.pendingValue,
     };
   }
 }
 
+/**
+ * Reset intents for a reply that rejects the pending value. A bare rejection
+ * only applies while that value is still pending; a reply that carries a
+ * correction (`withCorrection`) resets unconditionally, so an explicit
+ * correction replaces whatever the field holds now.
+ */
 function resetIntents(
   decision: ConfirmFieldDecision,
   owners: ReadonlyArray<AgentId>,
+  withCorrection = false,
 ): UserIntent[] {
   return owners.map((agentId) => ({
     kind: 'reset_field' as const,
     agentId,
     fieldName: decision.fieldName,
+    ...(withCorrection ? {} : { expectedPendingValue: decision.pendingValue }),
   }));
 }
 
@@ -274,7 +284,7 @@ function resolveCompoundConfirmation(
     { fieldName, polarity, contradicted, outcome: correctionKept ? 'corrected' : 'reset' },
     'extractor.confirm.resolved',
   );
-  return resetIntents(decision, owners);
+  return resetIntents(decision, owners, correctionKept);
 }
 
 export class ChatInputAdapter implements InputAdapter {
@@ -303,7 +313,7 @@ export class ChatInputAdapter implements InputAdapter {
     const behavior = execution?.behavior ?? createCurrentAdapterBehaviorSnapshot(currentFields);
     assertSupportedAdapterBehavior(behavior, 'extractor');
     if (execution) assertResolvedModelPurpose(execution.model, 'extractor');
-    if (execution && !sameAdapterFields(behavior.extractor.fields, currentFields)) {
+    if (execution && !frozenFieldsInRegistry(behavior.extractor.fields, currentFields)) {
       throw new Error('Frozen extractor field schema does not match the runtime agent registry.');
     }
 
@@ -611,11 +621,19 @@ function adapterFieldsFromOwnership(ownership: Map<string, FieldOwnership>): Ada
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function sameAdapterFields(
+/**
+ * A pinned release stays usable while every field it froze still exists in
+ * the runtime registry unchanged (name, required, hint, owners). The registry
+ * may declare more fields (KAN-26 added optional product fields); the
+ * extractor then asks the model only for the frozen ones, so the pinned
+ * release still defines what the model is asked (KAN-70).
+ */
+function frozenFieldsInRegistry(
   frozen: ReadonlyArray<AdapterFieldBehavior>,
   current: ReadonlyArray<AdapterFieldBehavior>,
 ): boolean {
-  return JSON.stringify(frozen) === JSON.stringify(current);
+  const byName = new Map(current.map((field) => [field.name, JSON.stringify(field)]));
+  return frozen.every((field) => byName.get(field.name) === JSON.stringify(field));
 }
 
 function renderExtractorToolSchema(

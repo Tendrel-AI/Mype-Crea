@@ -458,3 +458,42 @@ describe('mergeFieldDelta: brief catalog validation (KAN-26)', () => {
     expect(snapshot!.agentStates[AGENT].requiredFields.tagline_tone).toMatchObject({ status: 'filled', value: '  cálido  ' });
   });
 });
+
+describe('mergeFieldDelta: confirmation precondition (expectedPendingValue)', () => {
+  const confirm = (v: unknown) => ({ [AGENT]: { business_name: { value: v, confidence: 1.0, expectedPendingValue: v } } });
+  const resetIfPending = (v: unknown): UserIntent => ({ kind: 'reset_field', agentId: AGENT, fieldName: 'business_name', expectedPendingValue: v });
+
+  it('applies a confirmation while the same value is still pending', async () => {
+    await seed('business_name', true, { status: 'pending_confirmation', value: OLD_VALUE, confidence: LOW_PENDING });
+    const result = await mergeFieldDelta(buildDelta({ fields: confirm(OLD_VALUE) }), store, registry);
+    expect(result.fieldOutcomes.map((o) => o.outcome)).toEqual(['filled']);
+    expect((await agentState()).requiredFields.business_name).toMatchObject({ status: 'filled', value: OLD_VALUE });
+  });
+
+  it.each<[string, FieldSlot]>([
+    ['filled since', { status: 'filled', value: NEW_VALUE, confidence: 1.0 }],
+    ['pending with another value', { status: 'pending_confirmation', value: NEW_VALUE, confidence: LOW_PENDING }],
+    ['emptied since', { status: 'empty' }],
+  ])('ignores a stale confirmation and a stale bare reset when the slot was %s', async (_name, slot) => {
+    await seed('business_name', true, slot);
+    const result = await mergeFieldDelta(
+      buildDelta({ fields: confirm(OLD_VALUE), intents: [resetIfPending(OLD_VALUE)] }),
+      store,
+      registry,
+    );
+    expect(result.fieldOutcomes.map((o) => o.outcome)).toEqual(['stale_confirmation']);
+    expect(result.intentOutcomes.map((o) => o.outcome)).toEqual(['stale_confirmation']);
+    expect(result.mutationsApplied).toBe(0);
+    expect((await agentState()).requiredFields.business_name).toEqual(slot);
+  });
+
+  it('a reset without the precondition (explicit correction) still empties a filled slot', async () => {
+    await seed('business_name', true, { status: 'filled', value: OLD_VALUE, confidence: 1.0 });
+    await mergeFieldDelta(
+      buildDelta({ fields: value('business_name', NEW_VALUE, HIGH_PENDING), intents: [reset('business_name')] }),
+      store,
+      registry,
+    );
+    expect((await agentState()).requiredFields.business_name).toMatchObject({ status: 'pending_confirmation', value: NEW_VALUE });
+  });
+});

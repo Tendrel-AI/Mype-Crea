@@ -42,7 +42,8 @@ import { newTaskId } from '../../../src/core/ids';
 import { resetProvider, setProvider } from '../../../src/services/llm';
 import { FakeLLMProvider, TEST_TENANT_ID, TEST_USER_ID } from '../../../src/core/__tests__/_fixtures';
 import type { A2AMessage, IAgentTransport } from '../../../src/core/agent-types';
-import type { ConversationId, DeliverableStateView } from '../../../src/core/contracts';
+import type { ConfirmFieldDecision, ConversationId, DeliverableStateView } from '../../../src/core/contracts';
+import { createCurrentAdapterBehaviorSnapshot, type AdapterBehaviorSnapshot } from '../../../src/services/ai-config/adapter-behavior';
 import { TERMS_REQUIRED_MESSAGE } from '../../../src/consent/terms';
 import { BRIEF_CATALOG } from '../../../src/core/brief';
 
@@ -71,27 +72,44 @@ function buildRuntime(store = new InMemoryConversationStore(buildDefaultRegistry
   return { core, store, registry, dispatched };
 }
 
-/** One chat turn's input side, as app/actions/chat.ts runs it, with a scripted Extractor. */
+/**
+ * One chat turn's input side, as app/actions/chat.ts runs it, with a scripted
+ * Extractor. `release` stands in for a pinned AI release (frozen behavior);
+ * `priorDecision` is the confirm_field the previous assistant turn asked.
+ */
 async function chatTurn(
   runtime: ReturnType<typeof buildRuntime>,
   userMessage: string,
   fields: Record<string, { value: string; confidence: number }>,
+  options: { readonly release?: AdapterBehaviorSnapshot; readonly priorDecision?: ConfirmFieldDecision } = {},
 ) {
-  setProvider(
-    new FakeLLMProvider({ purpose: 'extractor', modelId: 'google/gemini-2.5-flash' }).scriptToolCall(
-      'submit_extracted_fields',
-      // The tool schema requires every known field; absent ones are null.
-      JSON.stringify({ fields: { ...Object.fromEntries(BRIEF_CATALOG.map((spec) => [spec.name, null])), ...fields } }),
-    ),
+  const askedFields = options.release?.extractor.fields.map((f) => f.name) ?? BRIEF_CATALOG.map((spec) => spec.name);
+  const provider = new FakeLLMProvider({ purpose: 'extractor', modelId: 'google/gemini-2.5-flash' }).scriptToolCall(
+    'submit_extracted_fields',
+    // The tool schema requires every asked field; absent ones are null.
+    JSON.stringify({ fields: { ...Object.fromEntries(askedFields.map((name) => [name, null])), ...fields } }),
   );
+  setProvider(provider);
   await runtime.core.startConversation(CONVERSATION, TEST_TENANT_ID, TEST_USER_ID);
   const adapter = new ChatInputAdapter(runtime.core, runtime.registry);
   const delta = await adapter.extract({
     conversationId: CONVERSATION,
     userMessage,
+    priorDecision: options.priorDecision,
     llmContext: { tenant: { id: TEST_TENANT_ID }, user: { id: TEST_USER_ID }, conversationId: CONVERSATION, promptVersion: 'extractor.v5' },
+    ...(options.release
+      ? { execution: { model: { ...provider.resolve('extractor'), provider: 'openrouter' }, behavior: options.release } }
+      : {}),
   });
   await runtime.core.applyDelta(delta);
+  return provider;
+}
+
+/** The confirm_field the planner currently asks, as the next chat turn would receive it. */
+async function currentConfirm(runtime: ReturnType<typeof buildRuntime>): Promise<ConfirmFieldDecision> {
+  const decision = (await runtime.core.peekNextDecision(CONVERSATION)).find((d) => d.kind === 'confirm_field');
+  if (!decision || decision.kind !== 'confirm_field') throw new Error('no confirm_field pending');
+  return decision;
 }
 
 function field(fields: ReadonlyArray<BriefPanelField>, name: string) {
@@ -212,14 +230,99 @@ describe('brief actions (KAN-26)', () => {
     expect(result).toEqual({ ok: false, code: 'terms_required', message: TERMS_REQUIRED_MESSAGE });
   });
 
+  describe('pinned releases captured before KAN-26 (extractor.v4 field list)', () => {
+    // The logo fields exactly as the pre-KAN-26 card declared them.
+    const v4Release: AdapterBehaviorSnapshot = (() => {
+      const behavior = createCurrentAdapterBehaviorSnapshot([
+        { name: 'business_name', required: true, promptHint: '¿Qué nombre debe llevar el logo?', agents: ['logo-agent'] },
+        { name: 'color_palette', required: false, promptHint: '¿Tienes colores preferidos para tu marca?', agents: ['logo-agent'] },
+        {
+          name: 'style_keywords',
+          required: true,
+          promptHint: 'Describe el estilo del logo (por ejemplo: minimalista, colorido, tradicional).',
+          agents: ['logo-agent'],
+        },
+      ]);
+      return { ...behavior, extractor: { ...behavior.extractor, promptVersion: 'extractor.v4' } };
+    })();
+
+    it('extracts the logo fields, asks the model nothing about product fields, and still generates', async () => {
+      const runtime = buildRuntime();
+      const provider = await chatTurn(
+        runtime,
+        'Se llama Dulce Andino y lo quiero rústico',
+        { business_name: { value: 'Dulce Andino', confidence: 0.95 }, style_keywords: { value: 'rústico', confidence: 0.95 } },
+        { release: v4Release },
+      );
+
+      const request = provider.create.mock.calls[0][0] as { tools: Array<{ function: { parameters: any } }> };
+      const asked = Object.keys(request.tools[0].function.parameters.properties.fields.properties).sort();
+      expect(asked).toEqual(['business_name', 'color_palette', 'style_keywords']);
+      for (const productField of ['business_category', 'product_name', 'product_composition', 'product_presentation', 'manufacturer']) {
+        expect(provider.captured[0].systemPrompt).not.toContain(productField);
+      }
+
+      const result = await brief();
+      expect(field(result.fields, 'business_name')).toMatchObject({ status: 'filled', value: 'Dulce Andino', source: 'chat' });
+      // The panel still edits product fields on this conversation (no extractor involved).
+      const edited = await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'product_name', value: 'Mermelada' });
+      expect(edited.ok && field(edited.fields, 'product_name')).toMatchObject({ value: 'Mermelada', source: 'panel' });
+
+      const view = logoState(edited.ok ? edited.states : []);
+      expect(view.allowedCommands).toContain('generate');
+      expect((await generate(view)).ok).toBe(true);
+      expect(runtime.dispatched).toHaveLength(1);
+    });
+  });
+
+  describe('confirmation answers after a panel edit', () => {
+    async function pendingStyleThenPanel(runtime: ReturnType<typeof buildRuntime>) {
+      await chatTurn(runtime, 'quizá algo rústico', { style_keywords: { value: 'rústico', confidence: 0.7 } });
+      const question = await currentConfirm(runtime);
+      expect(question).toMatchObject({ fieldName: 'style_keywords', pendingValue: 'rústico' });
+      await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'style_keywords', value: 'moderno' });
+      return question;
+    }
+
+    it.each(['sí', 'no'])('a stale bare «%s» to the old question leaves the panel value', async (reply) => {
+      const runtime = buildRuntime();
+      const question = await pendingStyleThenPanel(runtime);
+      const provider = await chatTurn(runtime, reply, {}, { priorDecision: question });
+      expect(provider.create).not.toHaveBeenCalled(); // fast path
+      expect(field((await brief()).fields, 'style_keywords')).toMatchObject({ status: 'filled', value: 'moderno', source: 'panel' });
+    });
+
+    it('a fresh «sí» still confirms the pending value', async () => {
+      const runtime = buildRuntime();
+      await chatTurn(runtime, 'quizá algo rústico', { style_keywords: { value: 'rústico', confidence: 0.7 } });
+      await chatTurn(runtime, 'sí', {}, { priorDecision: await currentConfirm(runtime) });
+      expect(field((await brief()).fields, 'style_keywords')).toMatchObject({ status: 'filled', value: 'rústico', source: 'chat' });
+    });
+
+    it('an explicit correction to the confirm question replaces the panel value (reset_field path)', async () => {
+      const runtime = buildRuntime();
+      const question = await pendingStyleThenPanel(runtime);
+      await chatTurn(runtime, 'no, el estilo es minimalista', { style_keywords: { value: 'minimalista', confidence: 0.95 } }, { priorDecision: question });
+      expect(field((await brief()).fields, 'style_keywords')).toMatchObject({ status: 'filled', value: 'minimalista', source: 'chat' });
+    });
+
+    it('known bug: without a pending confirm question, a chat restatement does not replace a panel value', async () => {
+      const runtime = buildRuntime();
+      await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'business_name', value: 'Dulce Andino' });
+      await chatTurn(runtime, 'no, el nombre es Dulces del Valle', { business_name: { value: 'Dulces del Valle', confidence: 0.95 } });
+      expect(field((await brief()).fields, 'business_name')).toMatchObject({ value: 'Dulce Andino', source: 'panel' });
+    });
+  });
+
   describe('precondition gate: the server verdict drives «Generar» in both directions', () => {
     type Step = (runtime: ReturnType<typeof buildRuntime>) => Promise<void>;
     const panel = (fieldName: string, value: string): Step => async () => {
       const result = await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName, value });
       if (!result.ok) throw new Error(result.code);
     };
-    const chat = (fields: Record<string, { value: string; confidence: number }>): Step => (runtime) =>
-      chatTurn(runtime, 'dato', fields);
+    const chat = (fields: Record<string, { value: string; confidence: number }>): Step => async (runtime) => {
+      await chatTurn(runtime, 'dato', fields);
+    };
 
     it.each<[string, ReadonlyArray<Step>, ReadonlyArray<string>]>([
       ['empty brief', [], ['business_name', 'style_keywords']],
