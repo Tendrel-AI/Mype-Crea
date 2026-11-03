@@ -63,8 +63,11 @@ budget is exhausted.
 
 - **Prices are hand-typed list prices** (`PRICING_VERSION`), not invoices. Two rules apply:
   - Models missing from the table are charged a conservative default of USD 5 / USD 25 per
-    million tokens. Today this covers `claude-haiku-5-5` and `claude-sonnet-5-5`.
-  - The fal image price (USD 0.08) is unverified.
+    million tokens.
+  - Since 2026-11-03 the pilot runs on Claude: `claude-sonnet-5-5` (USD 2 / 10) and
+    `claude-haiku-5-5` (USD 0.10 / 0.50 up to 100k-token prompts) from public list prices.
+    Images use fal FLUX.2 [dev] at USD 0.012 per megapixel, reserved as USD 0.03 per image
+    (an edit also bills its reference image).
 
   Replace these with provider-reported costs when KAN-42 lands. Every ledger row carries the
   conversation, turn, attempt, and agent-task ids for that correlation.

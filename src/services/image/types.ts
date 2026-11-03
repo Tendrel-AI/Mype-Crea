@@ -40,7 +40,7 @@ export interface ImageResult {
   readonly url: string;
   /** Stable provider id (e.g. 'fal'). Surfaced for audit logs and artifact metadata. */
   readonly providerId: string;
-  /** Vendor-specific model slug (e.g. 'fal-ai/nano-banana-2'). */
+  /** Vendor-specific model slug (e.g. 'fal-ai/flux-2'). */
   readonly modelId: string;
   readonly latencyMs: number;
 }
