@@ -1,6 +1,35 @@
 # KAN-67 — RPO, RTO, and backup scope for the pilot
 
-Status: proposed — awaiting owner approval
+Status: **approved by the owner on 2026-11-02** (Option B; retention and post-pilot deletion stay open)
+
+## Decision (2026-11-02)
+
+The owner approved the recommendation: **Option B**. This answers the open questions below as follows:
+
+1. **Targets.** RPO ≤ 24 h, and ≈0 for migration-induced loss through a dump taken before every
+   production migration. RTO ≤ 2 h. Both apply within pilot operating hours: **weekdays
+   09:00–18:00 America/Lima**. Outside those hours there is no restore commitment.
+2. **Who.** The owner (Matias) both authorizes and executes every restore. A production restore
+   still needs his explicit authorization each time, and it is recorded in the restore log.
+   Nobody else may restore production.
+3. **Where.** Independent dumps stay in **Railway's region**, with no copies elsewhere for now.
+   To confirm with the owner when the dump job is
+   built: the inventory found PostgreSQL in `us-east4` and the development `mype-crea-assets`
+   bucket in `sjc` (US West), so "Railway's region" must name one of them.
+4. **Retention and post-pilot deletion stay OPEN.** They need institutional and legal input
+   (Ley 29733). No period is set, and the draft "7 daily + 4 weekly, deleted within 30 days after
+   pilot close" is **not** approved. Until it is decided, nothing is deleted on a schedule.
+
+State at approval (KAN-53 inventory, `pipeline/kan-53-rehearsal-2026-11-02.md`): Railway
+scheduled backups are not configured yet (KAN-83 is open), no independent dump job exists, and
+the production environment has no asset bucket. KAN-52 is merged in code (images are copied to
+the private bucket when the five `BUCKET_*` variables are set), but no Railway environment sets
+them yet. So the targets are agreed but **not met in production** until KAN-83 enables backups
+and the scheduled dump exists. The first restore rehearsal ran locally and isolated on
+2026-11-02 (runbook: `pipeline/kan-53-restore-runbook.md`). A rehearsal against a real Railway
+backup is still owed after KAN-83.
+
+KAN-53 is unblocked on the targets. Its remaining items are listed in the rehearsal log.
 
 ## Context
 
