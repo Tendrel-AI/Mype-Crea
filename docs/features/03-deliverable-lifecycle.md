@@ -76,7 +76,16 @@ plain Spanish and offers at least one way out.
    stays approved. Tasks created before KAN-35 fall back to the KAN-34 stale marks
    (`deriveStaleKinds`, approved only). Policy and future edges (label, nutrition):
    [`KAN-35-staleness-policy.md`](../../pipeline/decisions/KAN-35-staleness-policy.md).
-7. **Failures.** The worker or transport reports a typed `error.kind`;
+7. **Safety check (KAN-33).** Every logo records `metadata.safety` (verdict plus classifier
+   provenance, from fal's own safety checker; see
+   [06-assets-storage.md](06-assets-storage.md)). A candidate whose verdict is not `passed`
+   (`rejected`, `indeterminate` or a malformed record) is `approvable: false` in the view
+   (`src/core/deliverable-safety.ts:isPresentable`): no `contentUrl`, never counted for
+   Aprobar, and when it is the current candidate Generar is offered as its review path. Approving
+   it is refused with `not_allowed` (`COMMAND_MESSAGES.approveUnsafe`). The card shows
+   `safetyReviewNotice` («Este logo no pasó la revisión automática de seguridad. Genera otra
+   opción.») instead of the image.
+8. **Failures.** The worker or transport reports a typed `error.kind`;
    `src/core/task-errors.ts:classifyTaskError` maps it to `transient | content_policy |
    permanent_bug` (unknown → `permanent_bug`). `FAILURE_RECOVERY_COMMANDS` in
    `deliverable-state.ts` gives Reintentar for every category, plus Iterar for
@@ -125,6 +134,11 @@ plain Spanish and offers at least one way out.
   block), `app/actions/__tests__/name-agent-flow.test.ts` (name → logo end to end, reload with a
   fresh core) and `src/core/__tests__/deliverable-commands.postgres.integration.test.ts`
   (recorded `upstream_approvals` over Postgres; run only with approval).
+- **A logo that did not pass the safety check is never shown or approvable.** Enforced by
+  `deliverable-state.test.ts` («KAN-33» block), `deliverable-commands.test.ts` ("refuses to
+  approve a rejected/indeterminate logo…", "a lone rejected logo cannot be approved…") and
+  `components/crea-mype/__tests__/DeliverableCommands.test.tsx` ("a candidate that did not pass
+  the safety check…").
 - **A failure always offers a recovery button when the brief allows it.** Enforced by
   `src/core/__tests__/task-errors.test.ts`, `deliverable-state.test.ts` and
   `components/crea-mype/__tests__/DeliverableCommands.test.tsx`.
@@ -142,6 +156,9 @@ plain Spanish and offers at least one way out.
   changed brief field the deliverable used marks it «Potencialmente desactualizado», computed
   from recorded inputs; never regenerated automatically. Supersedes the KAN-34 «marks only» rule
   for new tasks. [`pipeline/decisions/KAN-35-staleness-policy.md`](../../pipeline/decisions/KAN-35-staleness-policy.md)
+- 2026-11-03 — KAN-33: rejected or indeterminate logos are never shown or approvable; the card
+  offers Generar/Iterar. Human review is out of scope for the pilot.
+  [`pipeline/decisions/KAN-33-logo-safety-policy.md`](../../pipeline/decisions/KAN-33-logo-safety-policy.md)
 - 2026-10-25 — KAN-58: a failure is never a dead end (Reintentar always; Iterar for content
   policy); no `announce_failure` planner decision.
 

@@ -17,6 +17,10 @@
  *   generating latest task pending / in_progress             → cancel (pending only)
  *   in_review  ≥1 candidate, none approved                   → iterate, approve
  *   approved   one approved candidate                        → iterate, approve(other)
+ *
+ *   Not approvable (KAN-33): a candidate whose recorded safety verdict is not
+ *   `passed` is listed without its URL and never counts for «approve»; when
+ *   it is the current candidate, «generate» is offered as its review path.
  *   failed     latest task failed                            → FAILURE_RECOVERY_COMMANDS
  *              by category (KAN-58: never a dead end): retry for every
  *              category, plus iterate for content_policy
@@ -247,14 +251,19 @@ export function deriveDeliverableState(
       contentUrl: candidate.contentUrl,
       contentInline: candidate.contentInline,
       createdAt: candidate.createdAt,
-    }));
+      approvable: candidate.approvable !== false,
+    }))
+    // KAN-33: whatever the store returned, a non-approvable candidate's URL never leaves the view.
+    .map((candidate) => (candidate.approvable ? candidate : { ...candidate, contentUrl: null }));
 
   const approval = facts.approvals.find((a) => a.deliverableKind === spec.deliverableKind) ?? null;
   const approvedDeliverableId = (approval?.deliverableId ?? null) as DeliverableId | null;
-  const hasOtherCandidate = candidates.some((c) => c.deliverableId !== approvedDeliverableId);
+  const hasOtherCandidate = candidates.some((c) => c.approvable && c.deliverableId !== approvedDeliverableId);
   // The result the overlay talks about: the approved candidate, else the newest one.
   const currentId = approvedDeliverableId ?? candidates.at(-1)?.deliverableId ?? null;
   const currentStale = currentId !== null && input.staleCandidateIds.has(currentId);
+  // KAN-33 review path: a current candidate that did not pass the safety check is replaced by generating another.
+  const currentBlocked = candidates.some((c) => c.deliverableId === currentId && !c.approvable);
 
   let state: DeliverableStateKind;
   const allowed = new Set<DeliverableCommandKind>();
@@ -274,9 +283,9 @@ export function deriveDeliverableState(
     if (preconditionsMet && currentStale) allowed.add('generate');
   } else if (candidates.length > 0) {
     state = 'in_review';
-    allowed.add('approve');
+    if (candidates.some((c) => c.approvable)) allowed.add('approve');
     if (preconditionsMet) allowed.add('iterate');
-    if (preconditionsMet && currentStale) allowed.add('generate');
+    if (preconditionsMet && (currentStale || currentBlocked)) allowed.add('generate');
   } else if (preconditionsMet) {
     state = 'enabled';
     allowed.add('generate');

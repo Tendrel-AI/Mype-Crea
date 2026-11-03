@@ -128,7 +128,7 @@ export async function loadOwnedConversation(
         id: deliverable.id,
         kind: deliverable.kind,
         // A stored image is only ever exposed through the authorized asset route (KAN-52).
-        contentUrl: clientDeliverableUrl(deliverable),
+        contentUrl: clientDeliverableUrl({ ...deliverable, metadata: deliverable.artifactMetadata ?? deliverable.contentInline?.metadata }),
         contentInline: deliverable.contentInline,
         selectedAt: deliverable.selectedAt ?? null,
         createdAt: deliverable.createdAt,

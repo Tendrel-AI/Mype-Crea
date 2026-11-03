@@ -22,6 +22,7 @@ function fakeProvider(id: string, urlPrefix: string): IImageProvider {
       providerId: id,
       modelId: `${id}/test-model`,
       latencyMs: 7,
+      safety: { verdict: 'passed', category: null, classifier: 'fake', model: `${id}/test-model`, policyVersion: 'test', checkedAt: '2026-11-03T00:00:00.000Z' },
     })),
   };
 }

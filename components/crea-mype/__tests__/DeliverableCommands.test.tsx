@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { DeliverableCommands, NAME_AVAILABILITY_NOTE, iterateSubmission, missingUpstreamMessage } from '../DeliverableCommands';
+import { DeliverableCommands, NAME_AVAILABILITY_NOTE, iterateSubmission, missingUpstreamMessage, safetyReviewNotice } from '../DeliverableCommands';
 import { developerFailureChatText, failedCardMessage } from '../failure-copy';
 import { usageLimitMessage } from '../../../src/services/usage/policy';
 import { Dashboard } from '../Dashboard';
@@ -34,6 +34,7 @@ const candidate = (n: number) => ({
   contentUrl: `https://cdn.test/logo-${n}.png`,
   contentInline: null,
   createdAt: `2026-10-25T00:00:0${n}.000Z`,
+  approvable: true,
 });
 
 const render = (v: DeliverableStateView | undefined, extra: { onAdvance?: () => void; error?: string } = {}) =>
@@ -73,6 +74,19 @@ describe('DeliverableCommands (KAN-28)', () => {
     expect(markup).toContain('src="https://cdn.test/logo-1.png"');
     expect(markup).toContain('src="https://cdn.test/logo-2.png"');
     expect(buttons(markup)).toEqual(['Aprobar', 'Aprobar', 'Iterar']);
+  });
+
+  it('a candidate that did not pass the safety check shows the review path, no image and no Aprobar (KAN-33)', () => {
+    // The server strips its URL; a leaked one would still not be rendered.
+    const blocked = { ...candidate(2), approvable: false };
+    const markup = render(
+      view({ state: 'in_review', allowedCommands: ['generate', 'iterate', 'approve'], candidates: [candidate(1), blocked] }),
+    );
+    expect(markup).toContain('Este logo no pasó la revisión automática de seguridad. Genera otra opción.');
+    expect(markup).toContain('src="https://cdn.test/logo-1.png"');
+    expect(markup).not.toContain('logo-2.png');
+    expect(buttons(markup)).toEqual(['Aprobar', 'Generar', 'Iterar']);
+    expect(safetyReviewNotice('logo')).not.toMatch(/\b(vos|tenés|querés|podés|generá)\b/i);
   });
 
   it('approved (e.g. after reload): marks the approved candidate, offers Aprobar for the others, and «Avanzar» is UI-only', () => {

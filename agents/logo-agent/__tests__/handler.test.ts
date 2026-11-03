@@ -26,6 +26,15 @@ function makeMessage(reqs: Record<string, unknown>): A2AMessage {
   };
 }
 
+const FAKE_SAFETY = {
+  verdict: 'rejected',
+  category: 'sexual_content',
+  classifier: 'fal-safety-checker',
+  model: 'fake-model/1',
+  policyVersion: 'logo-safety.v1',
+  checkedAt: '2026-11-03T00:00:00.000Z',
+} as const;
+
 function fakeGenerator(captured: ImageRequest[]) {
   return {
     generate: vi.fn(async (req: ImageRequest): Promise<ImageResult> => {
@@ -35,6 +44,7 @@ function fakeGenerator(captured: ImageRequest[]) {
         providerId: 'fake-provider',
         modelId: 'fake-model/1',
         latencyMs: 42,
+        safety: FAKE_SAFETY,
       };
     }),
   };
@@ -76,6 +86,8 @@ describe('logo-agent handler', () => {
       style_keywords: { value: 'minimalista, andino', version: inputVersion('minimalista, andino') },
       color_palette: { value: 'tierra y verde', version: inputVersion('tierra y verde') },
     });
+    // KAN-33: the classifier result is recorded as-is, even when it is not `passed`.
+    expect(artifact.metadata?.safety).toEqual(FAKE_SAFETY);
     expect(inputVersion('Café Andino')).toMatch(/^sha256:[0-9a-f]{64}$/);
     // KAN-43: the image is charged through the usage gate to this task's tenant.
     expect(captured[0].usage).toEqual({ tenantId: '22222222-2222-2222-2222-222222222222', agentTaskId: '11111111-1111-1111-1111-111111111111' });

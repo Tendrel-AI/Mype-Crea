@@ -21,12 +21,18 @@
  * a later change to one of them marks this logo «Potencialmente
  * desactualizado». Fields the prompt does not read never do.
  *
+ * Safety (KAN-33): the image service's classifier result is recorded as
+ * `metadata.safety` (verdict + provenance). The handler does not judge it:
+ * a non-passed logo is still returned, stored and auditable, and every
+ * reader hides it and refuses its approval (src/core/deliverable-safety.ts).
+ *
  * Failures: an image-generation error is returned as a failed A2ATaskResult
  * whose `error.kind` is the typed kind from the image service
  * (`content_policy`, `config_missing`, `rate_limited`, `timeout`, …), or
  * `handler_threw` when the error carries no kind (architecture §2.5).
  */
 import type { AgentHandler } from '../../src/core/agent-types';
+import type { SafetyRecord } from '../../src/core/deliverable-safety';
 import { inputVersion } from '../../src/core/deliverable-inputs';
 import { taskErrorFromThrown } from '../../src/core/task-errors';
 import { getImageGenerator } from '../../src/services/image';
@@ -109,6 +115,7 @@ export const handler: AgentHandler<undefined> = async (message) => {
   let url: string;
   let providerId: string;
   let modelId: string;
+  let safety: SafetyRecord;
   try {
     const result = await getImageGenerator().generate({
       prompt,
@@ -118,6 +125,7 @@ export const handler: AgentHandler<undefined> = async (message) => {
     url = result.url;
     providerId = result.providerId;
     modelId = result.modelId;
+    safety = result.safety;
   } catch (err) {
     const error = taskErrorFromThrown(err);
     child.error(
@@ -138,6 +146,7 @@ export const handler: AgentHandler<undefined> = async (message) => {
       modelId,
       durationMs: Date.now() - startedAt,
       hasUrl: Boolean(url),
+      safetyVerdict: safety.verdict,
     },
     'agent.logo.image_generated',
   );
@@ -149,7 +158,7 @@ export const handler: AgentHandler<undefined> = async (message) => {
       {
         kind: 'image',
         url,
-        metadata: { provider: providerId, model: modelId, prompt, purpose: 'logo', inputs: usedInputs(message.requirements) },
+        metadata: { provider: providerId, model: modelId, prompt, purpose: 'logo', inputs: usedInputs(message.requirements), safety },
       },
     ],
     completedAt: new Date().toISOString(),

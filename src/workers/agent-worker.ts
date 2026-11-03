@@ -47,6 +47,7 @@ import type { DeliverableKind } from '../repos/models';
 import { storeArtifactImages } from '../services/storage/artifact-store';
 import type { StoredArtifact } from '../services/storage/types';
 import { clientDeliverableUrl } from '../core/deliverable-url';
+import { isPresentable } from '../core/deliverable-safety';
 import type { DeliverablesRepoLike, WorkerContext } from './_kit';
 
 export type { DeliverablesRepoLike } from './_kit';
@@ -399,7 +400,7 @@ export async function startAgentWorker(
  * The artifacts as a client may see them. Deliverable ids come back in the
  * order the persistable artifacts (URL or inline) were inserted; a stored
  * image is exposed only as its asset route, and loses its URL entirely if
- * no deliverable row exists for it. `storageKey` never leaves the worker.
+ * no deliverable row exists for it or its safety verdict is not `passed` (KAN-33). `storageKey` never leaves the worker.
  */
 function clientArtifacts(
   artifacts: ReadonlyArray<StoredArtifact>,
@@ -409,8 +410,8 @@ function clientArtifacts(
   return artifacts.map(({ storageKey, ...artifact }) => {
     const persistable = Boolean(artifact.url) || artifact.inline !== undefined;
     const id = persistable ? deliverableIds[position++] : undefined;
-    if (!storageKey) return artifact;
-    const url = id ? clientDeliverableUrl({ id, contentUrl: artifact.url ?? null, storageKey }) : null;
+    if (!storageKey && isPresentable(artifact.metadata)) return artifact;
+    const url = id ? clientDeliverableUrl({ id, contentUrl: artifact.url ?? null, storageKey, metadata: artifact.metadata }) : null;
     const { url: _providerUrl, ...rest } = artifact;
     return url ? { ...rest, url } : rest;
   });

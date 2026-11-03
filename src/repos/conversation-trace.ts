@@ -72,6 +72,7 @@ function clientContent(kind: TraceEventKind, refId: UUID | null, content: Record
       id: refId,
       contentUrl: typeof contentUrl === 'string' ? contentUrl : null,
       storageKey: typeof storageKey === 'string' ? storageKey : null,
+      metadata: rest.artifactMetadata ?? (rest.contentInline as { metadata?: unknown } | null | undefined)?.metadata,
     }),
   };
 }

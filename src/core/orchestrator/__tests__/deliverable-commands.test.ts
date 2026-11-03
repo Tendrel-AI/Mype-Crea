@@ -94,14 +94,19 @@ function harness(options: { specs?: DeliverableSpec[]; filled?: boolean } = {}) 
     } as DeliverableCommand);
   };
 
-  const complete = async (taskId: TaskId, kind = 'logo', agentId = 'logo-agent'): Promise<DeliverableId> => {
+  const complete = async (
+    taskId: TaskId,
+    kind = 'logo',
+    agentId = 'logo-agent',
+    metadata?: Record<string, unknown>,
+  ): Promise<DeliverableId> => {
     const result = await workflow.recordSettlement({
       conversationId: CONVERSATION,
       taskId,
       agentId,
       deliverableKind: kind,
       status: 'completed',
-      artifacts: [{ kind: 'image', url: `https://cdn.test/${taskId}.png` }],
+      artifacts: [{ kind: 'image', url: `https://cdn.test/${taskId}.png`, metadata }],
       deliverableIds: [],
     });
     return result.deliverableIds[0];
@@ -573,6 +578,43 @@ describe('executeDeliverableCommand — Aprobar', () => {
       ok: false,
       reason: 'not_allowed',
     });
+  });
+
+  // KAN-33: the server refuses a candidate whose recorded safety verdict is not `passed`.
+  it.each(['rejected', 'indeterminate'])('refuses to approve a %s logo, approves the passed one, and offers Generar', async (verdict) => {
+    const h = harness();
+    const passed = await h.reviewed();
+    const iteration = okOf(await h.run({ kind: 'iterate', deliverableId: passed.deliverableId }));
+    const unsafe = await h.complete(iteration.taskId!, 'logo', 'logo-agent', { safety: { verdict } });
+
+    const current = await h.view();
+    expect(current.allowedCommands).toEqual(['generate', 'iterate', 'approve']);
+    expect(current.candidates.find((c) => c.deliverableId === unsafe)).toMatchObject({ approvable: false, contentUrl: null });
+
+    expect(await h.run({ kind: 'approve', deliverableId: unsafe, expectedApprovedId: null })).toMatchObject({
+      ok: false,
+      reason: 'not_allowed',
+      message: COMMAND_MESSAGES.approveUnsafe,
+    });
+    expect(h.approveSpy).not.toHaveBeenCalled();
+
+    okOf(await h.run({ kind: 'approve', deliverableId: passed.deliverableId, expectedApprovedId: null }));
+    expect(await h.run({ kind: 'approve', deliverableId: unsafe, expectedApprovedId: passed.deliverableId })).toMatchObject({
+      ok: false,
+      reason: 'not_allowed',
+    });
+    expect((await h.view()).approvedDeliverableId).toBe(passed.deliverableId);
+  });
+
+  it('a lone rejected logo cannot be approved; Generar is its review path', async () => {
+    const h = harness();
+    const generated = okOf(await h.run({ kind: 'generate' }));
+    const unsafe = await h.complete(generated.taskId!, 'logo', 'logo-agent', { safety: { verdict: 'rejected', category: 'sexual_content' } });
+    expect((await h.view()).allowedCommands).toEqual(['generate', 'iterate']);
+    expect(await h.run({ kind: 'approve', deliverableId: unsafe, expectedApprovedId: null })).toMatchObject({ ok: false, reason: 'not_allowed' });
+    expect(h.approveSpy).not.toHaveBeenCalled();
+    okOf(await h.run({ kind: 'generate' }));
+    expect(h.dispatch).toHaveBeenCalledTimes(2);
   });
 
   it('marks the transitive dependents stale through the declarative map (and shows obsoleto only on approved ones)', async () => {

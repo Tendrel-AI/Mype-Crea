@@ -187,7 +187,7 @@ describe('name-agent flow (KAN-31)', () => {
   it('KAN-35: a new name approval or a used brief edit marks the logo «Potencialmente desactualizado»; nothing regenerates, and it survives a reload', async () => {
     const runtime = buildRuntime();
     fakeNamingLlm();
-    const image = vi.fn(async () => ({ url: 'https://cdn.test/logo.png', providerId: 'fake', modelId: 'fake/img', latencyMs: 1 }));
+    const image = vi.fn(async () => ({ url: 'https://cdn.test/logo.png', providerId: 'fake', modelId: 'fake/img', latencyMs: 1, safety: { verdict: 'passed' as const, category: null, classifier: 'fake', model: 'fake/img', policyVersion: 'test', checkedAt: '2026-11-03T00:00:00.000Z' } }));
     setImageGenerator({ generate: image });
     await runtime.core.startConversation(CONVERSATION, TEST_TENANT_ID, TEST_USER_ID);
     for (const [fieldName, value] of [['business_category', 'alimentos'], ['style_keywords', 'rústico'], ['business_name', 'Dulce Andino']]) {

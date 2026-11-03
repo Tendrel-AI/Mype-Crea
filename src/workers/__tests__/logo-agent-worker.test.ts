@@ -582,13 +582,13 @@ describe('logo-agent worker', () => {
     const PROVIDER_URL = 'https://fal.test/files/logo.png';
     const DELIVERABLE = '99999999-9999-4999-8999-999999999999';
 
-    function setup(options: { fetchImpl?: typeof fetch; storage?: InMemoryObjectStorage; storeArtifacts?: never } = {}) {
+    function setup(options: { fetchImpl?: typeof fetch; storage?: InMemoryObjectStorage; storeArtifacts?: never; metadata?: Record<string, unknown> } = {}) {
       const subscriber = new FakeSubscriber();
       const registry = new AgentRegistry();
       registry.register(logoCard as AgentCard, vi.fn(async (message: A2AMessage) => ({
         status: 'completed' as const,
         taskId: message.taskId,
-        artifacts: [{ kind: 'image', url: PROVIDER_URL, metadata: { provider: 'fal' } }],
+        artifacts: [{ kind: 'image', url: PROVIDER_URL, metadata: options.metadata ?? { provider: 'fal' } }],
         completedAt: '2026-05-04T00:00:01Z',
       })), undefined);
       const row = buildAgentTaskRow({
@@ -644,6 +644,21 @@ describe('logo-agent worker', () => {
       expect(state.result.artifacts).toEqual([{ kind: 'image', url: `/api/assets/${DELIVERABLE}`, metadata: { provider: 'fal' } }]);
       expect(JSON.stringify(state)).not.toContain(PROVIDER_URL);
       expect(JSON.stringify(state)).not.toContain('tenants/');
+    });
+
+    it('stores a logo that did not pass the safety check, with its verdict, but announces it without any URL (KAN-33)', async () => {
+      const metadata = { provider: 'fal', safety: { verdict: 'rejected', category: 'sexual_content' } };
+      const t = setup({ metadata });
+      await t.run();
+
+      expect(t.storage.objects.size).toBe(1);
+      expect(t.settleTaskAndEnqueue).toHaveBeenCalledWith(expect.objectContaining({
+        state: 'completed',
+        artifacts: [expect.objectContaining({ url: PROVIDER_URL, metadata })],
+      }));
+      const [, state] = (t.onTaskSettled.mock.calls[0] as unknown) as [TaskId, TaskState];
+      if (state.status !== 'completed') throw new Error('expected completed');
+      expect(state.result.artifacts).toEqual([{ kind: 'image', metadata }]);
     });
 
     it.each([
