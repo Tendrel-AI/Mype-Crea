@@ -60,7 +60,7 @@ type AdminData = {
     knownCost: number;
     unknownCostAttempts: number;
     costAccountingStatus: 'no_attempts' | 'complete' | 'partial' | 'unknown';
-    budgetStatus: { state: 'within_budget' | 'exhausted'; limitUsd: number; committedUsd: number; periodStart: string };
+    budgetStatus: { state: 'within_budget' | 'exhausted'; limitUsd: number; committedUsd: number; remainingUsd: number; periodStart: string };
   } | null;
   turns: Array<{ id: string; conversationId: string; stage: string; failureCategory: string | null; createdAt: string }>;
 };
@@ -214,8 +214,8 @@ export default function AiConfigurationAdmin({ initialData }: { initialData: Rec
           <h2 className="font-semibold">Uso y presupuesto</h2>
           {data.usage ? <>
             <p className="text-sm text-slate-600">
-              Presupuesto del mes: USD {data.usage.budgetStatus.committedUsd.toFixed(2)} de USD {data.usage.budgetStatus.limitUsd.toFixed(2)}
-              {data.usage.budgetStatus.state === 'exhausted' ? ' (agotado: se rechazan nuevas llamadas a modelos)' : ''}.
+              Presupuesto de la organización este mes: USD {data.usage.budgetStatus.committedUsd.toFixed(2)} gastados o reservados de USD {data.usage.budgetStatus.limitUsd.toFixed(2)}; quedan USD {data.usage.budgetStatus.remainingUsd.toFixed(2)}
+              {data.usage.budgetStatus.state === 'exhausted' ? ' (agotado: se rechazan nuevas llamadas a modelos e imágenes)' : ''}.
               {' '}Estado del costo: {data.usage.costAccountingStatus === 'complete' ? 'completo' : data.usage.costAccountingStatus === 'partial' ? 'parcial' : data.usage.costAccountingStatus === 'unknown' ? 'desconocido' : 'sin intentos'}.
             </p>
             <dl className="grid grid-cols-2 gap-2 text-sm">
@@ -225,7 +225,7 @@ export default function AiConfigurationAdmin({ initialData }: { initialData: Rec
               <dt>Costos no disponibles</dt><dd>{String(data.usage.unknownCostAttempts)}</dd>
               <dt>Costo conocido acumulado</dt><dd>{data.usage.costAccountingStatus === 'no_attempts' ? 'Sin intentos registrados' : data.usage.costAccountingStatus === 'unknown' ? 'Desconocido' : String(data.usage.knownCost)}</dd>
             </dl>
-            <p className="text-xs text-slate-500">La política de presupuesto se define por separado. Los costos desconocidos no se estiman ni se convierten en cero.</p>
+            <p className="text-xs text-slate-500">El presupuesto se cuenta por mes calendario (hora de Lima) y se verifica antes de cada llamada a modelos e imágenes. Los costos desconocidos no se estiman ni se convierten en cero.</p>
           </> : <p className="text-sm">Sin resumen de uso disponible.</p>}
         </div>
         <div className="space-y-3 rounded-xl border bg-white p-5 shadow-sm"><h2 className="font-semibold">Auditoría y sincronización</h2><p className="text-sm text-slate-600">La exportación local prepara un JSON descargable. La sincronización usa contenido de configuración privado y solo se ejecuta al elegir Publicar o Importar; no hay consultas automáticas.</p><div className="space-y-2">{data.syncEvents.map((event, index) => <div key={`${String(event.operationId)}-${String(event.status)}-${index}`} className="rounded bg-slate-50 p-2 text-xs"><p>{String(event.destination)} · {String(event.action)} · {String(event.status)} · {event.pinnedCommit ? `commit ${String(event.pinnedCommit)}` : 'sin commit fijado'}</p>{event.status === 'failed' && event.destination === 'langsmith' && ['prompt_publish', 'retry'].includes(String(event.action)) && selectedIsShared && selected?.status === 'frozen' && data.platformAdmin && isAdmin && event.contentHash === selected.contentHash && <button className="mt-2 rounded border px-2 py-1" onClick={() => void run(() => retrySharedAiPrompt({ releaseId: selected.id, parentOperationId: String(event.operationId) }), 'Reintento registrado con referencia al intento anterior.')}>Reintentar</button>}</div>)}</div></div>
