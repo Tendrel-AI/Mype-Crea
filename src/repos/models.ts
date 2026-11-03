@@ -7,6 +7,7 @@
  */
 import type { ConversationId, ConversationSnapshot, TaskId, UUID } from '../core/contracts';
 import type { AiConfigManifestV1, JsonValue, ProviderId, Purpose } from '../services/ai-config/manifest';
+import type { ModelPurpose } from '../services/llm/types';
 
 // ---------------------------------------------------------------------------
 // AI configuration, pinned conversations, and durable turns
@@ -203,8 +204,8 @@ export interface LlmCallInsert {
   readonly agentTaskId?: TaskId;
   /** Effective provider that served the call (never inferred from env). */
   readonly provider: ProviderId;
-  /** Model purpose of the call. Judge/eval calls never reach llm_calls. */
-  readonly purpose: Purpose;
+  /** Model purpose of the call (`naming` = name-agent, KAN-31). Judge/eval calls never reach llm_calls. */
+  readonly purpose: ModelPurpose;
   readonly model: string;
   readonly modelRevision: string;
   readonly promptVersion: string;

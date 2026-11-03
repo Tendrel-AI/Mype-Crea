@@ -17,6 +17,7 @@ const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const DEFAULT_MODEL_BY_PURPOSE: Readonly<Record<ModelPurpose, string>> = {
   extractor: 'google/gemini-2.5-flash',
   responder: 'google/gemini-2.5-pro',
+  naming: 'google/gemini-2.5-flash',
 };
 
 export class OpenRouterProvider implements ILLMProvider {
@@ -36,10 +37,12 @@ export class OpenRouterProvider implements ILLMProvider {
             DEFAULT_MODEL_BY_PURPOSE.responder,
             isOpenRouterModelId,
           ),
+          naming: DEFAULT_MODEL_BY_PURPOSE.naming,
         }
       : {
           extractor: explicitModel(modelIds.extractor, DEFAULT_MODEL_BY_PURPOSE.extractor),
           responder: explicitModel(modelIds.responder, DEFAULT_MODEL_BY_PURPOSE.responder),
+          naming: explicitModel(modelIds.naming, DEFAULT_MODEL_BY_PURPOSE.naming),
         };
     const openAiClient = new OpenAI({ apiKey, baseURL: OPENROUTER_BASE_URL });
     const tracedClient = isLangSmithTracingEnabled()

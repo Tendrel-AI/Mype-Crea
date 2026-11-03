@@ -1,6 +1,8 @@
 import { AgentRegistry, type AgentCard } from './agent-registry';
 import { handler as logoHandler } from '../../../agents/logo-agent/handler';
 import logoCard from '../../../agents/logo-agent/agent-card.json';
+import { handler as nameHandler } from '../../../agents/name-agent/handler';
+import nameCard from '../../../agents/name-agent/agent-card.json';
 
 /**
  * Build the canonical AgentRegistry by registering every Agent Card under
@@ -8,7 +10,7 @@ import logoCard from '../../../agents/logo-agent/agent-card.json';
  * only view of which agents exist; ordering and dispatch decisions are
  * derived from card requirements, not from the registration order here.
  *
- * Phase A: only logo-agent has a real handler. tagline-agent, label-agent,
+ * Live: logo-agent and name-agent (KAN-31). tagline-agent, label-agent,
  * and social-agent are stubs that throw "not implemented" — registering them
  * is unsafe because the planner picks the lex-first ready agent, so e.g.
  * `label-agent` would beat `logo-agent` to dispatch the moment its required
@@ -19,5 +21,6 @@ import logoCard from '../../../agents/logo-agent/agent-card.json';
 export function buildDefaultRegistry(): AgentRegistry {
   const registry = new AgentRegistry();
   registry.register(logoCard as AgentCard, logoHandler, undefined);
+  registry.register(nameCard as AgentCard, nameHandler, undefined);
   return registry;
 }

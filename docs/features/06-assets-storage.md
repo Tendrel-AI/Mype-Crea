@@ -19,7 +19,7 @@ owner and hands out a short-lived signed link. Every image is kept.
    `src/services/storage/s3-storage.ts:S3ObjectStorage` (AWS SDK, virtual-hosted style) and
    `src/services/storage/memory-storage.ts:InMemoryObjectStorage` for tests.
 3. **Persist before available.** After the handler returns, the logo worker
-   (`src/workers/logo-agent-worker.ts`) calls
+   (`src/workers/agent-worker.ts`) calls
    `src/services/storage/artifact-store.ts:storeArtifactImages`: download each artifact URL
    (HTTPS only, `image/*`, ≤ 15 MiB via `MAX_ASSET_DOWNLOAD_BYTES`, 20 s timeout), then upload
    under the key from `buildAssetObjectKey`:

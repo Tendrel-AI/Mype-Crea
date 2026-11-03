@@ -8,7 +8,7 @@ import { ConversationMenu } from './crea-mype/ConversationMenu';
 import { ChatPanel } from './crea-mype/ChatPanel';
 import { Dashboard } from './crea-mype/Dashboard';
 import { LandingPreview } from './crea-mype/LandingPreview';
-import { DeliverableCommands, type DeliverableCommandRequest } from './crea-mype/DeliverableCommands';
+import { DeliverableCommands, NAME_AVAILABILITY_NOTE, type DeliverableCommandRequest } from './crea-mype/DeliverableCommands';
 import { BriefPanel } from './crea-mype/BriefPanel';
 import { loadBriefAction, updateBriefFieldAction, type BriefPanelField } from '../app/actions/brief';
 import { chatAction } from '../app/actions/chat';
@@ -54,6 +54,7 @@ const WELCOME_MESSAGE: Message = {
 };
 
 const LOGO_AGENT_ID = 'logo-agent';
+const NAME_AGENT_ID = 'name-agent';
 
 /** Approved logo first (KAN-28 Aprobar), else the newest candidate. */
 function initialLogoUrl(deliverables: NonNullable<CreaMypeProps['initialDeliverables']>): string {
@@ -123,7 +124,10 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   const [deliverableStates, setDeliverableStates] = useState<ReadonlyArray<DeliverableStateView>>([]);
   const [commandBusy, setCommandBusy] = useState(false);
   const [commandError, setCommandError] = useState('');
+  // The card whose command produced `commandError`; only that card shows it.
+  const [commandErrorAgent, setCommandErrorAgent] = useState('');
   const logoView = deliverableStates.find((view) => view.agentId === LOGO_AGENT_ID);
+  const nameView = deliverableStates.find((view) => view.agentId === NAME_AGENT_ID);
   // KAN-26: the brief exactly as the server last returned it.
   const [briefFields, setBriefFields] = useState<ReadonlyArray<BriefPanelField>>([]);
   const [briefSaving, setBriefSaving] = useState<string | null>(null);
@@ -295,6 +299,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     if (!conversationId || commandBusy) return;
     setCommandBusy(true);
     setCommandError('');
+    setCommandErrorAgent(agentId);
     try {
       const base = {
         commandId: crypto.randomUUID(),
@@ -331,12 +336,27 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       view={logoView}
       label="logo"
       busy={commandBusy}
-      error={commandError}
+      error={commandErrorAgent === LOGO_AGENT_ID ? commandError : ''}
       onCommand={(request) => { if (logoView) void handleDeliverableCommand(LOGO_AGENT_ID, logoView, request); }}
       onAdvance={withAdvance
         ? () => document.getElementById('brand-step-3')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
         : undefined}
     />
+  );
+
+  // KAN-31: name candidates, each with its rationale, plus the INDECOPI note.
+  const renderNameCommands = () => nameView && (
+    <section className="mt-6" aria-label="Nombre comercial">
+      <h3 className="text-sm font-semibold text-neutral-700">Nombre comercial</h3>
+      <DeliverableCommands
+        view={nameView}
+        label="nombre"
+        note={NAME_AVAILABILITY_NOTE}
+        busy={commandBusy}
+        error={commandErrorAgent === NAME_AGENT_ID ? commandError : ''}
+        onCommand={(request) => void handleDeliverableCommand(NAME_AGENT_ID, nameView, request)}
+      />
+    </section>
   );
 
   const briefPanel = (
@@ -458,7 +478,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       <RestartModal showRestartModal={showRestartModal} setShowRestartModal={setShowRestartModal} handleRestart={handleRestart} />
       {activeTab === 'create' && (
         <>
-          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} setShowRestartModal={setShowRestartModal} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || logoView ? (
+          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} setShowRestartModal={setShowRestartModal} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || logoView || nameView ? (
             <>
               {briefFields.length > 0 && (
                 <details className="mb-2">
@@ -466,12 +486,13 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
                   <div className="mt-2 max-h-[50vh] overflow-y-auto">{briefPanel}</div>
                 </details>
               )}
+              {renderNameCommands()}
               {logoView && renderLogoCommands(false)}
             </>
           ) : undefined} conversationNotFound={notFound} conversationMenu={
             <ConversationMenu initialConversations={initialConversations} currentConversationId={conversationId} onNewConversation={() => setShowRestartModal(true)} loadConversations={listConversationsAction} />
           } />
-          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands(true)} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
+          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands(true)} nameControls={renderNameCommands()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
       </>
       )}
 

@@ -9,13 +9,14 @@
  * in one place and can be reused by tagline/label/social worker tests.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { startLogoAgentWorker } from '../logo-agent-worker';
+import { NAME_WORKER, startAgentWorker, startLogoAgentWorker } from '../agent-worker';
 import { channelForAgent, dispatchWakeUp, type DispatchNotification } from '../../transport/redis-queue-adapter';
 import {
   AgentRegistry,
   type AgentCard,
 } from '../../core/orchestrator/agent-registry';
 import logoCard from '../../../agents/logo-agent/agent-card.json';
+import nameCard from '../../../agents/name-agent/agent-card.json';
 import type {
   A2AMessage,
   AgentHandler,
@@ -188,6 +189,47 @@ describe('logo-agent worker', () => {
     expect(deliverablesFor).not.toHaveBeenCalled();
     expect(onTaskSettled).toHaveBeenCalledWith(row.id, expect.objectContaining({ status: 'completed' }),
       ['99999999-9999-4999-8999-999999999999'], expect.objectContaining({ durableSettlement: true, ownerUserId: '22222222-2222-2222-2222-222222222222' }));
+  });
+
+  it('the name worker (KAN-31) settles five inline text candidates as business_name deliverables', async () => {
+    const subscriber = new FakeSubscriber();
+    const registry = new AgentRegistry();
+    const artifacts = ['Uno', 'Dos', 'Tres', 'Cuatro', 'Cinco'].map((inline) => ({ kind: 'text', inline, metadata: { rationale: `Razón de ${inline}.` } }));
+    registry.register(nameCard as AgentCard, vi.fn(async (message: A2AMessage) => ({
+      status: 'completed' as const,
+      taskId: message.taskId,
+      artifacts,
+      completedAt: '2026-05-04T00:00:01Z',
+    })), undefined);
+    const row = buildAgentTaskRow({ agentId: 'name-agent', requirementsSnapshot: { business_category: 'alimentos', style_keywords: 'rústico' } });
+    const findById = vi.fn(async () => ({ ...row, status: 'pending' as const }));
+    const claimById = vi.fn(async () => row);
+    const settleTaskAndEnqueue = vi.fn(async () => ({ deliverableIds: [] }));
+    const storeArtifacts = vi.fn(async ({ artifacts: stored }: { artifacts: unknown[] }) => stored);
+
+    await startAgentWorker(buildWorkerTestContext({
+      subscriber,
+      registry,
+      systemReposFor: () => ({ agentTasks: { findById, claimById } as never, llmCalls: {} as never }),
+      settleTaskFor: () => ({ settleTaskAndEnqueue } as never),
+      storeArtifacts: storeArtifacts as never,
+    }), NAME_WORKER);
+    expect(subscriber.subscribed).toEqual([channelForAgent('name-agent' as AgentId)]);
+    subscriber.emitMessage(channelForAgent('name-agent' as AgentId), wakeUp({
+      taskId: row.id,
+      tenantId: '66666666-6666-6666-6666-666666666666',
+      agentId: 'name-agent',
+    }));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(claimById).toHaveBeenCalledWith(row.id, 'name-agent');
+    expect(settleTaskAndEnqueue).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: row.id,
+      state: 'completed',
+      deliverableKind: 'business_name',
+      artifacts,
+    }));
   });
 
   it('skips when claimById returns null (already in_progress or completed)', async () => {

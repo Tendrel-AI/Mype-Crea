@@ -115,6 +115,23 @@ SUITE('llm_calls repository (integration)', () => {
     expect(id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
+  it('accepts the naming purpose of the name-agent call (KAN-31)', async () => {
+    const r = repos({ id: tenantId }, { id: userId });
+    const id = await r.llmCalls.record({
+      provider: 'openrouter',
+      purpose: 'naming',
+      model: 'google/gemini-2.5-flash',
+      modelRevision: 'unknown',
+      promptVersion: 'name-agent.v1',
+      inputTokens: 1,
+      outputTokens: 2,
+      latencyMs: 3,
+    });
+    insertedIds.push(id);
+    const row = await withOwner(async (client) => (await client.query(`SELECT purpose FROM llm_calls WHERE id = $1`, [id])).rows[0]);
+    expect(row).toEqual({ purpose: 'naming' });
+  });
+
   it('persists the effective provider, purpose, model and tokens (KAN-69 A6)', async () => {
     const r = repos({ id: tenantId }, { id: userId });
     const id = await r.llmCalls.record({
