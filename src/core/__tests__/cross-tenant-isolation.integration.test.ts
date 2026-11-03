@@ -294,6 +294,21 @@ describe('cross-tenant isolation (PostgreSQL integration)', () => {
     );
     expect(hiddenUpdate.rowCount).toBe(0);
 
+    // Cross-tenant deletes by known id are refused: RLS hides the rows, so 0 rows are affected
+    // and tenant A's records survive. Children first so a leak is caught per table, not by cascade.
+    for (const [table, id] of [
+      ['deliverables', tenantA.deliverableId],
+      ['messages', tenantA.messageId],
+      ['agent_tasks', tenantA.taskId],
+      ['conversations', tenantA.conversationId],
+    ] as const) {
+      const hiddenDelete = await withTenantTransaction(tenantB.tenant, tenantB.user, (tx) =>
+        tx.query(`DELETE FROM ${table} WHERE id = $1`, [id]));
+      expect(hiddenDelete.rowCount, `tenant B deleted tenant A's ${table} row`).toBe(0);
+      const survivor = await owner.query(`SELECT 1 FROM ${table} WHERE id = $1`, [id]);
+      expect(survivor.rowCount, `tenant A's ${table} row is gone`).toBe(1);
+    }
+
     const visibleAudit = await withTenantTransaction(tenantA.tenant, tenantA.user, (tx) =>
       tx.query(`SELECT id FROM ai_config_audit_events WHERE id = $1`, [tenantA.auditId]),
     );
