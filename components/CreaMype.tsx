@@ -55,6 +55,7 @@ const WELCOME_MESSAGE: Message = {
 
 const LOGO_AGENT_ID = 'logo-agent';
 const NAME_AGENT_ID = 'name-agent';
+const TAGLINE_AGENT_ID = 'tagline-agent';
 
 /** Approved logo first (KAN-28 Aprobar), else the newest candidate. */
 function initialLogoUrl(deliverables: NonNullable<CreaMypeProps['initialDeliverables']>): string {
@@ -128,6 +129,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   const [commandErrorAgent, setCommandErrorAgent] = useState('');
   const logoView = deliverableStates.find((view) => view.agentId === LOGO_AGENT_ID);
   const nameView = deliverableStates.find((view) => view.agentId === NAME_AGENT_ID);
+  const taglineView = deliverableStates.find((view) => view.agentId === TAGLINE_AGENT_ID);
   // KAN-26: the brief exactly as the server last returned it.
   const [briefFields, setBriefFields] = useState<ReadonlyArray<BriefPanelField>>([]);
   const [briefSaving, setBriefSaving] = useState<string | null>(null);
@@ -344,19 +346,26 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     />
   );
 
-  // KAN-31: name candidates, each with its rationale, plus the INDECOPI note.
-  const renderNameCommands = () => nameView && (
-    <section className="mt-6" aria-label="Nombre comercial">
-      <h3 className="text-sm font-semibold text-neutral-700">Nombre comercial</h3>
+  // KAN-31 / KAN-32: text candidates (name or tagline), each with its rationale.
+  const renderTextCommands = (agentId: string, view: DeliverableStateView | undefined, title: string, label: string, note?: string) => view && (
+    <section className="mt-6" aria-label={title}>
+      <h3 className="text-sm font-semibold text-neutral-700">{title}</h3>
       <DeliverableCommands
-        view={nameView}
-        label="nombre"
-        note={NAME_AVAILABILITY_NOTE}
+        view={view}
+        label={label}
+        note={note}
         busy={commandBusy}
-        error={commandErrorAgent === NAME_AGENT_ID ? commandError : ''}
-        onCommand={(request) => void handleDeliverableCommand(NAME_AGENT_ID, nameView, request)}
+        error={commandErrorAgent === agentId ? commandError : ''}
+        onCommand={(request) => void handleDeliverableCommand(agentId, view, request)}
       />
     </section>
+  );
+  // Verbal identity: the name (with the INDECOPI note), then the tagline built on the approved name.
+  const renderNameCommands = () => (nameView || taglineView) && (
+    <>
+      {renderTextCommands(NAME_AGENT_ID, nameView, 'Nombre comercial', 'nombre', NAME_AVAILABILITY_NOTE)}
+      {renderTextCommands(TAGLINE_AGENT_ID, taglineView, 'Lema', 'lema')}
+    </>
   );
 
   const briefPanel = (
@@ -478,7 +487,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       <RestartModal showRestartModal={showRestartModal} setShowRestartModal={setShowRestartModal} handleRestart={handleRestart} />
       {activeTab === 'create' && (
         <>
-          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} setShowRestartModal={setShowRestartModal} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || logoView || nameView ? (
+          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} setShowRestartModal={setShowRestartModal} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || logoView || nameView || taglineView ? (
             <>
               {briefFields.length > 0 && (
                 <details className="mb-2">

@@ -8,8 +8,8 @@
  * factory + the `globalThis` cache.
  *
  * Transport selection (architecture §2.5):
- *   - When `REDIS_URL` is set, dispatches for `logo-agent` and `name-agent`
- *     go via RedisQueueAdapter — the orchestrator publishes only the task id
+ *   - When `REDIS_URL` is set, dispatches for `logo-agent`, `name-agent` and
+ *     `tagline-agent` go via RedisQueueAdapter — the orchestrator publishes only the task id
  *     to `mypes:agent_task:dispatch:<agentId>`, the agent's in-process worker
  *     re-reads the canonical row from Postgres, runs the handler, and
  *     calls back into core.onTaskSettled. Other agents fall through to
@@ -39,7 +39,7 @@ import { globalRepos } from '../../repos/global';
 import { getConversationOwnerUserId } from '../../repos/conversations';
 import { LocalAdapter } from '../../transport/local-adapter';
 import { dispatchWakeUp, RedisQueueAdapter } from '../../transport/redis-queue-adapter';
-import { LOGO_WORKER, NAME_WORKER, startAgentWorker } from '../../workers/agent-worker';
+import { LOGO_WORKER, NAME_WORKER, TAGLINE_WORKER, startAgentWorker } from '../../workers/agent-worker';
 import { getRedisPublisher, getRedisSubscriber } from '../../services/redis';
 import type { AgentId, ConversationId, TaskId, UUID } from '../contracts';
 import type { IAgentTransport } from '../agent-types';
@@ -63,7 +63,7 @@ import type { OrchestratorCoreImpl } from './orchestrator-core';
 const log = loggerFor('orchestrator.runtime');
 
 /** Agents with a Redis worker; the worker persists their deliverables (§2.5). */
-const REDIS_WORKERS = [LOGO_WORKER, NAME_WORKER] as const;
+const REDIS_WORKERS = [LOGO_WORKER, NAME_WORKER, TAGLINE_WORKER] as const;
 const REDIS_DISPATCH_AGENTS: ReadonlySet<AgentId> = new Set(REDIS_WORKERS.map((worker) => worker.agentId));
 
 // Cached on globalThis so that multiple Next.js server bundles observe the

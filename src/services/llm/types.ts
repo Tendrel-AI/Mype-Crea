@@ -1,5 +1,5 @@
 /** Provider-neutral chat protocol consumed by adapters and the audit logger. */
-/** `naming` (KAN-31): name-agent candidates; it uses the extractor's default model (forced tool call). */
+/** `naming` (KAN-31, KAN-32): name-agent and tagline-agent candidates; it uses the extractor's default model (forced tool call). */
 export type ModelPurpose = 'extractor' | 'responder' | 'naming';
 export type ProviderModelIds = Partial<Record<ModelPurpose, string>>;
 

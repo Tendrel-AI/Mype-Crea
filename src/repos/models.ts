@@ -204,7 +204,7 @@ export interface LlmCallInsert {
   readonly agentTaskId?: TaskId;
   /** Effective provider that served the call (never inferred from env). */
   readonly provider: ProviderId;
-  /** Model purpose of the call (`naming` = name-agent, KAN-31). Judge/eval calls never reach llm_calls. */
+  /** Model purpose of the call (`naming` = name-agent and tagline-agent, KAN-31/KAN-32). Judge/eval calls never reach llm_calls. */
   readonly purpose: ModelPurpose;
   readonly model: string;
   readonly modelRevision: string;

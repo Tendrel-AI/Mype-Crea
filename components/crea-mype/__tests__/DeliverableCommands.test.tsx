@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { DeliverableCommands, NAME_AVAILABILITY_NOTE, iterateSubmission } from '../DeliverableCommands';
+import { DeliverableCommands, NAME_AVAILABILITY_NOTE, iterateSubmission, missingUpstreamMessage } from '../DeliverableCommands';
 import { developerFailureChatText, failedCardMessage } from '../failure-copy';
 import { usageLimitMessage } from '../../../src/services/usage/policy';
 import { Dashboard } from '../Dashboard';
@@ -163,6 +163,16 @@ describe('DeliverableCommands (KAN-28)', () => {
     expect(markup).toContain(usageLimitMessage('user_image_daily'));
     expect(markup).not.toContain('No pudimos generar tu logo.');
     expect(markup).not.toContain('usage_limited');
+  });
+
+  it('«Lema» (KAN-32): blocked until the name is approved, with the server\'s missing precondition named', () => {
+    const blocked = view({ agentId: 'tagline-agent', deliverableKind: 'tagline', state: 'blocked', missingUpstream: ['business_name'] });
+    const markup = render(blocked);
+    expect(markup).toContain('Primero aprueba tu nombre comercial.');
+    expect(buttons(markup)).toEqual([]);
+    expect(missingUpstreamMessage(['some_future_kind'])).toBe('Primero aprueba los entregables anteriores.');
+    const failed = { ...failedView('transient', ['retry'], 'usage_limited'), deliverableKind: 'tagline' };
+    expect(failedCardMessage(failed, 'lema')).toBe(usageLimitMessage('user_llm_hourly'));
   });
 
   it('a worker-side usage denial on names shows the LLM-limit copy (KAN-31)', () => {

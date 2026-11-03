@@ -1,5 +1,5 @@
 /**
- * LLM completions for agent handlers (KAN-31: name-agent).
+ * LLM completions for agent handlers (KAN-31 name-agent, KAN-32 tagline-agent).
  *
  * The chat path runs its calls through the AI-config runtime (`runPurpose`), which is bound to
  * a chat turn (turn id, owner token, attempt rows) and to the extractor/responder purposes of a

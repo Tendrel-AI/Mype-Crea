@@ -19,6 +19,7 @@
  */
 
 import type { AgentId, TaskId, UUID, ISOTimestamp } from './contracts';
+import type { UpstreamInput } from './deliverable-inputs';
 
 // ---------------------------------------------------------------------------
 // A2A Message (what the core sends to an agent)
@@ -35,6 +36,13 @@ export interface A2AMessage {
    * Shape matches the Agent Card's mypes:requirements definitions.
    */
   readonly requirements: Readonly<Record<string, unknown>>;
+
+  /**
+   * Approved upstream deliverables the task was created under (KAN-32), by
+   * `mypes:deliverable.dependsOn` kind, for upstreams with an inline text
+   * value (e.g. the approved `business_name`). Absent when there is none.
+   */
+  readonly upstream?: Readonly<Record<string, UpstreamInput>>;
 
   /**
    * Set only when this is an iteration of a previous task. The agent handler

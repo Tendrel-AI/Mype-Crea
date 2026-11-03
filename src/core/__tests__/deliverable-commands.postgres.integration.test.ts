@@ -65,13 +65,15 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     await closePool();
   });
 
-  async function harness(opts: { withDependentLabel?: boolean } = {}) {
+  /** `upstreamKind`/`dependentKind` default to logo → label; KAN-32 uses business_name → tagline. */
+  async function harness(opts: { withDependentLabel?: boolean; upstreamKind?: string; dependentKind?: string } = {}) {
+    const upstreamKind = opts.upstreamKind ?? 'logo';
     const registry = new AgentRegistry();
     registry.register(
       buildFixtureCard({
         id: AGENT_ID,
         required: [{ name: 'business_name' }, { name: 'business_profile' }],
-        deliverableKind: 'logo',
+        deliverableKind: upstreamKind,
       }),
       fixtureEchoHandler,
       undefined,
@@ -81,8 +83,8 @@ SUITE('deliverable commands + Postgres (integration)', () => {
         buildFixtureCard({
           id: LABEL_AGENT_ID,
           required: [{ name: 'business_name' }],
-          deliverableKind: 'label',
-          dependsOn: ['logo'],
+          deliverableKind: opts.dependentKind ?? 'label',
+          dependsOn: [upstreamKind],
         }),
         fixtureEchoHandler,
         undefined,
@@ -406,6 +408,48 @@ SUITE('deliverable commands + Postgres (integration)', () => {
         iteration: { parentTaskId: otherGenerated.taskId!, iterationRootId: otherGenerated.taskId!, iterationNumber: 2, trigger: 'user_regenerate' },
       }),
     ).toEqual({ ok: false, reason: 'parent_unavailable' });
+  });
+
+  it('the approved upstream text value is recorded with the task and dispatched as `upstream` (KAN-32); a new approval flags the dependent', { timeout: 30_000 }, async () => {
+    const h = await harness({ withDependentLabel: true, upstreamKind: 'business_name', dependentKind: 'tagline' });
+    const r = repos({ id: tenantId }, { id: userId });
+    const textCandidate = async (agentId: string, kind: 'business_name' | 'tagline', partial: Record<string, unknown>, value: string) => {
+      const created = await h.commandFor(agentId, partial);
+      if (!created.ok) throw new Error(`${agentId} ${String(partial.kind)} rejected: ${created.message}`);
+      await h.settle(created.taskId!, completed(created.taskId!));
+      return r.deliverables.insert({ conversationId: h.conversationId, agentTaskId: created.taskId!, kind, contentInline: { value, kind: 'text' } });
+    };
+
+    // No approved name: the server refuses the tagline command and creates nothing.
+    const blocked = await h.viewOf(LABEL_AGENT_ID);
+    expect(blocked).toMatchObject({ state: 'blocked', missingUpstream: ['business_name'], allowedCommands: [] });
+    expect(await h.commandFor(LABEL_AGENT_ID, { kind: 'generate' })).toMatchObject({ ok: false, reason: 'not_allowed' });
+    expect((await h.tasks()).filter((t) => t.agentId === LABEL_AGENT_ID)).toHaveLength(0);
+
+    const name1 = await textCandidate(AGENT_ID, 'business_name', { kind: 'generate' }, 'Sazón Andino');
+    const name2 = await textCandidate(AGENT_ID, 'business_name', { kind: 'iterate', deliverableId: name1.id, observation: 'Más corto' }, 'Sazón');
+    expect(await h.command({ kind: 'approve', deliverableId: name1.id, expectedApprovedId: null })).toMatchObject({ ok: true });
+
+    const tagline1 = await textCandidate(LABEL_AGENT_ID, 'tagline', { kind: 'generate' }, 'El sabor de casa');
+    const upstream = { business_name: { deliverableId: name1.id, value: 'Sazón Andino' } };
+    expect(h.messages.at(-1)).toMatchObject({ agentId: LABEL_AGENT_ID, upstream });
+    const taglineTask = (await h.tasks()).find((t) => t.agentId === LABEL_AGENT_ID)!;
+    expect(taglineTask.requirementsSnapshot).toMatchObject({ upstream_approvals: { business_name: name1.id }, upstream_inputs: upstream });
+    // An Iterar row (shared guarded insert) records the same upstream value.
+    await textCandidate(LABEL_AGENT_ID, 'tagline', { kind: 'iterate', deliverableId: tagline1.id, observation: 'Más corto' }, 'Sabor de casa');
+    expect(h.messages.at(-1)).toMatchObject({ upstream });
+    const iterationTask = (await h.tasks()).find((t) => t.agentId === LABEL_AGENT_ID && t.parentTaskId === taglineTask.id)!;
+    expect(iterationTask.requirementsSnapshot).toMatchObject({ upstream_inputs: upstream });
+
+    expect(await h.commandFor(LABEL_AGENT_ID, { kind: 'approve', deliverableId: tagline1.id, expectedApprovedId: null })).toMatchObject({ ok: true });
+    expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({ state: 'approved', stale: false });
+
+    // Approving another name flags the approved tagline; nothing is created and history stays.
+    const tasksBefore = (await h.tasks()).length;
+    expect(await h.command({ kind: 'approve', deliverableId: name2.id, expectedApprovedId: name1.id })).toMatchObject({ ok: true });
+    expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({ state: 'approved', stale: true, approvedDeliverableId: tagline1.id });
+    expect((await h.tasks()).length).toBe(tasksBefore);
+    expect((await h.tasks()).find((t) => t.id === taglineTask.id)!.requirementsSnapshot).toMatchObject({ upstream_inputs: upstream });
   });
 
   it('recorded upstream references decide staleness (KAN-35); replacing an upstream approval flags approved dependents', { timeout: 30_000 }, async () => {

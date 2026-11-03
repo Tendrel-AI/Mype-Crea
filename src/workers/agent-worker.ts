@@ -5,7 +5,8 @@
  * Subscribes to one agent's dispatch channel published by RedisQueueAdapter
  * and runs that agent's registered handler against the authoritative
  * agent_tasks row from Postgres (architecture §2.5). One worker per entry of
- * `REDIS_DISPATCH_AGENTS` (runtime.ts): `LOGO_WORKER`, `NAME_WORKER` (KAN-31).
+ * `REDIS_DISPATCH_AGENTS` (runtime.ts): `LOGO_WORKER`, `NAME_WORKER` (KAN-31),
+ * `TAGLINE_WORKER` (KAN-32).
  *
  * Flow per wake-up:
  *   1. Receive `{ taskId, tenantId }` on `mypes:agent_task:dispatch:<agentId>`.
@@ -60,6 +61,7 @@ export interface AgentWorkerSpec {
 
 export const LOGO_WORKER: AgentWorkerSpec = { agentId: 'logo-agent' as AgentId, deliverableKind: 'logo', logScope: 'worker.logo' };
 export const NAME_WORKER: AgentWorkerSpec = { agentId: 'name-agent' as AgentId, deliverableKind: 'business_name', logScope: 'worker.name' };
+export const TAGLINE_WORKER: AgentWorkerSpec = { agentId: 'tagline-agent' as AgentId, deliverableKind: 'tagline', logScope: 'worker.tagline' };
 
 export interface AgentWorkerHandle {
   /** Tear down the subscription and drop the message listener. */
@@ -186,13 +188,15 @@ export async function startAgentWorker(
 
     // KAN-28: an «Iterar» task carries its refinement under the reserved
     // `refinement` key; it goes to `iteration`, never into `requirements`.
-    const { requirements, refinement } = splitRequirementsSnapshot(claimed.requirementsSnapshot);
+    // KAN-32: approved upstream values (e.g. the approved name) go to `upstream`.
+    const { requirements, refinement, upstream } = splitRequirementsSnapshot(claimed.requirementsSnapshot);
     const a2a: A2AMessage = {
       taskId: claimed.id,
       tenantId: tenantId as UUID,
       agentId: AGENT_ID,
       agentCardVersion: claimed.agentCardVersion,
       requirements,
+      ...(Object.keys(upstream).length > 0 ? { upstream } : {}),
       ...(claimed.parentTaskId
         ? {
             iteration: {

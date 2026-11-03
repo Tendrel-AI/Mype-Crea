@@ -51,7 +51,7 @@ import {
   requirementsFromSnapshot,
   type DeliverableWorkflowFacts,
 } from './deliverable-state';
-import { UPSTREAM_SNAPSHOT_KEY } from '../deliverable-inputs';
+import { UPSTREAM_INPUTS_KEY, UPSTREAM_SNAPSHOT_KEY, type UpstreamInput } from '../deliverable-inputs';
 
 export { requirementsFromSnapshot };
 
@@ -87,6 +87,8 @@ export interface DeliverableCommandContext {
     readonly agentId: string;
     readonly task: WorkflowTask;
     readonly requirements: Record<string, unknown>;
+    /** Approved upstream values the task was created under (KAN-32). */
+    readonly upstream: Readonly<Record<string, UpstreamInput>>;
     readonly refinement: IterationRefinement | null;
   }): Promise<void>;
   /** Clean up the in-flight marker after a successful cancel. */
@@ -306,15 +308,23 @@ export async function executeDeliverableCommand(
       const requirements = requirementsFromSnapshot(snapshot, command.agentId);
       // RF-07 (KAN-35): a stable reference to the upstream approvals this task is
       // generated under. Staleness is later computed against it; it is never rewritten.
-      const upstream = Object.fromEntries(
-        spec.dependsOn.flatMap((kind) => {
-          const approved = facts.approvals.find((a) => a.deliverableKind === kind);
-          return approved ? [[kind, approved.deliverableId]] : [];
+      const approvedUpstream = spec.dependsOn.flatMap((kind) => {
+        const approved = facts.approvals.find((a) => a.deliverableKind === kind);
+        return approved ? [{ kind, deliverableId: approved.deliverableId }] : [];
+      });
+      const upstream = Object.fromEntries(approvedUpstream.map(({ kind, deliverableId }) => [kind, deliverableId]));
+      // KAN-32: the approved upstream's text value is a handler input, recorded with the task.
+      // shortcut: only inline text upstreams carry a value; add a URL when an agent consumes an image upstream.
+      const upstreamInputs: Record<string, UpstreamInput> = Object.fromEntries(
+        approvedUpstream.flatMap(({ kind, deliverableId }) => {
+          const value = facts.candidates.find((c) => c.deliverableId === deliverableId)?.contentInline?.value;
+          return typeof value === 'string' ? [[kind, { deliverableId, value }]] : [];
         }),
       );
       const requirementsSnapshot: Record<string, unknown> = {
         ...requirements,
         [UPSTREAM_SNAPSHOT_KEY]: upstream,
+        ...(Object.keys(upstreamInputs).length > 0 ? { [UPSTREAM_INPUTS_KEY]: upstreamInputs } : {}),
         ...(refinement ? { [REFINEMENT_SNAPSHOT_KEY]: refinement } : {}),
       };
 
@@ -341,6 +351,7 @@ export async function executeDeliverableCommand(
         agentId: command.agentId,
         task: created.task,
         requirements,
+        upstream: upstreamInputs,
         refinement,
       });
       return accept(false, { taskId: created.task.id });

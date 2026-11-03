@@ -9,7 +9,7 @@
  * in one place and can be reused by tagline/label/social worker tests.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { NAME_WORKER, startAgentWorker, startLogoAgentWorker } from '../agent-worker';
+import { NAME_WORKER, TAGLINE_WORKER, startAgentWorker, startLogoAgentWorker } from '../agent-worker';
 import { channelForAgent, dispatchWakeUp, type DispatchNotification } from '../../transport/redis-queue-adapter';
 import {
   AgentRegistry,
@@ -17,6 +17,7 @@ import {
 } from '../../core/orchestrator/agent-registry';
 import logoCard from '../../../agents/logo-agent/agent-card.json';
 import nameCard from '../../../agents/name-agent/agent-card.json';
+import taglineCard from '../../../agents/tagline-agent/agent-card.json';
 import type {
   A2AMessage,
   AgentHandler,
@@ -230,6 +231,53 @@ describe('logo-agent worker', () => {
       deliverableKind: 'business_name',
       artifacts,
     }));
+  });
+
+  it('the tagline worker (KAN-32) hands the approved name to the handler as `upstream` and settles tagline deliverables', async () => {
+    const subscriber = new FakeSubscriber();
+    const registry = new AgentRegistry();
+    const artifacts = ['Uno', 'Dos', 'Tres', 'Cuatro', 'Cinco'].map((inline) => ({ kind: 'text', inline }));
+    const handler = vi.fn(async (message: A2AMessage) => ({
+      status: 'completed' as const,
+      taskId: message.taskId,
+      artifacts,
+      completedAt: '2026-05-04T00:00:01Z',
+    }));
+    registry.register(taglineCard as AgentCard, handler, undefined);
+    const nameId = '55555555-5555-4555-8555-555555555555';
+    const row = buildAgentTaskRow({
+      agentId: 'tagline-agent',
+      requirementsSnapshot: {
+        business_category: 'alimentos',
+        style_keywords: 'rústico',
+        upstream_approvals: { business_name: nameId },
+        upstream_inputs: { business_name: { deliverableId: nameId, value: 'Dulce Andino' } },
+      },
+    });
+    const findById = vi.fn(async () => ({ ...row, status: 'pending' as const }));
+    const claimById = vi.fn(async () => row);
+    const settleTaskAndEnqueue = vi.fn(async () => ({ deliverableIds: [] }));
+
+    await startAgentWorker(buildWorkerTestContext({
+      subscriber,
+      registry,
+      systemReposFor: () => ({ agentTasks: { findById, claimById } as never, llmCalls: {} as never }),
+      settleTaskFor: () => ({ settleTaskAndEnqueue } as never),
+      storeArtifacts: (async ({ artifacts: stored }: { artifacts: unknown[] }) => stored) as never,
+    }), TAGLINE_WORKER);
+    subscriber.emitMessage(channelForAgent('tagline-agent' as AgentId), wakeUp({
+      taskId: row.id,
+      tenantId: '66666666-6666-6666-6666-666666666666',
+      agentId: 'tagline-agent',
+    }));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+      requirements: { business_category: 'alimentos', style_keywords: 'rústico' },
+      upstream: { business_name: { deliverableId: nameId, value: 'Dulce Andino' } },
+    }), undefined);
+    expect(settleTaskAndEnqueue).toHaveBeenCalledWith(expect.objectContaining({ state: 'completed', deliverableKind: 'tagline', artifacts }));
   });
 
   it('skips when claimById returns null (already in_progress or completed)', async () => {
