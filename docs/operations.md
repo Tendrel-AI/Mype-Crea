@@ -174,7 +174,8 @@ built image, with the service variables and the private network (no volumes).
   deployed database to "match" a rollback.
 - **No backup is taken by this step.** Recovery from a bad migration relies on Railway's
   scheduled PostgreSQL backups, which must be enabled in both environments (owner action, see
-  section 9).
+  section 9). KAN-67 requires a dump before every production migration; until that is
+  automated, take it by hand (`pipeline/kan-53-restore-runbook.md` §2).
 - **Timeout.** Railway gives the pre-deploy command no time limit by default. Set a Pre-deploy
   Timeout on the service so a migration stuck on a table lock fails the deploy instead of
   holding it open.
@@ -390,10 +391,15 @@ Decided (KAN-18 / KAN-63, reversible local defaults):
   add-only; section 7). Prefer a reviewed forward fix; restore from backup
   only under the owner-approved procedure.
 - Local services: `npm run services:down` then `npm run services:up` keeps the data volumes.
+- Backup and restore (KAN-67, approved 2026-11-02): RPO ≤ 24 h (≈0 for migrations, through a
+  dump before each production migration), RTO ≤ 2 h, weekdays 09:00–18:00 America/Lima. The
+  owner authorizes and executes every restore. Procedure: `pipeline/kan-53-restore-runbook.md`.
+  Rehearse with `scripts/restore-rehearsal.sh` (local only; refuses non-local hosts). Railway
+  backups are not enabled yet (KAN-83), so production has no backup until they are. Retention is
+  open.
 
 **Pending:**
 
 - Production scan interval, batch size, alerting, and process ownership.
 - When an `in_progress` task counts as stale, and who may retry it or mark it terminal.
 - Maximum attempts and backoff for image-provider failures.
-- Backup and restore targets, RPO and RTO, and a restore exercise (KAN-53).
