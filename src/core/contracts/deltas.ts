@@ -86,6 +86,13 @@ export interface FieldValueWithConfidence {
 
   /** Optional: the raw text/input that produced this value. Debug/audit only. */
   readonly rawInput?: string;
+
+  /**
+   * Optional precondition: apply only while the slot is still
+   * `pending_confirmation` with this value. A «sí» to a confirm_field sets it,
+   * so a stale confirmation cannot overwrite a value accepted since (KAN-26).
+   */
+  readonly expectedPendingValue?: unknown;
 }
 
 /**
@@ -119,6 +126,8 @@ export type UserIntent =
       readonly kind: 'reset_field';
       readonly agentId: AgentId;
       readonly fieldName: FieldName;
+      /** Same precondition as `FieldValueWithConfidence.expectedPendingValue` (a «no» with no correction). */
+      readonly expectedPendingValue?: unknown;
     };
 
 // ---------------------------------------------------------------------------

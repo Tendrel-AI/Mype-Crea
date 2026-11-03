@@ -34,6 +34,11 @@
  * for `reset_field`: no store write, and the rejection is reported in the
  * returned `MergeResult` and the `merger.output` log.
  *
+ * KAN-26: a value for a brief catalog field (`../brief.ts`) is normalized and
+ * validated by `validateBriefValue` before it is stored, whatever channel
+ * produced it; an invalid value is `rejected_invalid_value` (no write). The
+ * slot records `delta.source` for provenance; nothing here branches on it.
+ *
  * This function does NOT dispatch agents. Dispatch is the orchestrator's
  * responsibility, triggered AFTER merge completes.
  *
@@ -44,11 +49,13 @@
 
 import {
   CONFIDENCE_THRESHOLDS,
+  type AgentRequirementState,
   type FieldDelta,
   type FieldSlot,
   type UserIntent,
 } from '../contracts';
 import { loggerFor } from '../../services/logger';
+import { briefFieldSpec, validateBriefValue } from '../brief';
 import type { AgentRegistry } from './agent-registry';
 import type { AgentFieldSchema, IConversationStore } from './in-memory-store';
 
@@ -60,14 +67,17 @@ export type FieldOutcome =
   | 'rejected_low_confidence'
   | 'rejected_unknown_agent'
   | 'rejected_unknown_field'
-  | 'conflict_kept_existing';
+  | 'rejected_invalid_value'
+  | 'conflict_kept_existing'
+  | 'stale_confirmation';
 
 export type IntentOutcome =
   | 'reset'
   | 'rejected_unknown_agent'
   | 'rejected_unknown_field'
   | 'noop'
-  | 'deferred_to_dispatch';
+  | 'deferred_to_dispatch'
+  | 'stale_confirmation';
 
 export interface MergeFieldOutcome {
   readonly agentId: string;
@@ -165,6 +175,11 @@ export async function mergeFieldDelta(
       child.debug({ kind: intent.kind, agentId, fieldName, outcome }, 'merge.intent.rejected');
       continue;
     }
+    if (isStale(intent, snapshot.agentStates[agentId], fieldName, resolution.isRequired)) {
+      intentOutcomes.push({ kind: intent.kind, agentId, fieldName, outcome: 'stale_confirmation' });
+      child.debug({ kind: intent.kind, agentId, fieldName }, 'merge.intent.stale_confirmation');
+      continue;
+    }
     await store.updateFieldSlot(
       delta.conversationId,
       agentId,
@@ -222,7 +237,24 @@ export async function mergeFieldDelta(
         continue; // unknown field for this agent
       }
 
+      // shortcut: fields outside the brief catalog are stored unvalidated until KAN-44 rejects them.
+      const spec = briefFieldSpec(fieldName);
+      const checked = spec ? validateBriefValue(spec, incoming.value) : { ok: true as const, value: incoming.value };
+      if (!checked.ok) {
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_invalid_value', confidence: incoming.confidence });
+        child.debug(
+          { agentId, fieldName, outcome: 'rejected_invalid_value' satisfies FieldOutcome },
+          'merge.field.rejected',
+        );
+        continue;
+      }
+
       const { isRequired } = resolution;
+      if (isStale(incoming, snapshot.agentStates[agentId], fieldName, isRequired)) {
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'stale_confirmation', confidence: incoming.confidence });
+        child.debug({ agentId, fieldName, outcome: 'stale_confirmation' satisfies FieldOutcome }, 'merge.field.rejected');
+        continue;
+      }
       // A slot reset in phase 1 is empty now, whatever the snapshot read said.
       const currentSlot = resetSlots.has(slotKey(agentId, fieldName))
         ? undefined
@@ -254,10 +286,12 @@ export async function mergeFieldDelta(
         incoming.confidence >= CONFIDENCE_THRESHOLDS.AUTO_ACCEPT
           ? 'filled'
           : 'pending_confirmation';
-      const nextSlot: FieldSlot =
-        nextStatus === 'filled'
-          ? { status: 'filled', value: incoming.value, confidence: incoming.confidence }
-          : { status: 'pending_confirmation', value: incoming.value, confidence: incoming.confidence };
+      const nextSlot: FieldSlot = {
+        status: nextStatus,
+        value: checked.value,
+        confidence: incoming.confidence,
+        source: delta.source,
+      };
 
       await store.updateFieldSlot(
         delta.conversationId,
@@ -352,4 +386,23 @@ function slotKey(agentId: string, fieldName: string): string {
 function previewValue(value: unknown): string {
   if (typeof value !== 'string') return JSON.stringify(value);
   return value.length > 80 ? `${value.slice(0, 77)}...` : value;
+}
+
+/**
+ * True when a confirmation answer no longer applies: it names the pending
+ * value it answers, and the slot (as read before this delta) no longer holds
+ * that value as pending — e.g. the user set the field in the panel since.
+ */
+function isStale(
+  input: { readonly expectedPendingValue?: unknown },
+  state: AgentRequirementState | undefined,
+  fieldName: string,
+  isRequired: boolean,
+): boolean {
+  if (input.expectedPendingValue === undefined) return false;
+  const slot = state?.[isRequired ? 'requiredFields' : 'optionalFields']?.[fieldName];
+  return (
+    slot?.status !== 'pending_confirmation' ||
+    JSON.stringify(slot.value) !== JSON.stringify(input.expectedPendingValue)
+  );
 }

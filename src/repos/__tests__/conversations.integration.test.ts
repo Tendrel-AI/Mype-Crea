@@ -191,4 +191,18 @@ SUITE('conversations repository concurrency (integration)', () => {
       status: 'filled', value: 'Después',
     });
   });
+
+  it('round-trips the slot source with the value (KAN-26 provenance)', async () => {
+    const conversationId = randomUUID();
+    conversationIds.push(conversationId);
+    const conversationRepo = repos({ id: tenantId }, { id: userId }).conversations;
+    await conversationRepo.getOrCreate(conversationId, schemas);
+    await conversationRepo.updateFieldSlot(conversationId, 'logo', 'business_name', true, {
+      status: 'filled', value: 'Tienda Sol', confidence: 1, source: 'brief-panel',
+    }, schemas);
+    const snapshot = await conversationRepo.get(conversationId, schemas);
+    expect(snapshot?.agentStates.logo.requiredFields.business_name).toEqual({
+      status: 'filled', value: 'Tienda Sol', confidence: 1, source: 'brief-panel',
+    });
+  });
 });

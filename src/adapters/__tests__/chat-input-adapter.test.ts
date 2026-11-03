@@ -104,11 +104,13 @@ describe('ChatInputAdapter', () => {
       value: 'Café Andino',
       confidence: 1.0,
       rawInput: 'Sí, confirmo',
+      expectedPendingValue: 'Café Andino',
     });
     expect(delta.fields['fixture-b']?.business_name).toEqual({
       value: 'Café Andino',
       confidence: 1.0,
       rawInput: 'Sí, confirmo',
+      expectedPendingValue: 'Café Andino',
     });
     expect(recordSpy).not.toHaveBeenCalled();
   });
@@ -147,8 +149,8 @@ describe('ChatInputAdapter', () => {
 
     expect(delta.fields).toEqual({});
     expect(delta.intents).toEqual([
-      { kind: 'reset_field', agentId: 'fixture-a', fieldName: 'business_name' },
-      { kind: 'reset_field', agentId: 'fixture-b', fieldName: 'business_name' },
+      { kind: 'reset_field', agentId: 'fixture-a', fieldName: 'business_name', expectedPendingValue: 'Cafetería Mocha' },
+      { kind: 'reset_field', agentId: 'fixture-b', fieldName: 'business_name', expectedPendingValue: 'Cafetería Mocha' },
     ]);
     expect(recordSpy).not.toHaveBeenCalled();
   });
@@ -351,10 +353,13 @@ describe('ChatInputAdapter', () => {
     });
   });
 
-  it('rejects a frozen field schema that differs from the runtime registry before provider invocation', async () => {
+  it.each([
+    ['a frozen field the registry lacks', { name: 'ghost_field', required: false, promptHint: '¿Fantasma?', agents: ['test-fixture-agent'] }],
+    ['a frozen field whose hint changed', { name: 'business_name', required: true, promptHint: 'Otra pregunta', agents: ['test-fixture-agent'] }],
+  ])('rejects %s before provider invocation', async (_name, field) => {
     const provider = makeExtractorProvider('{}');
     const { registry } = buildSingleAgentFixtureRegistry();
-    const behavior = createCurrentAdapterBehaviorSnapshot();
+    const behavior = createCurrentAdapterBehaviorSnapshot([field]);
     const adapter = new ChatInputAdapter(buildFakeCore(), registry);
 
     await expect(adapter.extract({
@@ -485,6 +490,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
         status: 'filled',
         value: PENDING_NAME,
         confidence: 1.0,
+        source: 'chat-es',
       });
     },
   );
@@ -514,6 +520,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       status: 'filled',
       value: 'Dulce Casa',
       confidence: 0.95,
+      source: 'chat-es',
     });
   });
 
@@ -527,6 +534,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       status: 'pending_confirmation',
       value: 'Dulce Casa',
       confidence: 0.75,
+      source: 'chat-es',
     });
   });
 
@@ -537,7 +545,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
     );
 
     expect(delta.intents).toEqual([
-      { kind: 'reset_field', agentId: AGENT, fieldName: 'business_name' },
+      { kind: 'reset_field', agentId: AGENT, fieldName: 'business_name', expectedPendingValue: PENDING_NAME },
     ]);
     expect(state.requiredFields.business_name).toEqual({ status: 'empty' });
   });
@@ -557,6 +565,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       status: 'filled',
       value: 'Dulce Casa',
       confidence: 1.0,
+      source: 'chat-es',
     });
   });
 
@@ -580,7 +589,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
     );
 
     expect(delta.intents).toEqual([
-      { kind: 'reset_field', agentId: AGENT, fieldName: 'business_name' },
+      { kind: 'reset_field', agentId: AGENT, fieldName: 'business_name', expectedPendingValue: PENDING_NAME },
     ]);
     expect(state.requiredFields.business_name).toEqual({ status: 'empty' });
     expect(state.optionalFields.color_palette).toMatchObject({ status: 'filled', value: 'azul y blanco' });
@@ -607,11 +616,13 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       status: 'filled',
       value: PENDING_NAME,
       confidence: 1.0,
+      source: 'chat-es',
     });
     expect(state.optionalFields.color_palette).toEqual({
       status: 'filled',
       value: 'azul y blanco',
       confidence: 0.95,
+      source: 'chat-es',
     });
   });
 
@@ -628,6 +639,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       status: 'filled',
       value: PENDING_NAME,
       confidence: 1.0,
+      source: 'chat-es',
     });
     expect(state.requiredFields.style_keywords).toMatchObject({ status: 'filled', value: 'rústico' });
   });
@@ -650,6 +662,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       status: 'filled',
       value: PENDING_NAME,
       confidence: 1.0,
+      source: 'chat-es',
     });
     expect(state.requiredFields).not.toHaveProperty('price');
     expect(state.optionalFields).not.toHaveProperty('price');
@@ -703,6 +716,7 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
         status: 'pending_confirmation',
         value: 'Dulce Casa',
         confidence: correctionConfidence,
+        source: 'chat-es',
       });
     },
   );

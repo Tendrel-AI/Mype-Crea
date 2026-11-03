@@ -10,6 +10,7 @@
  */
 
 import type {
+  AdapterSource,
   AgentId,
   ConversationId,
   DeliverableId,
@@ -40,7 +41,12 @@ export interface AgentRequirementState {
   readonly selectedDeliverableId?: DeliverableId;
 }
 
+/**
+ * `source` is the `FieldDelta.source` that wrote the value (KAN-26 provenance:
+ * chat or brief panel). Audit and display only: merge and planner never
+ * branch on it. Absent on slots written before KAN-26.
+ */
 export type FieldSlot =
   | { readonly status: 'empty' }
-  | { readonly status: 'pending_confirmation'; readonly value: unknown; readonly confidence: number }
-  | { readonly status: 'filled'; readonly value: unknown; readonly confidence: number };
+  | { readonly status: 'pending_confirmation'; readonly value: unknown; readonly confidence: number; readonly source?: AdapterSource }
+  | { readonly status: 'filled'; readonly value: unknown; readonly confidence: number; readonly source?: AdapterSource };

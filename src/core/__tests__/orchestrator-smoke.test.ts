@@ -362,8 +362,13 @@ describe('orchestrator smoke (agent-agnostic)', () => {
     const snapshotB = await second.core.getSnapshot(conversationB);
     const stateA = snapshotA.agentStates[first.agentId];
     const stateB = snapshotB.agentStates[second.agentId];
-    expect(stateA.requiredFields).toEqual(stateB.requiredFields);
-    expect(stateA.optionalFields).toEqual(stateB.optionalFields);
+    // KAN-26: each slot records its own source (provenance); nothing else differs.
+    const withoutSource = (slots: object) =>
+      Object.fromEntries(Object.entries(slots).map(([name, { source: _source, ...slot }]) => [name, slot]));
+    expect(stateA.requiredFields.business_name).toMatchObject({ source: 'chat-es' });
+    expect(stateB.requiredFields.business_name).toMatchObject({ source: 'form' });
+    expect(withoutSource(stateA.requiredFields)).toEqual(withoutSource(stateB.requiredFields));
+    expect(withoutSource(stateA.optionalFields)).toEqual(withoutSource(stateB.optionalFields));
     expect(stateA.iterationCount).toBe(stateB.iterationCount);
     expect(first.messages).toHaveLength(1);
     expect(second.messages).toHaveLength(1);

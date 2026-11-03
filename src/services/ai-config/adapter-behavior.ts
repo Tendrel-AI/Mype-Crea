@@ -146,7 +146,9 @@ export function createCurrentAdapterBehaviorSnapshot(
   return {
     schemaVersion: 'adapter-behavior.v1',
     extractor: {
-      promptVersion: 'extractor.v4',
+      // v5 (KAN-26): the field list adds the brief catalog's brand/product fields
+      // (logo-agent optional fields). Template unchanged; real eval pending.
+      promptVersion: 'extractor.v5',
       promptTemplate: EXTRACTOR_PROMPT_TEMPLATE,
       rendererVersion: 'extractor.renderer.v1',
       parserVersion: 'extractor.parser.v1',

@@ -8,7 +8,7 @@ const SCRIPT = path.resolve(__dirname, '..', 'restore-rehearsal.sh');
 
 function run(env: Record<string, string>) {
   return spawnSync('bash', [SCRIPT], {
-    env: { PATH: process.env.PATH ?? '', ...env },
+    env: { PATH: process.env.PATH ?? '', ...env } as unknown as NodeJS.ProcessEnv, // Next's types require NODE_ENV; the guard test must pass a minimal env
     encoding: 'utf8',
   });
 }
