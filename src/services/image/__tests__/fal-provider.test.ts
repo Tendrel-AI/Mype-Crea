@@ -56,8 +56,8 @@ describe('FalImageProvider', () => {
     expect(settleSpy).toHaveBeenCalledWith(expect.objectContaining({ reservationId: 'reservation-1', outcome: 'succeeded' }));
 
     expect(configSpy).toHaveBeenCalledWith({ credentials: 'test-fal-key' });
-    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/nano-banana-2', {
-      input: { prompt: 'un logo' },
+    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/flux-2', {
+      input: { prompt: 'un logo', image_size: 'square_hd' },
     });
     expect(result.providerId).toBe('fal');
     expect(result.url).toBe('https://fal.cdn/independent.png');
@@ -85,12 +85,12 @@ describe('FalImageProvider', () => {
     const result = await provider.generate({ prompt: 'una marca minimalista' });
 
     expect(subscribeSpy).toHaveBeenCalledTimes(1);
-    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/nano-banana-2', {
-      input: { prompt: 'una marca minimalista' },
+    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/flux-2', {
+      input: { prompt: 'una marca minimalista', image_size: 'square_hd' },
     });
     expect(result.url).toBe('https://fal.cdn/img.png');
     expect(result.providerId).toBe('fal');
-    expect(result.modelId).toBe('fal-ai/nano-banana-2');
+    expect(result.modelId).toBe('fal-ai/flux-2');
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
@@ -103,13 +103,14 @@ describe('FalImageProvider', () => {
       referenceUrls: ['data:image/png;base64,AAAA'],
     });
 
-    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/nano-banana-2/edit', {
+    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/flux-2/edit', {
       input: {
         prompt: 'refine the logo',
+        image_size: 'square_hd',
         image_urls: ['data:image/png;base64,AAAA'],
       },
     });
-    expect(result.modelId).toBe('fal-ai/nano-banana-2/edit');
+    expect(result.modelId).toBe('fal-ai/flux-2/edit');
     expect(result.url).toBe('https://fal.cdn/edited.png');
   });
 

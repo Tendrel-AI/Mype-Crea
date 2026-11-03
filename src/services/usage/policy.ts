@@ -72,25 +72,25 @@ export function usageLimitMessage(reason: UsageDenialReason): string {
 }
 
 // ---------------------------------------------------------------------------
-// Prices. shortcut: list prices typed in by hand on 2026-11-02, not read from provider invoices
+// Prices. shortcut: list prices typed in by hand on 2026-11-03, not read from provider invoices
 // or the provider's own cost field; replace with provider-reported cost when KAN-42 lands.
 // Unknown models use the conservative default so an unpriced model can't look cheap.
 // ---------------------------------------------------------------------------
 
-export const PRICING_VERSION = 'kan-43.2026-11-02';
+export const PRICING_VERSION = 'kan-43.2026-11-03';
 
 interface TokenPrice { readonly inputPerMTok: number; readonly outputPerMTok: number }
 
 const LLM_PRICES: Readonly<Record<string, TokenPrice>> = {
   'google/gemini-2.5-flash': { inputPerMTok: 0.3, outputPerMTok: 2.5 },
   'google/gemini-2.5-pro': { inputPerMTok: 1.25, outputPerMTok: 10 },
-  'claude-sonnet-5': { inputPerMTok: 2, outputPerMTok: 10 },
-  'anthropic/claude-sonnet-5': { inputPerMTok: 2, outputPerMTok: 10 },
-  'claude-haiku-4-5': { inputPerMTok: 1, outputPerMTok: 5 },
+  'claude-sonnet-5-5': { inputPerMTok: 2, outputPerMTok: 10 },
+  // shortcut: Haiku 5.5's rate for prompts up to 100k tokens (5x above); ours stay far below, add the tier if that changes.
+  'claude-haiku-5-5': { inputPerMTok: 0.1, outputPerMTok: 0.5 },
 };
 const DEFAULT_LLM_PRICE: TokenPrice = { inputPerMTok: 5, outputPerMTok: 25 };
-/** One fal nano-banana-2 image (base or edit). */
-export const IMAGE_PRICE_USD = 0.08;
+/** One fal FLUX.2 [dev] 1024x1024 image: USD 0.012/MP, an edit also bills its ~1 MP reference (~0.024). */
+export const IMAGE_PRICE_USD = 0.03;
 /** Output tokens assumed when a request sets no max_tokens. */
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 

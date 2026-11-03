@@ -32,7 +32,7 @@ export function getProvider(): ILLMProvider {
 }
 
 export function selectedProviderName(): LLMProviderName {
-  const selected = process.env.LLM_PROVIDER ?? 'openrouter';
+  const selected = process.env.LLM_PROVIDER ?? 'anthropic';
   if (selected !== 'openrouter' && selected !== 'anthropic') {
     throw new Error('LLM_PROVIDER must be "openrouter" or "anthropic".');
   }

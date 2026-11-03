@@ -107,7 +107,7 @@ export async function createBaselineDraft(): Promise<AiConfigManifestV1> {
   const extractor = adapterBehavior.extractor;
   const responder = adapterBehavior.responder;
 
-  const configuredProvider = process.env.LLM_PROVIDER ?? 'openrouter';
+  const configuredProvider = process.env.LLM_PROVIDER ?? 'anthropic';
   if (configuredProvider !== 'openrouter' && configuredProvider !== 'anthropic') {
     throw new Error('LLM_PROVIDER must be "openrouter" or "anthropic".');
   }

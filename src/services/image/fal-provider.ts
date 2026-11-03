@@ -2,8 +2,8 @@
  * fal.ai-backed IImageProvider.
  *
  * The only place in the codebase that imports `@fal-ai/client`. Picks
- * `nano-banana-2/edit` when reference images are provided, `nano-banana-2`
- * otherwise. Logs request lifecycle under scope `service.image.fal`.
+ * FLUX.2 [dev] `flux-2/edit` when reference images are provided, `flux-2`
+ * otherwise, always square 1024x1024 (logos). Logs request lifecycle under scope `service.image.fal`.
  *
  * Failures are rethrown as `TaskError` with a typed kind whenever the fal
  * error carries a usable signal (HTTP status, content-policy detail, timeout,
@@ -17,8 +17,8 @@ import type { IImageProvider, ImageRequest, ImageResult } from './types';
 
 const log = loggerFor('service.image.fal');
 const PROVIDER_ID = 'fal';
-const BASE_MODEL = 'fal-ai/nano-banana-2';
-const EDIT_MODEL = 'fal-ai/nano-banana-2/edit';
+const BASE_MODEL = 'fal-ai/flux-2';
+const EDIT_MODEL = 'fal-ai/flux-2/edit';
 
 export class FalImageProvider implements IImageProvider {
   readonly id = PROVIDER_ID;
@@ -37,10 +37,11 @@ export class FalImageProvider implements IImageProvider {
     const isEdit = Boolean(req.referenceUrls && req.referenceUrls.length > 0);
     const modelId = isEdit ? EDIT_MODEL : BASE_MODEL;
 
-    const input: Record<string, unknown> = { prompt: req.prompt };
-    if (isEdit) {
-      input.image_urls = req.referenceUrls;
-    }
+    const input = {
+      prompt: req.prompt,
+      image_size: 'square_hd' as const,
+      ...(isEdit ? { image_urls: req.referenceUrls! } : {}),
+    };
 
     const child = log.child({ modelId, isEdit });
     child.info({ promptLength: req.prompt.length }, 'image.request.start');

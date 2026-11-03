@@ -57,8 +57,18 @@ function anthropicTextResponse(): Response {
 }
 
 describe('LLM provider configuration', () => {
-  it('defaults to OpenRouter and maps configured model purposes', () => {
+  it('defaults to Anthropic (Claude) when LLM_PROVIDER is unset', () => {
     delete process.env.LLM_PROVIDER;
+    process.env.ANTHROPIC_API_KEY = 'anthropic-test';
+    delete process.env.ANTHROPIC_EXTRACTOR_MODEL;
+    delete process.env.ANTHROPIC_RESPONDER_MODEL;
+    const p = getProvider();
+    expect(p).toBeInstanceOf(AnthropicProvider);
+    expect(p.resolve('responder').modelId).toBe('claude-sonnet-5-5');
+  });
+
+  it('maps OpenRouter model purposes when selected', () => {
+    process.env.LLM_PROVIDER = 'openrouter';
     process.env.OPENROUTER_API_KEY = 'openrouter-test';
     delete process.env.OPENROUTER_EXTRACTOR_MODEL;
     delete process.env.OPENROUTER_RESPONDER_MODEL;

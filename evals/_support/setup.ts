@@ -17,7 +17,7 @@ import { applyEvalModelProfile, evalModelProfile } from '../../src/services/llm/
 
 process.env.LOG_LEVEL ??= 'warn';
 
-const provider = process.env.LLM_PROVIDER ?? 'openrouter';
+const provider = process.env.LLM_PROVIDER ?? 'anthropic';
 if (provider !== 'openrouter' && provider !== 'anthropic') throw new Error('LLM_PROVIDER must be "openrouter" or "anthropic".');
 const requiredKey = provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENROUTER_API_KEY';
 if (!process.env[requiredKey]?.trim()) throw new Error(`Evals call the real LLM: set ${requiredKey} in .env.local (see docs/agents/testing.md → Evals).`);
