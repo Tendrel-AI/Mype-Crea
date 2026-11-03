@@ -19,6 +19,7 @@ import { messagesRepo, type MessagesRepo } from './messages';
 import { termsAcceptancesRepo, type TermsAcceptancesRepo } from './terms-acceptances';
 import { usageRepo, type UsageRepo } from './usage';
 import { writeRejectionsRepo, type WriteRejectionsRepo } from './write-rejections';
+import { tenantAccountsRepo, type TenantAccountsRepo } from './tenant-accounts';
 import type { Tenant, User } from '../db/with-transaction';
 
 export interface Repos {
@@ -34,6 +35,7 @@ export interface Repos {
   readonly termsAcceptances: TermsAcceptancesRepo;
   readonly usage: UsageRepo;
   readonly writeRejections: WriteRejectionsRepo;
+  readonly tenantAccounts: TenantAccountsRepo;
 }
 
 export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repos {
@@ -50,6 +52,7 @@ export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repo
     termsAcceptances: termsAcceptancesRepo(tenant, user),
     usage: usageRepo(tenant, user),
     writeRejections: writeRejectionsRepo(tenant, user),
+    tenantAccounts: tenantAccountsRepo(tenant, user),
   };
 }
 

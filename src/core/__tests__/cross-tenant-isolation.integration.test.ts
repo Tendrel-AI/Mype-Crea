@@ -434,4 +434,24 @@ describe('cross-tenant isolation (PostgreSQL integration)', () => {
     }
     expect(await ownA.termsAcceptances.hasAccepted(CURRENT_TERMS_VERSION)).toBe(true);
   });
+
+  it('KAN-41: a tenant admin manages only their own tenant\'s accounts and audit rows', async () => {
+    const adminA = repos(tenantA.tenant, tenantA.user).tenantAccounts;
+    const memberIds = (await adminA.listMembers()).map((member) => member.id);
+    expect(memberIds).toEqual(expect.arrayContaining([tenantA.user.id, tenantA.otherUser.id]));
+    expect(memberIds).not.toContain(tenantB.user.id);
+
+    expect(await adminA.setStatus({ targetUserId: tenantB.user.id, status: 'inactive', reason: null }))
+      .toEqual({ kind: 'refused', code: 'not_found' });
+    const statusB = await owner.query(`SELECT status FROM users WHERE id = $1`, [tenantB.user.id]);
+    expect(statusB.rows[0].status).toBe('active');
+    expect((await adminA.listAudit()).map((row) => row.targetUserId)).toContain(tenantB.user.id);
+    expect(await repos(tenantB.tenant, tenantB.user).tenantAccounts.listAudit()).toEqual([]);
+
+    // A member of tenant A is not an admin: every account operation is refused in the database.
+    await expect(repos(tenantA.tenant, tenantA.otherUser).tenantAccounts.listMembers()).rejects.toThrow('Tenant admin required.');
+    const memberAudit = await withTenantTransaction(tenantA.tenant, tenantA.otherUser, (tx) =>
+      tx.query(`SELECT id FROM tenant_account_audit_events`));
+    expect(memberAudit.rowCount).toBe(0);
+  });
 });

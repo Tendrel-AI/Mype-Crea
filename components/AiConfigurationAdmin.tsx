@@ -131,7 +131,7 @@ export default function AiConfigurationAdmin({ initialData }: { initialData: Rec
     <main className="mx-auto max-w-7xl space-y-6 p-6 text-slate-900 md:p-10">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div><p className="text-sm text-slate-500">Administración · Organización {data.organizationId}</p><h1 className="mt-1 text-3xl font-semibold">Configuración de IA</h1><p className="mt-2 text-sm text-slate-600">Tenant {data.tenantId} · {isAdmin ? 'Administradora de la organización' : 'Miembro'} · {data.platformAdmin ? 'Administradora de plataforma' : 'Acceso de tenant'}</p></div>
-        <Link className="rounded-md border px-3 py-2 text-sm hover:bg-slate-50" href="/">Volver al asistente</Link>
+        <div className="flex gap-2">{isAdmin && <Link className="rounded-md border px-3 py-2 text-sm hover:bg-slate-50" href="/admin/accounts">Cuentas</Link>}<Link className="rounded-md border px-3 py-2 text-sm hover:bg-slate-50" href="/">Volver al asistente</Link></div>
       </header>
 
       {notice && <p role="status" className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm">{notice}</p>}
