@@ -85,6 +85,14 @@ export interface RecentConversationRow {
   readonly businessName: string | null;
 }
 
+/** KAN-27: one user's explicit acceptance of one terms version (server-timestamped). */
+export interface TermsAcceptanceRow {
+  readonly id: UUID;
+  readonly userId: UUID;
+  readonly termsVersion: string;
+  readonly acceptedAt: string;
+}
+
 export interface AiTurnRow {
   readonly id: UUID;
   readonly userId: UUID;
