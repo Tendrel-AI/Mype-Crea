@@ -45,7 +45,7 @@ No chat text can start a paid generation: generation starts only from the typed 
 | Deliverable lifecycle | Generar / Iterar / Aprobar / Reintentar / Cancelar buttons with clear states, failure recovery, and a «Potencialmente desactualizado» notice when a name or brief value the deliverable used changes | [03-deliverable-lifecycle.md](03-deliverable-lifecycle.md) |
 | Live updates | «Generando» and the finished logo appear without reloading | [04-live-updates.md](04-live-updates.md) |
 | Auth, tenancy and isolation | Sign-in through the organization; nobody sees another tenant's or member's data | [05-auth-tenancy-isolation.md](05-auth-tenancy-isolation.md) |
-| Assets and storage | Generated logos kept privately and shown only to their owner | [06-assets-storage.md](06-assets-storage.md) |
+| Assets and storage | Generated logos kept privately, shown only to their owner, and hidden when they fail the automatic safety check | [06-assets-storage.md](06-assets-storage.md) |
 | Conversations | The app reopens the latest conversation; «Mis conversaciones» switches between them | [07-conversations.md](07-conversations.md) |
 | Consent | A terms screen that must be accepted before any AI work | [08-consent.md](08-consent.md) |
 | AI configuration and model execution | Stable, versioned model behavior per conversation, with one approved fallback | [09-ai-configuration.md](09-ai-configuration.md) |
