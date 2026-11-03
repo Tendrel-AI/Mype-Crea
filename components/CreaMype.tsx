@@ -333,20 +333,18 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     }
   };
 
-  const renderLogoCommands = (withAdvance: boolean) => (
+  const renderLogoCommands = () => (
     <DeliverableCommands
       view={logoView}
       label="logo"
       busy={commandBusy}
       error={commandErrorAgent === LOGO_AGENT_ID ? commandError : ''}
       onCommand={(request) => { if (logoView) void handleDeliverableCommand(LOGO_AGENT_ID, logoView, request); }}
-      onAdvance={withAdvance
-        ? () => document.getElementById('brand-step-3')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        : undefined}
+      onAdvance={() => document.getElementById('brand-step-3')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
     />
   );
 
-  // KAN-31 / KAN-32: text candidates (name or tagline), each with its rationale.
+  // A titled card without «Avanzar»: the names and tagline (KAN-31 / KAN-32), and the mobile logo (KAN-29: the type is named).
   const renderTextCommands = (agentId: string, view: DeliverableStateView | undefined, title: string, label: string, note?: string) => view && (
     <section className="mt-6" aria-label={title}>
       <h3 className="text-sm font-semibold text-neutral-700">{title}</h3>
@@ -496,12 +494,12 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
                 </details>
               )}
               {renderNameCommands()}
-              {logoView && renderLogoCommands(false)}
+              {renderTextCommands(LOGO_AGENT_ID, logoView, 'Logo', 'logo')}
             </>
           ) : undefined} conversationNotFound={notFound} conversationMenu={
             <ConversationMenu initialConversations={initialConversations} currentConversationId={conversationId} onNewConversation={() => setShowRestartModal(true)} loadConversations={listConversationsAction} />
           } />
-          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands(true)} nameControls={renderNameCommands()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
+          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
       </>
       )}
 

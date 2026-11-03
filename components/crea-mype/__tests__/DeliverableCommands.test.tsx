@@ -1,7 +1,16 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { DeliverableCommands, NAME_AVAILABILITY_NOTE, iterateSubmission, missingUpstreamMessage, safetyReviewNotice } from '../DeliverableCommands';
+import {
+  DeliverableCommands,
+  NAME_AVAILABILITY_NOTE,
+  candidateStatusLine,
+  formatGeneratedAt,
+  iterateSubmission,
+  missingUpstreamMessage,
+  provenanceRows,
+  safetyReviewNotice,
+} from '../DeliverableCommands';
 import { developerFailureChatText, failedCardMessage } from '../failure-copy';
 import { usageLimitMessage } from '../../../src/services/usage/policy';
 import { Dashboard } from '../Dashboard';
@@ -35,6 +44,9 @@ const candidate = (n: number) => ({
   contentInline: null,
   createdAt: `2026-10-25T00:00:0${n}.000Z`,
   approvable: true,
+  iteration: n,
+  stale: false,
+  provenance: { promptVersion: null, agentCardVersion: null, provider: null, model: null, inputs: [], upstream: [] },
 });
 
 const render = (v: DeliverableStateView | undefined, extra: { onAdvance?: () => void; error?: string } = {}) =>
@@ -169,7 +181,7 @@ describe('DeliverableCommands (KAN-28)', () => {
     view({
       state: 'failed',
       allowedCommands,
-      lastFailure: { taskId: candidate(1).taskId, errorCategory, errorKind, retryable: errorCategory === 'transient' },
+      lastFailure: { taskId: candidate(1).taskId, iteration: 2, errorCategory, errorKind, retryable: errorCategory === 'transient' },
     });
 
   it('a worker-side usage denial shows the image-limit copy from the usage policy (KAN-43)', () => {
@@ -248,8 +260,67 @@ describe('DeliverableCommands (KAN-28)', () => {
       failedCardMessage(failedView('transient', ['retry'], 'usage_limited'), 'logo'),
       developerFailureChatText('logo-agent', { errorCategory: 'transient', errorKind: 'timeout', message: 'x' }),
       render(view({ state: 'approved', stale: true, candidates: [candidate(1)], approvedDeliverableId: candidate(1).deliverableId })),
+      render(view({ state: 'in_review', candidates: [{ ...candidate(1), stale: true }] })),
     ].join(' ');
     expect(all).not.toMatch(/\b(vos|sos|tenés|querés|podés|tocá|revisá|completá|aprobá)\b/i);
+  });
+
+  describe('KAN-29: each deliverable shows its iteration, state and provenance', () => {
+    const text = (markup: string) => markup.replace(/<[^>]+>/g, '');
+    const logo = {
+      ...candidate(1),
+      provenance: {
+        promptVersion: 'logo-agent.v1',
+        agentCardVersion: '0.1.0',
+        provider: 'fal',
+        model: 'flux/schnell',
+        inputs: [{ field: 'business_name', value: 'Panadería Sol' }, { field: 'style_keywords', value: 'rústico' }],
+        upstream: [{ kind: 'business_name', deliverableId: 'n-1', value: 'Panadería Sol' }],
+      },
+    };
+
+    it('in review: «Iteración N · Lista» per candidate, and «Detalles» with type, time, model, versions, inputs and the approved name it used', () => {
+      const markup = text(render(view({ state: 'in_review', allowedCommands: ['approve'], candidates: [logo, candidate(2)] })));
+      expect(markup).toContain('Iteración 1 · Lista');
+      expect(markup).toContain('Iteración 2 · Lista');
+      expect(markup).toContain('Detalles');
+      expect(markup).toContain('Tipo: Logo');
+      expect(markup).toContain(`Generado: ${formatGeneratedAt(logo.createdAt)}`);
+      expect(markup).toContain('Modelo: fal · flux/schnell');
+      expect(markup).toContain('Versión del prompt: logo-agent.v1');
+      expect(markup).toContain('Versión del agente: 0.1.0');
+      expect(markup).toContain('Datos usados: Nombre del negocio: Panadería Sol; Estilo: rústico');
+      expect(markup).toContain('Nombre comercial aprobado que usó: Panadería Sol');
+      expect(markup).not.toContain('Potencialmente desactualizado');
+    });
+
+    it('approved and stale: the approved one says so, and a stale candidate carries its own flag', () => {
+      const markup = text(render(view({
+        state: 'approved',
+        allowedCommands: ['approve'],
+        candidates: [{ ...logo, stale: true }, candidate(2)],
+        approvedDeliverableId: logo.deliverableId,
+      })));
+      expect(markup).toContain('Iteración 1 · Aprobada');
+      expect(markup).toContain('Iteración 2 · Lista');
+      expect(markup.match(/Potencialmente desactualizado/g)).toHaveLength(1);
+    });
+
+    it('generating and failed: the card names the iteration in progress or the one that failed', () => {
+      expect(text(render(view({ state: 'generating', activeTask: { taskId: 't3', status: 'in_progress', iteration: 3 } })))).toContain('GenerandoIteración 3');
+      expect(text(render(failedView('transient', ['retry'])))).toContain('FallóIteración 2');
+    });
+
+    it('older rows without recorded provenance say so instead of showing blanks', () => {
+      expect(provenanceRows('logo', candidate(1)).slice(2)).toEqual([
+        ['Modelo', 'No registrado'],
+        ['Versión del prompt', 'No registrada'],
+        ['Versión del agente', 'No registrada'],
+        ['Datos usados', 'No registrados'],
+      ]);
+      expect(candidateStatusLine({ iteration: null }, false)).toBe('Lista');
+      expect(formatGeneratedAt('2026-10-25T15:04:00.000Z')).toMatch(/25 oct\.? 2026/);
+    });
   });
 
   it('developer failure chat text carries the category, kind and message', () => {

@@ -40,6 +40,9 @@ import { loggerFor } from '../../src/services/logger';
 
 const log = loggerFor('agent.logo-agent');
 
+/** Recorded on every logo (KAN-29 provenance). Bump it when `buildLogoPrompt` wording changes. */
+export const LOGO_PROMPT_VERSION = 'logo-agent.v1';
+
 /** Brief fields `buildLogoPrompt` reads. */
 const INPUT_FIELDS = ['business_name', 'style_keywords', 'color_palette'] as const;
 
@@ -158,7 +161,16 @@ export const handler: AgentHandler<undefined> = async (message) => {
       {
         kind: 'image',
         url,
-        metadata: { provider: providerId, model: modelId, prompt, purpose: 'logo', inputs: usedInputs(message.requirements), safety },
+        metadata: {
+          provider: providerId,
+          model: modelId,
+          prompt,
+          purpose: 'logo',
+          inputs: usedInputs(message.requirements),
+          promptVersion: LOGO_PROMPT_VERSION,
+          agentCardVersion: message.agentCardVersion,
+          safety,
+        },
       },
     ],
     completedAt: new Date().toISOString(),

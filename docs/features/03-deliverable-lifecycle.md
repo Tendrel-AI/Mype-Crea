@@ -11,6 +11,13 @@ buttons that make sense now: **Generar**, **Iterar** (with a short note on what 
 **Aprobar**, **Reintentar**, **Cancelar**. A failure is never a dead end: the card explains it in
 plain Spanish and offers at least one way out.
 
+Each candidate in the card (KAN-29) also says which iteration of its type it is and whether it
+is ready or approved («Iteración 2 · Lista», «Iteración 1 · Aprobada»), carries its own
+«Potencialmente desactualizado» flag, and has a «Detalles» disclosure with its type, generation
+time, model, prompt and agent versions, the brief data it used and, for a derived deliverable,
+the approved upstream it was built on. The card names the iteration in progress or the one that
+failed. This is the same panel, not a second gallery.
+
 ## How it works
 
 1. **Read the state.** `app/actions/deliverable-command.ts:loadDeliverableStatesAction` returns,
@@ -26,7 +33,17 @@ plain Spanish and offers at least one way out.
    command. Image candidates render as a grid of thumbnails; text candidates (the names of
    KAN-31, `textCandidate`) render as a list of name plus one-line reason, followed by the note
    «Verifica la disponibilidad del nombre en INDECOPI antes de usarlo.»
-   (`NAME_AVAILABILITY_NOTE`). The «Nombre comercial» card and, under it, the «Lema» card
+   (`NAME_AVAILABILITY_NOTE`). **Per-candidate view (KAN-29):** each `DeliverableCandidateView`
+   carries `iteration` (1-based ordinal of its task among the type's non-canceled tasks),
+   `stale` (in `deriveStaleCandidateIds`) and `provenance`, built by the pure
+   `deliverable-state.ts:candidateProvenance` from the artifact metadata and the task's
+   `upstream_approvals`: only `promptVersion`, `agentCardVersion`, `provider`, `model`, the
+   string `metadata.inputs` values and the approved upstream (id and text value) are copied; the
+   logo's raw prompt never reaches the client. `activeTask` and `lastFailure` carry
+   `iteration` too. `DeliverableCommands` renders it with `candidateStatusLine`,
+   `provenanceRows` and `formatGeneratedAt` (`es-PE`, `America/Lima`); rows that recorded
+   nothing say «No registrado». The logo handler records `LOGO_PROMPT_VERSION` and its
+   agent card version; name and tagline already did. The «Nombre comercial» card and, under it, the «Lema» card
    (KAN-32 taglines, same text list) sit in step 1 of the dashboard and in the mobile panel
    (`components/CreaMype.tsx:renderNameCommands`). A card blocked by an unapproved upstream names
    it (`missingUpstreamMessage`: «Primero aprueba tu nombre comercial.»).
@@ -128,6 +145,15 @@ plain Spanish and offers at least one way out.
   `agents/tagline-agent/__tests__/handler.test.ts`, the `upstream_inputs` case of
   `src/core/__tests__/deliverable-commands.postgres.integration.test.ts` and
   `src/workers/__tests__/logo-agent-worker.test.ts` (tagline worker).
+- **The deliverables view shows each deliverable's iteration, state and provenance, and only the
+  owner's (KAN-29).** It reads through the same owner-scoped path
+  (`loadDeliverableStatesAction` → `authorizeConversation` → `repos(tenant, user)`); a foreign or
+  unknown conversation reads nothing. Provenance is copied key by key, never the raw prompt.
+  Enforced by `src/core/orchestrator/__tests__/deliverable-state.test.ts` («KAN-29» block),
+  `components/crea-mype/__tests__/DeliverableCommands.test.tsx` («KAN-29» block),
+  `app/actions/__tests__/name-agent-flow.test.ts` and `tagline-agent-flow.test.ts` (provenance
+  end to end, including the approved name used) and `app/actions/__tests__/deliverable-command.test.ts`
+  («never returns another user's deliverables»).
 - **Staleness is computed, never stored, and never regenerates.** History rows are not
   rewritten; a reload re-derives the same flag; unrelated deliverables are untouched; going back
   to the original name or value clears it. Enforced by `deliverable-state.test.ts` («KAN-35»
@@ -159,6 +185,11 @@ plain Spanish and offers at least one way out.
 - 2026-11-03 — KAN-33: rejected or indeterminate logos are never shown or approvable; the card
   offers Generar/Iterar. Human review is out of scope for the pilot.
   [`pipeline/decisions/KAN-33-logo-safety-policy.md`](../../pipeline/decisions/KAN-33-logo-safety-policy.md)
+- 2026-11-03 — KAN-29: the deliverables query lives in the existing cards (no second gallery, no
+  filters, pagination or extra history). «En proceso / listo / falló / aprobado» reuse the KAN-64
+  card labels plus «Lista»/«Aprobada» per candidate. The regulatory view (label text, composed
+  label, warnings, «verificar con DIGESA») and rule/standard versions are deferred to KAN-39/KAN-40,
+  which build on this view.
 - 2026-10-25 — KAN-58: a failure is never a dead end (Reintentar always; Iterar for content
   policy); no `announce_failure` planner decision.
 
@@ -176,6 +207,10 @@ plain Spanish and offers at least one way out.
 - Logos generated before KAN-35 record no inputs, so a brief edit does not flag them; their
   upstream staleness falls back to the KAN-34 marks.
 - A Reintentar after a failed Iterar drops that refinement (owner decision, kept).
+- Iteration numbers count failed attempts, so the candidates may read «Iteración 1» and
+  «Iteración 3» when the second attempt failed. Logos generated before KAN-29 show «No
+  registrada» for their versions.
+- Text candidates of one run (five names or taglines) repeat the same «Detalles».
 
 ## See also
 

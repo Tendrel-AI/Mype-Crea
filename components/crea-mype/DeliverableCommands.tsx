@@ -6,7 +6,8 @@
  * Renders one deliverable's server-derived state: a Spanish state badge, the
  * «Potencialmente desactualizado» overlay (RF-07), its candidates (with Aprobar / «Aprobada»; a
  * candidate that did not pass the safety check shows the KAN-33 review message instead), and the
- * command buttons listed in `allowedCommands`. The buttons are advisory: the
+ * command buttons listed in `allowedCommands`. KAN-29: each candidate also shows its iteration,
+ * its own staleness, and a «Detalles» disclosure with its recorded provenance. The buttons are advisory: the
  * server re-validates every command against a fresh state.
  *
  * «Avanzar» is UI navigation only (scrolls to the next section); it never
@@ -64,16 +65,18 @@ export function safetyReviewNotice(label: string): string {
   return `Este ${label} no pasó la revisión automática de seguridad. Genera otra opción.`;
 }
 
-/** Spanish nouns of upstream deliverable kinds, for the blocked message (KAN-32). */
-const UPSTREAM_LABELS: Readonly<Record<string, string>> = {
+/** Spanish nouns of deliverable kinds: the blocked message (KAN-32) and the details' type (KAN-29). */
+const KIND_LABELS: Readonly<Record<string, string>> = {
   business_name: 'nombre comercial',
   logo: 'logo',
   tagline: 'lema',
 };
 
+const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
 /** Blocked by an unapproved upstream: name it when every missing kind has a label. */
 export function missingUpstreamMessage(kinds: ReadonlyArray<string>): string {
-  const labels = kinds.map((kind) => UPSTREAM_LABELS[kind]);
+  const labels = kinds.map((kind) => KIND_LABELS[kind]);
   return labels.every(Boolean) ? `Primero aprueba tu ${labels.join(' y ')}.` : 'Primero aprueba los entregables anteriores.';
 }
 
@@ -120,6 +123,37 @@ export function textCandidate(
   return { text: inline.value, rationale: typeof metadata?.rationale === 'string' ? metadata.rationale : null };
 }
 
+type Candidate = DeliverableStateView['candidates'][number];
+
+/** Per-candidate line (KAN-29): its iteration within the type and whether it is the approved one. */
+export function candidateStatusLine(candidate: Pick<Candidate, 'iteration'>, isApproved: boolean): string {
+  const status = isApproved ? 'Aprobada' : 'Lista';
+  return candidate.iteration === null ? status : `Iteración ${candidate.iteration} · ${status}`;
+}
+
+/** Generation time in the pilot's time zone; fixed so every viewer reads the same value. */
+export function formatGeneratedAt(iso: string): string {
+  return new Intl.DateTimeFormat('es-PE', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'America/Lima' }).format(new Date(iso));
+}
+
+/** «Detalles» rows (KAN-29): type, time, model, versions, recorded inputs and approved upstreams. */
+export function provenanceRows(deliverableKind: string, candidate: Pick<Candidate, 'createdAt' | 'provenance'>): ReadonlyArray<readonly [string, string]> {
+  const { provenance } = candidate;
+  const model = [provenance.provider, provenance.model].filter(Boolean).join(' · ');
+  const inputs = provenance.inputs.map((input) => `${briefFieldSpec(input.field)?.label ?? input.field}: ${input.value}`).join('; ');
+  return [
+    ['Tipo', capitalize(KIND_LABELS[deliverableKind] ?? deliverableKind)],
+    ['Generado', formatGeneratedAt(candidate.createdAt)],
+    ['Modelo', model || 'No registrado'],
+    ['Versión del prompt', provenance.promptVersion ?? 'No registrada'],
+    ['Versión del agente', provenance.agentCardVersion ?? 'No registrada'],
+    ['Datos usados', inputs || 'No registrados'],
+    ...provenance.upstream.map(
+      (up) => [`${capitalize(KIND_LABELS[up.kind] ?? up.kind)} aprobado que usó`, up.value ?? 'Sin texto registrado'] as const,
+    ),
+  ];
+}
+
 export function DeliverableCommands({
   view,
   label,
@@ -158,6 +192,9 @@ export function DeliverableCommands({
           {view.state === 'generating' && <Loader2 size={12} className="mr-1 inline animate-spin" />}
           {STATE_LABELS[view.state]}
         </span>
+        {(view.activeTask ?? view.lastFailure) && (
+          <span className="text-xs text-neutral-500">Iteración {(view.activeTask ?? view.lastFailure)!.iteration}</span>
+        )}
         {view.stale && (
           <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800">
             {STALE_LABEL}
@@ -218,21 +255,33 @@ export function DeliverableCommands({
                 ) : (
                   <span className="text-xs text-neutral-500">Propuesta {index + 1}</span>
                 )}
-                {isApproved ? (
-                  <span className="inline-flex items-center justify-center gap-1 text-[11px] font-medium text-emerald-700">
-                    <CheckCircle2 size={12} /> Aprobada
-                  </span>
-                ) : (
-                  has(view, 'approve') && candidate.approvable && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => onCommand({ kind: 'approve', deliverableId: candidate.deliverableId })}
-                      className={`${buttonBase} justify-center bg-emerald-600 text-white hover:bg-emerald-500`}
-                    >
-                      Aprobar
-                    </button>
-                  )
+                <p className={`flex flex-wrap items-center gap-1 px-1 text-[11px] ${isApproved ? 'font-medium text-emerald-700' : 'text-neutral-600'}`}>
+                  {isApproved && <CheckCircle2 size={12} />}
+                  {candidateStatusLine(candidate, isApproved)}
+                </p>
+                {candidate.stale && (
+                  <span className="mx-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">{STALE_LABEL}</span>
+                )}
+                <details className="px-1 text-[11px] text-neutral-600">
+                  <summary className="cursor-pointer select-none">Detalles</summary>
+                  <dl className="mt-1 space-y-0.5">
+                    {provenanceRows(view.deliverableKind, candidate).map(([term, value]) => (
+                      <div key={term}>
+                        <dt className="inline font-medium">{term}: </dt>
+                        <dd className="inline break-words">{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </details>
+                {!isApproved && has(view, 'approve') && candidate.approvable && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => onCommand({ kind: 'approve', deliverableId: candidate.deliverableId })}
+                    className={`${buttonBase} justify-center bg-emerald-600 text-white hover:bg-emerald-500`}
+                  >
+                    Aprobar
+                  </button>
                 )}
               </li>
             );

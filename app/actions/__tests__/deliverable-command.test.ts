@@ -184,6 +184,17 @@ describe('loadDeliverableStatesAction', () => {
     expect(mocks.startConversation).toHaveBeenCalled();
   });
 
+  it('KAN-29: never returns another user\'s deliverables (a foreign or unknown conversation reads nothing)', async () => {
+    mocks.readPinnedConversation.mockResolvedValueOnce(null);
+    expect(await loadDeliverableStatesAction({ conversationId: CONVERSATION })).toEqual({
+      ok: false,
+      code: 'conversation_unavailable',
+      message: 'No encontramos esta conversación.',
+    });
+    expect(mocks.repos).toHaveBeenCalledWith(mocks.identity.tenant, mocks.identity.user);
+    expect(mocks.getDeliverableStates).not.toHaveBeenCalled();
+  });
+
   it('rejects a malformed conversation id and identity failures', async () => {
     expect(await loadDeliverableStatesAction({ conversationId: 'x' })).toMatchObject({ ok: false, code: 'invalid_request' });
     mocks.resolveIdentity.mockRejectedValueOnce(new Error('no session'));

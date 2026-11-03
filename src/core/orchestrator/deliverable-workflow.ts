@@ -55,6 +55,8 @@ export interface WorkflowCandidate {
   readonly inputVersions?: Readonly<Record<string, string>> | null;
   /** False when the recorded safety verdict is not `passed` (`isPresentable`, KAN-33). Absent means true. */
   readonly approvable?: boolean;
+  /** The artifact's recorded metadata; provenance (KAN-29) is picked from it. Null/absent when none. */
+  readonly metadata?: Readonly<Record<string, unknown>> | null;
 }
 
 export interface CreateTaskInput {
@@ -225,6 +227,7 @@ export class InMemoryDeliverableWorkflowStore implements IDeliverableWorkflowSto
         createdAt: this.nextTimestamp(),
         inputVersions: recordedFieldVersions(artifact.metadata),
         approvable: isPresentable(artifact.metadata),
+        metadata: artifact.metadata ?? null,
       });
     });
     this.candidates.set(input.conversationId, bucket);
