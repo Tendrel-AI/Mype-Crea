@@ -30,6 +30,7 @@ interface DeliverableRowDb {
   kind: DeliverableKind;
   content_url: string | null;
   content_inline: Record<string, unknown> | null;
+  artifact_metadata?: Record<string, unknown> | null;
   storage_key: string | null;
   selected_at: Date | null;
   superseded_by: UUID | null;
@@ -45,6 +46,7 @@ function toDomain(row: DeliverableRowDb): DeliverableRow {
     kind: row.kind,
     contentUrl: row.content_url,
     contentInline: row.content_inline,
+    artifactMetadata: row.artifact_metadata ?? null,
     storageKey: row.storage_key ?? null,
     selectedAt: row.selected_at ? row.selected_at.toISOString() : null,
     supersededBy: row.superseded_by,

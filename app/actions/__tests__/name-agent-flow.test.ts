@@ -4,6 +4,8 @@
  * candidates in review with their metadata → «Aprobar» records the choice,
  * and a second «Aprobar» replaces it with history (KAN-34). Without the
  * required brief fields the server refuses and nothing is dispatched.
+ * KAN-35: the logo built under an approved name is flagged when the name
+ * approval or a brief field it used changes, without regenerating.
  *
  * Real OrchestratorCoreImpl over the default registry with in-memory stores;
  * identity, consent and the usage preflight are mocked at the repos boundary.
@@ -41,6 +43,7 @@ import { InMemoryApprovalStore } from '../../../src/core/approvals';
 import { LocalAdapter } from '../../../src/transport/local-adapter';
 import { newTaskId } from '../../../src/core/ids';
 import { resetAgentLlm, setAgentLlm } from '../../../src/services/llm/agent-completion';
+import { resetImageGenerator, setImageGenerator } from '../../../src/services/image';
 import { NAME_PROMPT_VERSION } from '../../../agents/name-agent/handler';
 import { TEST_TENANT_ID, TEST_USER_ID } from '../../../src/core/__tests__/_fixtures';
 import type { A2AMessage } from '../../../src/core/agent-types';
@@ -50,7 +53,11 @@ const CONVERSATION = '6a1c2a4e-9b7d-4c2e-8f10-0a1b2c3d4e5f' as ConversationId;
 
 const NAMES = ['Dulce Andino', 'Sabor de Altura', 'Mermeladas Killa', 'Frutos del Valle', 'Aguaymanto & Co.'];
 
-function buildRuntime() {
+function buildRuntime(shared?: {
+  store: InMemoryConversationStore;
+  workflow: InMemoryDeliverableWorkflowStore;
+  approvals: InMemoryApprovalStore;
+}) {
   const registry = buildDefaultRegistry();
   const dispatched: A2AMessage[] = [];
   let core: OrchestratorCoreImpl | null = null;
@@ -62,13 +69,14 @@ function buildRuntime() {
     },
     getResult: (taskId: TaskId) => local.getResult(taskId),
   };
-  const workflow = new InMemoryDeliverableWorkflowStore(undefined, newTaskId);
-  const approvals = new InMemoryApprovalStore({
+  const workflow = shared?.workflow ?? new InMemoryDeliverableWorkflowStore(undefined, newTaskId);
+  const approvals = shared?.approvals ?? new InMemoryApprovalStore({
     kindOf: async (conversationId, deliverableId) =>
       (await workflow.listCandidates(conversationId as ConversationId)).find((c) => c.deliverableId === deliverableId)?.kind ?? null,
   });
+  const store = shared?.store ?? new InMemoryConversationStore(registry.getFieldSchemas());
   core = new OrchestratorCoreImpl({
-    store: new InMemoryConversationStore(registry.getFieldSchemas()),
+    store,
     registry,
     transport,
     notifier: new InProcessDecisionNotifier(),
@@ -77,7 +85,7 @@ function buildRuntime() {
     approvalsFor: () => approvals,
   });
   mocks.state.core = core;
-  return { core, local, dispatched, approvals };
+  return { core, local, dispatched, approvals, workflow, store };
 }
 
 function fakeNamingLlm() {
@@ -107,19 +115,19 @@ function fakeNamingLlm() {
   return complete;
 }
 
-async function nameView(): Promise<DeliverableStateView> {
+async function nameView(agentId = 'name-agent'): Promise<DeliverableStateView> {
   const result = await loadDeliverableStatesAction({ conversationId: CONVERSATION });
-  const view = result.ok ? result.states.find((s) => s.agentId === 'name-agent') : undefined;
-  if (!view) throw new Error('no name-agent state');
+  const view = result.ok ? result.states.find((s) => s.agentId === agentId) : undefined;
+  if (!view) throw new Error(`no ${agentId} state`);
   return view;
 }
 
-async function command(kind: 'generate' | 'approve', extra: Record<string, unknown> = {}) {
-  const view = await nameView();
+async function command(kind: 'generate' | 'approve', extra: Record<string, unknown> = {}, agentId = 'name-agent') {
+  const view = await nameView(agentId);
   return deliverableCommandAction({
     commandId: randomUUID(),
     conversationId: CONVERSATION,
-    agentId: 'name-agent',
+    agentId,
     kind,
     expectedState: view.state,
     stateToken: view.stateToken,
@@ -129,7 +137,10 @@ async function command(kind: 'generate' | 'approve', extra: Record<string, unkno
 
 describe('name-agent flow (KAN-31)', () => {
   beforeEach(() => vi.clearAllMocks());
-  afterEach(() => resetAgentLlm());
+  afterEach(() => {
+    resetAgentLlm();
+    resetImageGenerator();
+  });
 
   it('Generar → five candidates with metadata → Aprobar, replaceable with history', async () => {
     const runtime = buildRuntime();
@@ -171,6 +182,55 @@ describe('name-agent flow (KAN-31)', () => {
       { deliverableKind: 'business_name', deliverableId: first.deliverableId, replacedDeliverableId: null },
       { deliverableKind: 'business_name', deliverableId: second.deliverableId, replacedDeliverableId: first.deliverableId },
     ]);
+  });
+
+  it('KAN-35: a new name approval or a used brief edit marks the logo «Potencialmente desactualizado»; nothing regenerates, and it survives a reload', async () => {
+    const runtime = buildRuntime();
+    fakeNamingLlm();
+    const image = vi.fn(async () => ({ url: 'https://cdn.test/logo.png', providerId: 'fake', modelId: 'fake/img', latencyMs: 1 }));
+    setImageGenerator({ generate: image });
+    await runtime.core.startConversation(CONVERSATION, TEST_TENANT_ID, TEST_USER_ID);
+    for (const [fieldName, value] of [['business_category', 'alimentos'], ['style_keywords', 'rústico'], ['business_name', 'Dulce Andino']]) {
+      await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName, value });
+    }
+
+    // Verbal identity → logo: no logo before a name is approved.
+    expect(await nameView('logo-agent')).toMatchObject({ state: 'blocked', missingUpstream: ['business_name'] });
+    await command('generate');
+    await runtime.local.waitForSettlement(runtime.dispatched[0].taskId);
+    const [first, second] = (await nameView()).candidates;
+    await command('approve', { deliverableId: first.deliverableId, expectedApprovedId: null });
+
+    expect(await command('generate', {}, 'logo-agent')).toMatchObject({ ok: true });
+    await runtime.local.waitForSettlement(runtime.dispatched[1].taskId);
+    const logo = await nameView('logo-agent');
+    expect(logo).toMatchObject({ state: 'in_review', stale: false });
+    expect(image).toHaveBeenCalledTimes(1);
+
+    // Approving another name: the logo is flagged, still in review, nothing is dispatched.
+    await command('approve', { deliverableId: second.deliverableId, expectedApprovedId: first.deliverableId });
+    const flagged = await nameView('logo-agent');
+    expect(flagged).toMatchObject({ state: 'in_review', stale: true, activeTask: null });
+    expect(flagged.candidates).toEqual(logo.candidates);
+    expect(runtime.dispatched).toHaveLength(2);
+    expect(image).toHaveBeenCalledTimes(1);
+    expect((await nameView()).stale).toBe(false);
+
+    // A reload (fresh core over the same persisted facts) derives the same flag.
+    const reloaded = buildRuntime({ store: runtime.store, workflow: runtime.workflow, approvals: runtime.approvals });
+    expect(await nameView('logo-agent')).toEqual(flagged);
+
+    // Back to the original name: the stable references make the logo current again.
+    await command('approve', { deliverableId: first.deliverableId, expectedApprovedId: second.deliverableId });
+    expect((await nameView('logo-agent')).stale).toBe(false);
+
+    // A brief field the logo did not use leaves it alone; one it used flags it.
+    await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'manufacturer', value: 'Cooperativa Andina' });
+    expect((await nameView('logo-agent')).stale).toBe(false);
+    await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'style_keywords', value: 'moderno' });
+    expect((await nameView('logo-agent')).stale).toBe(true);
+    expect(reloaded.dispatched).toHaveLength(0);
+    expect(image).toHaveBeenCalledTimes(1);
   });
 
   it('refuses Generar without the rubro: nothing is dispatched and no model is called', async () => {

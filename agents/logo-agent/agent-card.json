@@ -57,7 +57,7 @@
   },
   "mypes:deliverable": {
     "kind": "logo",
-    "dependsOn": []
+    "dependsOn": ["business_name"]
   },
   "supportedInterfaces": [
     { "protocol": "local", "module": "agents/logo-agent/handler.ts" }

@@ -367,6 +367,7 @@ describe('executeDeliverableCommand — Iterar', () => {
     });
     expect(h.workflow.requirementsOf(result.taskId!)).toEqual({
       business_name: 'Sazón Andino',
+      upstream_approvals: {},
       refinement: { parameterChanges: {}, observations: ['Más colores cálidos'], anchorDeliverableId: deliverableId },
     });
     // The handler receives the refinement separately from the brief requirements.
@@ -480,6 +481,7 @@ describe('executeDeliverableCommand — Iterar after a failure (KAN-58)', () => 
     expect(row).toMatchObject({ parentTaskId: taskId, iterationRootId: taskId, iterationNumber: 2, iterationTrigger: 'failure' });
     expect(h.workflow.requirementsOf(result.taskId!)).toEqual({
       business_name: 'Sazón Andino',
+      upstream_approvals: {},
       refinement: { parameterChanges: {}, observations: ['Sin la mascota, solo letras'], anchorDeliverableId: null },
     });
   });
@@ -587,6 +589,9 @@ describe('executeDeliverableCommand — Aprobar', () => {
     });
 
     const label = await h.reviewed('label-agent', 'label');
+    // KAN-35: the task keeps a stable reference to the upstream approval; the handler never sees it.
+    expect(h.workflow.requirementsOf(label.taskId)).toMatchObject({ upstream_approvals: { logo: logo1.deliverableId } });
+    expect(h.dispatch.mock.calls.at(-1)![0].requirements).not.toHaveProperty('upstream_approvals');
     okOf(await h.run({ kind: 'approve', deliverableId: label.deliverableId, expectedApprovedId: null }, 'label-agent'));
     expect((await h.view('label-agent')).stale).toBe(false);
 

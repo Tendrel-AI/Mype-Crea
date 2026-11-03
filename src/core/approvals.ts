@@ -8,10 +8,12 @@
  * history, KAN-34) and, in the SAME atomic write, marks the dependent kinds
  * stale (RF-07). Nothing is regenerated automatically.
  *
- * «Obsoleto» comes only from those explicit stale marks (owner decision
- * 2026-10-25): a kind is stale while its newest mark is newer than its newest
- * approval. Approval timestamps are never compared, so two racing approvals
- * cannot produce a false «obsoleto».
+ * Since KAN-35 the marks are an append-only record of the event; staleness
+ * is computed from the inputs each candidate recorded
+ * (`deriveStaleCandidateIds` in ./orchestrator/deliverable-state.ts). The
+ * marks still decide for tasks created before KAN-35: a kind is stale while
+ * its newest mark is newer than its newest approval. Approval timestamps are
+ * never compared, so two racing approvals cannot produce a false overlay.
  *
  * This is the contract shared with the KAN-34 persistence work. The core
  * depends only on `IApprovalStore`; implementations:
@@ -64,8 +66,8 @@ export interface IApprovalStore {
   getApproved(conversationId: string): Promise<ReadonlyArray<ApprovedRecord>>;
   /**
    * Kinds whose newest stale mark is newer than their newest approval. The
-   * core feeds them into the pure state function; it is the only source of
-   * «obsoleto».
+   * core feeds them into the pure state function, which uses them only for
+   * tasks created before KAN-35 (newer ones compare their recorded inputs).
    */
   getStaleKinds(conversationId: string): Promise<ReadonlyArray<string>>;
 }

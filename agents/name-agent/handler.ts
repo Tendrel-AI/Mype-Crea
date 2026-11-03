@@ -11,14 +11,14 @@
  * from (value plus a content fingerprint per brief field), the agent card
  * version, the prompt version, and the provider and model that answered.
  * The brief has no per-field version counter, so the fingerprint is the
- * field's version: KAN-35 can compare it with the current brief.
+ * field's version: KAN-35 staleness compares it with the current brief.
  *
  * The handler never writes to the database and never claims that a name is
  * available or registered; the UI shows the INDECOPI verification note.
  * Failures are returned as a failed A2ATaskResult with a typed `error.kind`.
  */
-import { createHash } from 'node:crypto';
 import type { A2AArtifact, A2AMessage, AgentHandler } from '../../src/core/agent-types';
+import { inputVersion } from '../../src/core/deliverable-inputs';
 import { TaskError, taskErrorFromThrown } from '../../src/core/task-errors';
 import { getAgentLlm } from '../../src/services/llm/agent-completion';
 import type { ChatMessage } from '../../src/services/llm/types';
@@ -149,10 +149,8 @@ export function parseNameCandidates(rawArguments: string): NameCandidate[] {
   return candidates.slice(0, NAME_CANDIDATE_COUNT);
 }
 
-/** Stable version of a brief value: the same value always yields the same fingerprint. */
-export function inputVersion(value: string): string {
-  return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
-}
+// One fingerprint definition for every agent; staleness compares against it (KAN-35).
+export { inputVersion };
 
 export const handler: AgentHandler<undefined> = async (message: A2AMessage) => {
   const child = log.child({ op: 'handle', taskId: message.taskId, tenantId: message.tenantId, agentId: message.agentId });

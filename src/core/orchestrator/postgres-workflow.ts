@@ -24,6 +24,7 @@ import type { ConversationId, DeliverableId, TaskId, UUID } from '../contracts';
 import { repos, systemRepos, type Tenant, type User } from '../../repos';
 import type { AgentTaskRow, DeliverableRow } from '../../repos/models';
 import { clientDeliverableUrl } from '../deliverable-url';
+import { recordedFieldVersions, recordedUpstream } from '../deliverable-inputs';
 import type {
   CreateTaskInput,
   CreateTaskResult,
@@ -46,6 +47,7 @@ function toWorkflowTask(row: AgentTaskRow): WorkflowTask {
     iterationNumber: row.iterationNumber,
     iterationTrigger: row.iterationTrigger,
     createdAt: row.createdAt,
+    upstreamApprovals: recordedUpstream(row.requirementsSnapshot),
   };
 }
 
@@ -58,6 +60,8 @@ function toCandidate(row: DeliverableRow): WorkflowCandidate {
     contentUrl: clientDeliverableUrl(row),
     contentInline: row.contentInline,
     createdAt: row.createdAt,
+    // Rows written before KAN-81 keep the artifact metadata only inside content_inline.
+    inputVersions: recordedFieldVersions(row.artifactMetadata ?? row.contentInline?.metadata),
   };
 }
 

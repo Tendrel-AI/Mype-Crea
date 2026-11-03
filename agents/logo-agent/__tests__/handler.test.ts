@@ -13,6 +13,7 @@ import { resetImageGenerator, setImageGenerator } from '../../../src/services/im
 import type { ImageRequest, ImageResult } from '../../../src/services/image';
 import type { A2AMessage } from '../../../src/core/agent-types';
 import { TaskError } from '../../../src/core/task-errors';
+import { inputVersion } from '../../../src/core/deliverable-inputs';
 
 function makeMessage(reqs: Record<string, unknown>): A2AMessage {
   return {
@@ -69,6 +70,13 @@ describe('logo-agent handler', () => {
       purpose: 'logo',
     });
     expect(artifact.metadata?.prompt).toContain('Café Andino');
+    // KAN-35: the fields the prompt used, with the shared sha256 fingerprint.
+    expect(artifact.metadata?.inputs).toEqual({
+      business_name: { value: 'Café Andino', version: inputVersion('Café Andino') },
+      style_keywords: { value: 'minimalista, andino', version: inputVersion('minimalista, andino') },
+      color_palette: { value: 'tierra y verde', version: inputVersion('tierra y verde') },
+    });
+    expect(inputVersion('Café Andino')).toMatch(/^sha256:[0-9a-f]{64}$/);
     // KAN-43: the image is charged through the usage gate to this task's tenant.
     expect(captured[0].usage).toEqual({ tenantId: '22222222-2222-2222-2222-222222222222', agentTaskId: '11111111-1111-1111-1111-111111111111' });
   });

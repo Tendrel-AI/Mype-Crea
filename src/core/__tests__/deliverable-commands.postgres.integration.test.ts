@@ -408,7 +408,7 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     ).toEqual({ ok: false, reason: 'parent_unavailable' });
   });
 
-  it('persisted stale marks reach the state function; replacing an upstream approval marks approved dependents', { timeout: 30_000 }, async () => {
+  it('recorded upstream references decide staleness (KAN-35); replacing an upstream approval flags approved dependents', { timeout: 30_000 }, async () => {
     const h = await harness({ withDependentLabel: true });
     const r = repos({ id: tenantId }, { id: userId });
     const candidate = async (agentId: string, kind: 'logo' | 'label', partial: Record<string, unknown>, url: string) => {
@@ -428,18 +428,20 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     ).toMatchObject({ ok: true });
     expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({ state: 'approved', approvedDeliverableId: label1.id });
 
-    // Approving the logo first and the label later never makes the label «obsoleto» by itself
-    // (no timestamp comparison, owner decision 2026-10-25). A mark alone does: the state
-    // function reads only the explicit KAN-34 marks.
+    // Approving the logo first and the label later never makes the label stale by itself
+    // (no timestamp comparison, owner decision 2026-10-25).
     expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({ stale: false });
+    // KAN-35: the label task keeps a stable reference to the logo approval it was made under, so a
+    // stray mark does not override it (marks decide only for tasks created before KAN-35).
+    const labelTask = (await h.tasks()).find((t) => t.agentId === LABEL_AGENT_ID)!;
+    expect(labelTask.requirementsSnapshot).toMatchObject({ upstream_approvals: { logo: logo1.id } });
     await r.approvals.markStale({ conversationId: h.conversationId, deliverableKinds: ['label'] });
     expect((await r.approvals.listStale(h.conversationId)).map((m) => m.deliverableKind)).toEqual(['label']);
-    // «obsoleto» is an overlay on `approved`; it also offers Generar again (never automatic).
     expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({
       state: 'approved',
-      stale: true,
+      stale: false,
       approvedDeliverableId: label1.id,
-      allowedCommands: ['generate', 'iterate'],
+      allowedCommands: ['iterate'],
     });
 
     // Approving another label candidate clears the mark (newer approval event).
@@ -466,7 +468,17 @@ SUITE('deliverable commands + Postgres (integration)', () => {
     );
     expect(await h.command({ kind: 'approve', deliverableId: logo2.id, expectedApprovedId: logo1.id })).toMatchObject({ ok: true });
     expect((await r.approvals.listStale(h.conversationId)).map((m) => m.deliverableKind)).toEqual(['label']);
-    expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({ state: 'approved', stale: true, approvedDeliverableId: label2.id });
+    // «Potencialmente desactualizado» stays an overlay on `approved` and offers Generar again (never automatic).
+    expect(await h.viewOf(LABEL_AGENT_ID)).toMatchObject({
+      state: 'approved',
+      stale: true,
+      approvedDeliverableId: label2.id,
+      allowedCommands: ['generate', 'iterate', 'approve'],
+    });
     expect((await h.tasks()).length).toBe(tasksBefore + 1);
+    // History is never rewritten: the label task still names the logo approval it used.
+    expect((await h.tasks()).find((t) => t.id === labelTask.id)!.requirementsSnapshot).toMatchObject({
+      upstream_approvals: { logo: logo1.id },
+    });
   });
 });

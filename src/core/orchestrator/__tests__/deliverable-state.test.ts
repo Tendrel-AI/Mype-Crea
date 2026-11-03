@@ -16,11 +16,13 @@ import {
   FAILURE_RECOVERY_COMMANDS,
   dependentKindsOf,
   deriveDeliverableStates,
+  deriveStaleCandidateIds,
   deriveStaleKinds,
   type ApprovalFact,
   type DeliverableWorkflowFacts,
 } from '../deliverable-state';
 import type { WorkflowCandidate, WorkflowTask } from '../deliverable-workflow';
+import { inputVersion } from '../../deliverable-inputs';
 
 const conversationId = '00000000-0000-0000-0000-000000000003';
 const tenantId = '00000000-0000-0000-0000-000000000001';
@@ -405,9 +407,9 @@ describe('deriveDeliverableState — dependency map and the obsoleto overlay', (
     const social = stateOf(ready, specs, staleFacts, 'social-agent');
     expect(social.stale).toBe(true);
     expect(social.state).toBe('approved');
-    // Its upstream (label) is stale, so generative commands are gated.
-    expect(social.missingUpstream).toEqual(['label']);
-    expect(social.allowedCommands).toEqual([]);
+    // KAN-35: a flagged upstream approval stays approved, so the owner can still refresh it.
+    expect(social.missingUpstream).toEqual([]);
+    expect(social.allowedCommands).toEqual(['generate', 'iterate']);
   });
 
   it('obsoleto with another candidate also offers Aprobar (replace)', () => {
@@ -471,6 +473,155 @@ describe('deriveDeliverableState — dependency map and the obsoleto overlay', (
     );
     expect(view.state).toBe('in_review');
     expect(view.stale).toBe(false);
+  });
+});
+
+describe('KAN-35 — staleness from recorded inputs (RF-07)', () => {
+  // The agreed map: verbal identity (business_name) → logo; logo → label (future edge).
+  const NAME: DeliverableSpec = { agentId: 'name-agent', deliverableKind: 'business_name', requiredFields: ['business_category'], dependsOn: [] };
+  const LOGO: DeliverableSpec = { agentId: 'logo-agent', deliverableKind: 'logo', requiredFields: ['business_name', 'style_keywords'], dependsOn: ['business_name'] };
+  const LABEL: DeliverableSpec = { agentId: 'label-agent', deliverableKind: 'label', requiredFields: [], dependsOn: ['logo'] };
+  // Unrelated deliverable with its own recorded inputs.
+  const SLOGAN: DeliverableSpec = { agentId: 'tagline-agent', deliverableKind: 'tagline', requiredFields: ['business_category'], dependsOn: [] };
+  const specs = [NAME, LOGO, LABEL, SLOGAN];
+
+  const slot = (value: string) => ({ status: 'filled' as const, value, confidence: 1 });
+  function brief(values: Record<string, string>, optional: Record<string, string> = {}): ConversationSnapshot {
+    const state = (fields: Record<string, string>, opt: Record<string, string> = {}): AgentRequirementState => ({
+      requiredFields: Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, slot(v)])),
+      optionalFields: Object.fromEntries(Object.entries(opt).map(([k, v]) => [k, slot(v)])),
+      iterationCount: 0,
+    });
+    return snapshot({
+      'name-agent': state({ business_category: values.business_category }),
+      'logo-agent': state({ business_name: values.business_name, style_keywords: values.style_keywords }, optional),
+      'label-agent': state({}),
+      'tagline-agent': state({ business_category: values.business_category }),
+    });
+  }
+  const BRIEF = { business_category: 'panadería', business_name: 'Panadería Sol', style_keywords: 'rústico' };
+  const used = (fields: Record<string, string>) => Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, inputVersion(v)]));
+
+  const nameTask = task({ id: 'n1', status: 'completed', agentId: 'name-agent', upstreamApprovals: {} });
+  const nameA = { ...candidate('nA', 'n1', '2026-10-25T00:00:02.000Z', 'business_name'), inputVersions: used({ business_category: 'panadería' }) };
+  const nameB = { ...candidate('nB', 'n1', '2026-10-25T00:00:02.500Z', 'business_name'), inputVersions: used({ business_category: 'panadería' }) };
+  const logoTask = task({ id: 't1', status: 'completed', upstreamApprovals: { business_name: 'nA' }, createdAt: '2026-10-25T00:00:03.000Z' });
+  const L1 = {
+    ...candidate('L1', 't1', '2026-10-25T00:00:04.000Z'),
+    inputVersions: used({ business_name: 'Panadería Sol', style_keywords: 'rústico' }),
+  };
+  const sloganTask = task({ id: 's1', status: 'completed', agentId: 'tagline-agent', upstreamApprovals: {} });
+  const S1 = { ...candidate('S1', 's1', '2026-10-25T00:00:05.000Z', 'tagline'), inputVersions: used({ business_category: 'panadería' }) };
+
+  const withNameA = facts({
+    tasks: [nameTask, logoTask, sloganTask],
+    candidates: [nameA, nameB, L1, S1],
+    approvals: [{ deliverableKind: 'business_name', deliverableId: 'nA' }],
+  });
+  const withNameB: DeliverableWorkflowFacts = { ...withNameA, approvals: [{ deliverableKind: 'business_name', deliverableId: 'nB' }] };
+
+  it('the logo stays blocked until a name is approved (verbal identity → logo)', () => {
+    const view = stateOf(brief(BRIEF), specs, facts({}));
+    expect(view.state).toBe('blocked');
+    expect(view.missingUpstream).toEqual(['business_name']);
+  });
+
+  it('a logo generated under the approved name is current', () => {
+    const view = stateOf(brief(BRIEF), specs, withNameA);
+    expect(view.state).toBe('in_review');
+    expect(view.stale).toBe(false);
+  });
+
+  it('approving a different name marks the logo potentially outdated; nothing is generated', () => {
+    const view = stateOf(brief(BRIEF), specs, withNameB);
+    expect(view.state).toBe('in_review');
+    expect(view.stale).toBe(true);
+    expect(view.activeTask).toBeNull();
+    expect(view.allowedCommands).toEqual(['generate', 'iterate', 'approve']);
+  });
+
+  it('an approved logo stays approved but flagged when the name approval is replaced', () => {
+    const approvedLogo = { ...withNameB, approvals: [...withNameB.approvals, { deliverableKind: 'logo', deliverableId: 'L1' }] };
+    const view = stateOf(brief(BRIEF), specs, approvedLogo);
+    expect(view.state).toBe('approved');
+    expect(view.approvedDeliverableId).toBe('L1');
+    expect(view.stale).toBe(true);
+    expect(view.allowedCommands).toEqual(['generate', 'iterate']);
+  });
+
+  it('editing a brief field the logo used marks it; editing one it did not use does not', () => {
+    expect(stateOf(brief({ ...BRIEF, style_keywords: 'moderno' }), specs, withNameA).stale).toBe(true);
+    expect(stateOf(brief({ ...BRIEF, business_name: 'Sol de Oro' }), specs, withNameA).stale).toBe(true);
+    expect(stateOf(brief(BRIEF, { color_palette: 'rojo', product_name: 'Pan de yema' }), specs, withNameA).stale).toBe(false);
+  });
+
+  it('references are stable: switching back to the original name or value clears the flag', () => {
+    const back = { ...withNameB, approvals: [{ deliverableKind: 'business_name', deliverableId: 'nA' }] };
+    expect(stateOf(brief(BRIEF), specs, back).stale).toBe(false);
+  });
+
+  it('unrelated deliverables are untouched by a name or logo-input change', () => {
+    const before = stateOf(brief(BRIEF), specs, withNameA, 'tagline-agent');
+    for (const [snap, f] of [
+      [brief(BRIEF), withNameB],
+      [brief({ ...BRIEF, style_keywords: 'moderno', business_name: 'Sol de Oro' }), withNameA],
+    ] as const) {
+      expect(stateOf(snap, specs, f, 'tagline-agent')).toEqual(before);
+      expect(stateOf(snap, specs, f, 'name-agent').stale).toBe(false);
+    }
+  });
+
+  it('a new iteration under the new name is current; the old candidate stays stale in history', () => {
+    const logoTask2 = task({
+      id: 't2',
+      status: 'completed',
+      parentTaskId: 't1',
+      iterationRootId: 't1',
+      iterationNumber: 2,
+      iterationTrigger: 'user_regenerate',
+      upstreamApprovals: { business_name: 'nB' },
+      createdAt: '2026-10-25T00:00:06.000Z',
+    });
+    const L2 = { ...candidate('L2', 't2', '2026-10-25T00:00:07.000Z'), inputVersions: L1.inputVersions };
+    const f = { ...withNameB, tasks: [...withNameB.tasks, logoTask2], candidates: [...withNameB.candidates, L2] };
+    expect(stateOf(brief(BRIEF), specs, f).stale).toBe(false);
+    expect([...deriveStaleCandidateIds(brief(BRIEF), specs, f)]).toEqual(['L1']);
+  });
+
+  it('one hop per real change: a flagged logo leaves its label alone and unblocked until the logo is replaced', () => {
+    const labelTask = task({ id: 'b1', status: 'completed', agentId: 'label-agent', upstreamApprovals: { logo: 'L1' } });
+    const labelCandidate = candidate('B1', 'b1', '2026-10-25T00:00:08.000Z', 'label');
+    const f = {
+      ...withNameB,
+      tasks: [...withNameB.tasks, labelTask],
+      candidates: [...withNameB.candidates, labelCandidate],
+      approvals: [...withNameB.approvals, { deliverableKind: 'logo', deliverableId: 'L1' }, { deliverableKind: 'label', deliverableId: 'B1' }],
+    };
+    expect(stateOf(brief(BRIEF), specs, f).stale).toBe(true);
+    const label = stateOf(brief(BRIEF), specs, f, 'label-agent');
+    expect(label).toMatchObject({ state: 'approved', stale: false, missingUpstream: [] });
+    expect(label.allowedCommands).toEqual(['iterate']);
+    // Approving another logo is the real change: now the label is flagged.
+    const L3 = candidate('L3', 't1', '2026-10-25T00:00:09.000Z');
+    const replaced = {
+      ...f,
+      candidates: [...f.candidates, L3],
+      approvals: f.approvals.map((a) => (a.deliverableKind === 'logo' ? { ...a, deliverableId: 'L3' } : a)),
+    };
+    expect(stateOf(brief(BRIEF), specs, replaced, 'label-agent').stale).toBe(true);
+  });
+
+  it('a name whose own inputs changed is flagged but still unblocks the logo', () => {
+    const newRubro = brief({ ...BRIEF, business_category: 'pastelería' });
+    expect(stateOf(newRubro, specs, withNameA, 'name-agent')).toMatchObject({ state: 'approved', stale: true });
+    const approvedName = stateOf(newRubro, specs, withNameA, 'logo-agent');
+    expect(approvedName.missingUpstream).toEqual([]);
+    expect(approvedName.allowedCommands).toContain('iterate');
+  });
+
+  it('a recorded upstream reference wins over a legacy stale mark', () => {
+    const back = { ...withNameA, approvals: [...withNameA.approvals, { deliverableKind: 'logo', deliverableId: 'L1' }], markedStaleKinds: ['logo'] };
+    expect(stateOf(brief(BRIEF), specs, back).stale).toBe(false);
   });
 });
 

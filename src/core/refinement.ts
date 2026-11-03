@@ -14,7 +14,7 @@
  *       non-ASCII-whitespace character),
  *     anchorDeliverableId: lowercase UUID | null }
  *
- * Pure (no I/O, no imports), so both the core (command handler, workers) and
+ * Pure (no I/O; imports only the reserved snapshot key of ./deliverable-inputs), so both the core (command handler, workers) and
  * the repository layer (`src/repos/refinement-rules.ts` re-exports it) use
  * this module. The same rule is enforced in PostgreSQL by
  * `app.is_valid_refinement(jsonb)` (CHECK `agent_tasks_refinement_valid`,
@@ -26,6 +26,8 @@
  *
  * Lengths are Unicode code points (PostgreSQL `char_length`), not UTF-16 units.
  */
+
+import { UPSTREAM_SNAPSHOT_KEY } from './deliverable-inputs';
 
 export const REFINEMENT_LIMITS = Object.freeze({
   maxObservations: 5,
@@ -222,13 +224,14 @@ export function buildIterationRefinement(input: {
 /**
  * Split a persisted requirements snapshot into the handler requirements and
  * the refinement. Workers that rebuild the A2A message from the task row use
- * this so the reserved key never reaches a handler's `requirements`.
+ * this so the reserved keys never reach a handler's `requirements`.
  */
 export function splitRequirementsSnapshot(snapshot: Readonly<Record<string, unknown>>): {
   readonly requirements: Record<string, unknown>;
   readonly refinement: IterationRefinement | null;
 } {
-  const { [REFINEMENT_SNAPSHOT_KEY]: raw, ...requirements } = snapshot;
+  // The KAN-35 upstream record is bookkeeping for staleness, not handler input.
+  const { [REFINEMENT_SNAPSHOT_KEY]: raw, [UPSTREAM_SNAPSHOT_KEY]: _upstream, ...requirements } = snapshot;
   if (raw === undefined) return { requirements, refinement: null };
   const checked = checkStoredRefinement(raw);
   return { requirements, refinement: checked.ok ? checked.value : null };

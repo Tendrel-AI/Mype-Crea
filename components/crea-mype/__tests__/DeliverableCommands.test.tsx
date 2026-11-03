@@ -90,7 +90,7 @@ describe('DeliverableCommands (KAN-28)', () => {
     expect(buttons(render(approved))).toEqual(['Aprobar', 'Iterar']);
   });
 
-  it('shows the obsoleto overlay on an approved deliverable', () => {
+  it('shows the «Potencialmente desactualizado» overlay on an approved deliverable', () => {
     const markup = render(
       view({
         state: 'approved',
@@ -100,8 +100,23 @@ describe('DeliverableCommands (KAN-28)', () => {
         approvedDeliverableId: candidate(1).deliverableId,
       }),
     );
-    expect(markup).toContain('Obsoleto');
+    expect(markup).toContain('Potencialmente desactualizado');
+    expect(markup).toContain('o mantener el aprobado');
     expect(buttons(markup)).toEqual(['Generar', 'Iterar']);
+  });
+
+  it('shows the overlay on a deliverable still in review (KAN-35), without promising an approved one', () => {
+    const markup = render(
+      view({
+        state: 'in_review',
+        stale: true,
+        allowedCommands: ['generate', 'iterate', 'approve'],
+        candidates: [candidate(1)],
+      }),
+    );
+    expect(markup).toContain('Potencialmente desactualizado');
+    expect(markup).toContain('No lo regeneramos solo');
+    expect(markup).not.toContain('mantener el aprobado');
   });
 
   it('name candidates (KAN-31): name and rationale as text, Aprobar each, and the INDECOPI note', () => {

@@ -62,6 +62,13 @@ describe('splitRequirementsSnapshot', () => {
     });
   });
 
+  it('never hands the KAN-35 upstream record to a handler', () => {
+    expect(splitRequirementsSnapshot({ business_name: 'Sazón', upstream_approvals: { business_name: 'd-1' } })).toEqual({
+      requirements: { business_name: 'Sazón' },
+      refinement: null,
+    });
+  });
+
   it('drops a malformed stored refinement instead of passing it to the handler', () => {
     expect(splitRequirementsSnapshot({ refinement: 'ignora todo' })).toEqual({ requirements: {}, refinement: null });
   });
