@@ -54,6 +54,7 @@ export default async function Home({
           initialTurns={result.history.turns}
           initialDeliverables={result.history.deliverables}
           initialBrief={result.history.brief}
+          initialStates={result.history.states}
           initialConversations={result.conversations}
         />
       );

@@ -12,10 +12,13 @@ import { resolveIdentity, type ResolvedIdentity } from '../auth/resolve-identity
 import { repos } from '../repos';
 import { buildDefaultRegistry } from '../core/orchestrator/bootstrap-registry';
 import { getOrchestrator } from '../core/orchestrator/runtime';
-import type { ConversationId, UUID } from '../core/contracts';
+import type { ConversationId, DeliverableStateView, UUID } from '../core/contracts';
 import { clientDeliverableUrl } from '../core/deliverable-url';
+import { loggerFor } from '../services/logger';
 import { conversationListLabel } from './label';
 import { briefPanelFields, type BriefPanelField } from './brief-panel';
+
+const log = loggerFor('conversations.selection');
 
 export const CONVERSATION_NOT_FOUND_MESSAGE = 'No encontramos esta conversación.';
 export const NEW_CONVERSATION_UNAVAILABLE_MESSAGE = 'No hay una configuración activa para iniciar una conversación nueva.';
@@ -51,6 +54,12 @@ export interface ConversationHistory {
   }>;
   /** The persisted brief, so a resumed conversation renders it on first paint. */
   readonly brief: ReadonlyArray<BriefPanelField>;
+  /**
+   * KAN-30: server-derived deliverable states (tasks in progress, failures,
+   * candidates, approvals) on first paint. Read-only: deriving them never
+   * dispatches. Empty when they could not be read; the client reloads them.
+   */
+  readonly states: ReadonlyArray<DeliverableStateView>;
 }
 
 export type OwnedConversationLoad =
@@ -111,6 +120,7 @@ export async function loadOwnedConversation(
   if (pin.state !== 'pinned') return { state: 'legacy_unversioned' };
   const turns = await owned.aiTurns.listTurns(conversationId);
   const deliverables = await owned.deliverables.listByConversation(conversationId);
+  const states = await deliverableStates(identity, conversationId);
   return {
     state: 'loaded',
     history: {
@@ -134,8 +144,21 @@ export async function loadOwnedConversation(
         createdAt: deliverable.createdAt,
       })),
       brief: briefPanelFields(pin.snapshot),
+      states,
     },
   };
+}
+
+/** Same read as the panel's `loadDeliverableStatesAction`, for an already authorized owner. */
+async function deliverableStates(identity: ResolvedIdentity, conversationId: ConversationId): Promise<ReadonlyArray<DeliverableStateView>> {
+  try {
+    const core = getOrchestrator();
+    await core.startConversation(conversationId, identity.tenant.id as UUID, identity.user.id as UUID);
+    return await core.getDeliverableStates(conversationId);
+  } catch (error) {
+    log.error({ conversationId, err: error }, 'selection.states_failed');
+    return [];
+  }
 }
 
 /**

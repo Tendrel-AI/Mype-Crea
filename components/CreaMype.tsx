@@ -40,6 +40,8 @@ interface CreaMypeProps {
   }>;
   /** KAN-25: the persisted brief of a resumed conversation, shown before the client reloads it. */
   initialBrief?: ReadonlyArray<BriefPanelField>;
+  /** KAN-30: server-derived deliverable states (tasks in progress, failures, candidates) on first paint. */
+  initialStates?: ReadonlyArray<DeliverableStateView>;
   /** Optional validated-on-render typed v1 landing-page envelope. No live producer exists yet. */
   landingPageContent?: unknown;
   initialError?: string;
@@ -81,7 +83,7 @@ const EMPTY_ASSETS: BrandAssets = {
   marketingPlan: '',
 };
 
-export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialBrief = [], landingPageContent, initialError, initialConversations = [], conversationNotFound = false }: CreaMypeProps) {
+export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialBrief = [], initialStates = [], landingPageContent, initialError, initialConversations = [], conversationNotFound = false }: CreaMypeProps) {
   const [activeTab, setActiveTab] = useState<'create' | 'gallery' | 'landing'>('create');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
@@ -124,7 +126,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   const [conversationError, setConversationError] = useState(initialError ?? '');
   // KAN-28: server-derived deliverable states. Buttons are rendered from
   // `allowedCommands`, but the server re-validates every command.
-  const [deliverableStates, setDeliverableStates] = useState<ReadonlyArray<DeliverableStateView>>([]);
+  const [deliverableStates, setDeliverableStates] = useState<ReadonlyArray<DeliverableStateView>>(initialStates);
   const [commandBusy, setCommandBusy] = useState(false);
   const [commandError, setCommandError] = useState('');
   // The card whose command produced `commandError`; only that card shows it.

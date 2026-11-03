@@ -46,12 +46,16 @@ const mocks = vi.hoisted(() => {
     aiConfig: { getPinnedRelease },
     aiTurns: { listTurns, listNotices, listAttempts },
   }));
-  const getOrchestrator = vi.fn(() => ({ startConversation }));
+  const getDeliverableStates = vi.fn(async () => []);
+  const executeCommand = vi.fn();
+  const applyDelta = vi.fn();
+  const getOrchestrator = vi.fn(() => ({ startConversation, getDeliverableStates, executeCommand, applyDelta }));
   const getFieldSchemas = vi.fn(() => []);
   return {
     identity, pinned, ensurePinnedConversation, readPinnedConversation,
     listTurns, listNotices, listAttempts, listByConversation, listMessages, getPinnedRelease,
     startConversation, repos, getOrchestrator, getFieldSchemas, listRecent, timeline,
+    getDeliverableStates, executeCommand, applyDelta,
   };
 });
 
@@ -159,7 +163,10 @@ describe('conversation actions', () => {
       ok: true,
       turns: [{ requestId: 'same-request-id', userMessage: 'Quiero un logo', stage: 'effects_committed' }],
     });
-    expect(mocks.getOrchestrator).not.toHaveBeenCalled();
+    // KAN-30: the reload only reads durable state (deliverable states included); no model work, no dispatch.
+    expect(mocks.getDeliverableStates).toHaveBeenCalledWith(CONVERSATION_ID);
+    expect(mocks.executeCommand).not.toHaveBeenCalled();
+    expect(mocks.applyDelta).not.toHaveBeenCalled();
     expect(mocks.listTurns).toHaveBeenCalledWith(CONVERSATION_ID);
   });
 
