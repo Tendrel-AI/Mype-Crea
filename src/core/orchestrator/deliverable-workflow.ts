@@ -28,6 +28,8 @@ export interface WorkflowTask {
   readonly agentId: string;
   readonly status: WorkflowTaskStatus;
   readonly errorCategory: TaskErrorCategory | null;
+  /** `error.kind` of a failed task (e.g. `usage_limited`); null otherwise or when unknown. */
+  readonly errorKind?: string | null;
   readonly parentTaskId: TaskId | null;
   readonly iterationRootId: TaskId;
   readonly iterationNumber: number;
@@ -190,6 +192,7 @@ export class InMemoryDeliverableWorkflowStore implements IDeliverableWorkflowSto
     const settled = this.transition(input.conversationId, input.taskId, ['pending', 'in_progress'], {
       status: input.status,
       errorCategory: input.status === 'failed' ? input.errorCategory ?? 'permanent_bug' : null,
+      errorKind: input.status === 'failed' ? input.error?.kind ?? null : null,
     });
     if (!settled) return { applied: false, deliverableIds: [] };
     if (input.status !== 'completed') return { applied: true, deliverableIds: [] };
@@ -220,7 +223,7 @@ export class InMemoryDeliverableWorkflowStore implements IDeliverableWorkflowSto
     conversationId: ConversationId,
     taskId: TaskId,
     from: ReadonlyArray<WorkflowTaskStatus>,
-    patch: Partial<Pick<WorkflowTask, 'status' | 'errorCategory'>>,
+    patch: Partial<Pick<WorkflowTask, 'status' | 'errorCategory' | 'errorKind'>>,
   ): boolean {
     const bucket = this.tasks.get(conversationId) ?? [];
     const index = bucket.findIndex((task) => task.id === taskId);

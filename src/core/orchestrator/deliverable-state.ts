@@ -223,6 +223,7 @@ export function deriveDeliverableState(
       ? {
           taskId: latest.id,
           errorCategory: latest.errorCategory,
+          errorKind: latest.errorKind ?? null,
           retryable: latest.errorCategory === 'transient',
         }
       : null;

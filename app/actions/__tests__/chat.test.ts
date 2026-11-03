@@ -99,6 +99,7 @@ describe('chatAction durable turn boundary', () => {
     mocks.acceptedVersions.add('terminos-v1');
     mocks.hasAccepted.mockImplementation(async (version: string) => mocks.acceptedVersions.has(version));
     mocks.preflight.mockResolvedValue({ allowed: true, reservationId: null });
+    mocks.listTurns.mockResolvedValue([]);
     mocks.ensurePinnedConversation.mockResolvedValue({ state: 'pinned', snapshot: mocks.snapshot, releaseId: 'release-1' });
     mocks.claimTurn.mockResolvedValue({ kind: 'acquired', turn: { ...mocks.turn }, ownerToken: 'owner-1' });
     mocks.completeTurn.mockImplementation(async ({ responseContent }) => ({
@@ -146,6 +147,32 @@ describe('chatAction durable turn boundary', () => {
       expect(mocks.ensureUserMessage).not.toHaveBeenCalled();
       expect(mocks.runPurpose).not.toHaveBeenCalled();
       expect(mocks.applyDelta).not.toHaveBeenCalled();
+    });
+
+    it('replays the stored reply of an answered request even while the user is over a limit', async () => {
+      await chatAction(input);
+      // The first request was answered; now the user is over the hourly limit.
+      const answered = { ...mocks.turn, requestId: input.requestId, stage: 'responded', responseContent: '¡Listo!' };
+      mocks.listTurns.mockResolvedValue([answered] as never);
+      mocks.claimTurn.mockResolvedValue({ kind: 'completed', turn: answered });
+      mocks.preflight.mockResolvedValue({ allowed: false, reason: 'user_llm_hourly', reservationId: 'reservation-1' });
+      vi.clearAllMocks();
+
+      const retry = await chatAction(input);
+
+      expect(retry).toMatchObject({ ok: true, content: '¡Listo!', requestId: input.requestId });
+      expect(mocks.preflight).not.toHaveBeenCalled();
+      expect(mocks.runPurpose).not.toHaveBeenCalled();
+      expect(mocks.extract).not.toHaveBeenCalled();
+      expect(mocks.render).not.toHaveBeenCalled();
+    });
+
+    it('still checks a new request in a conversation that has answered ones', async () => {
+      mocks.listTurns.mockResolvedValue([{ ...mocks.turn, requestId: 'another-request', stage: 'responded' }] as never);
+      mocks.preflight.mockResolvedValueOnce({ allowed: false, reason: 'user_llm_hourly', reservationId: 'reservation-1' });
+      const result = await chatAction(input);
+      expect(result).toMatchObject({ ok: false, code: 'usage_limited' });
+      expect(mocks.claimTurn).not.toHaveBeenCalled();
     });
 
     it('measures a long message in code points', async () => {
@@ -229,7 +256,7 @@ describe('chatAction durable turn boundary', () => {
       { kind: 'announce_dispatch', agentId: 'logo-agent', taskId: 'task-1' },
       { kind: 'announce_completion', agentId: 'logo-agent', taskId: 'task-1', deliverableIds: [], artifacts: [] },
     ];
-    mocks.listTurns.mockResolvedValueOnce([
+    mocks.listTurns.mockResolvedValue([
       { ...mocks.turn, id: 'turn-0', stage: 'responded', payload: { decisions: [confirm] } },
     ] as never);
     mocks.peekNextDecision.mockImplementationOnce(async () => {

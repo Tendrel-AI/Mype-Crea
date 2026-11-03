@@ -327,7 +327,7 @@ describe('deriveDeliverableState — KAN-64 table (single deliverable)', () => {
       [LOGO_SPEC],
       facts({ tasks: [task({ id: 't1', status: 'failed', errorCategory: 'content_policy' })] }),
     );
-    expect(failed.lastFailure).toEqual({ taskId: 't1', errorCategory: 'content_policy', retryable: false });
+    expect(failed.lastFailure).toEqual({ taskId: 't1', errorCategory: 'content_policy', errorKind: null, retryable: false });
 
     const review = stateOf(LOGO_READY, [LOGO_SPEC], facts({ tasks: [DONE, DONE2], candidates: [C2, C1] }));
     expect(review.candidates.map((c) => c.deliverableId)).toEqual(['d1', 'd2']);

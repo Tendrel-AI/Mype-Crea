@@ -91,16 +91,21 @@ export async function chatAction(params: {
 
     // KAN-43: input cap and room for a full turn (extractor + responder) before any turn row
     // exists. Each provider call still reserves on its own; this only avoids half-run turns.
-    const preflight = await repository.usage.preflight({
-      kind: 'llm',
-      calls: 2,
-      estimatedCostUsd: 0,
-      inputChars: inputChars(userMessage),
-      conversationId,
-    });
-    if (!preflight.allowed) {
-      log.warn({ conversationId, requestId, reason: preflight.reason, reservationId: preflight.reservationId }, 'chatAction.usage_denied');
-      return failure(conversationId, requestId, 'usage_limited', usageLimitMessage(preflight.reason), false, false);
+    // A retry of an already answered request skips it: claimTurn replays the stored reply.
+    const answered = (await repository.aiTurns.listTurns(conversationId))
+      .some((turn) => turn.requestId === requestId && turn.stage === 'responded');
+    if (!answered) {
+      const preflight = await repository.usage.preflight({
+        kind: 'llm',
+        calls: 2,
+        estimatedCostUsd: 0,
+        inputChars: inputChars(userMessage),
+        conversationId,
+      });
+      if (!preflight.allowed) {
+        log.warn({ conversationId, requestId, reason: preflight.reason, reservationId: preflight.reservationId }, 'chatAction.usage_denied');
+        return failure(conversationId, requestId, 'usage_limited', usageLimitMessage(preflight.reason), false, false);
+      }
     }
 
     const claim = await repository.aiTurns.claimTurn({ conversationId, requestId, inputContent: userMessage });

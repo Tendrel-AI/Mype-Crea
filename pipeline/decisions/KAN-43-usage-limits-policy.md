@@ -42,7 +42,8 @@ there. There are no per-tenant overrides.
 - **Preflight.** Before a chat turn is claimed, the server action checks room for 2 LLM calls
   (Extractor + Responder) and the input cap. A deliverable command checks room for 1 image before
   any task row exists: generate, iterate, and retry. Approve and cancel are not checked. A denied
-  request leaves no turn and no task, only a `denied` ledger row.
+  request leaves no turn and no task, only a `denied` ledger row. A retry of a chat request that
+  was already answered skips the check and gets its stored reply, even over a limit.
 
 ## Exhaustion behavior
 
@@ -69,7 +70,9 @@ budget is exhausted.
   conversation, turn, attempt, and agent-task ids for that correlation.
 - **Two edge cases:**
   - A worker-side image denial is possible when two commands race past the preflight. It fails
-    the task as `usage_limited` (transient), and the card shows the generic failure copy.
+    the task as `usage_limited` (transient), and the card shows the image-limit message. The task
+    error does not carry the denial reason, so a rare tenant-budget denial there also shows the
+    image message. The next command's preflight shows the exact reason.
   - The Responder can be denied after the turn's effects are committed. That turn fails like any
     provider failure.
 - **Evals bypass the gateway.** The Extractor and Responder adapters fall back to an ungated

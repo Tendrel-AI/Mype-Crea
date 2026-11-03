@@ -90,6 +90,8 @@ export interface DeliverableStateView {
   readonly lastFailure: {
     readonly taskId: TaskId;
     readonly errorCategory: TaskErrorCategory | null;
+    /** The failed task's `error.kind` (e.g. `usage_limited`), so the card can explain it. */
+    readonly errorKind: string | null;
     /**
      * True only for `transient` failures: an identical retry is expected to
      * succeed. Reintentar itself is offered for every category (KAN-58); the
