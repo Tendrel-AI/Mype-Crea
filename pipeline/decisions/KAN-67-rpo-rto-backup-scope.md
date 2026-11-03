@@ -10,7 +10,7 @@ The owner approved the recommendation: **Option B**. This answers the open quest
    production migration. RTO ≤ 2 h. Both apply within pilot operating hours: **weekdays
    09:00–18:00 America/Lima**. Outside those hours there is no restore commitment.
 2. **Who.** The owner (Matias) both authorizes and executes every restore. A production restore
-   still needs his explicit authorization each time, and it is recorded in the restore log.
+   still needs their explicit authorization each time, and it is recorded in the restore log.
    Nobody else may restore production.
 3. **Where.** Independent dumps stay in **Railway's region**, with no copies elsewhere for now.
    To confirm with the owner when the dump job is

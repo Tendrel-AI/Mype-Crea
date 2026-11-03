@@ -86,9 +86,8 @@ measure the Extractor and Responder on demand (they cost tokens).
   `BUCKET_*` and scheduled backups are not yet set on every environment (KAN-83, operations
   guide §9). Production has no app deployment yet.
 - Readiness does not prove sign-in, LLM, image generation or the worker, nor that migrations ran.
-- The deploy step takes no backup; backup targets, RPO/RTO and a restore exercise are pending
-  (KAN-53 runbook in progress; KAN-67 proposed,
-  [`pipeline/decisions/KAN-67-rpo-rto-backup-scope.md`](../../pipeline/decisions/KAN-67-rpo-rto-backup-scope.md)).
+- The deploy step takes no backup, and production has no scheduled backups yet. Targets, runbook
+  and the local restore rehearsal are in [14-backup-restore.md](14-backup-restore.md).
 - The regulatory golden-set job (KAN-59) is not in CI yet.
 - Multi-replica worker behavior is not reviewed.
 

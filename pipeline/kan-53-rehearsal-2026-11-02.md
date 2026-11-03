@@ -120,7 +120,7 @@ RTO budget is dominated by human steps: getting the dump, rotating credentials, 
 | G6 | Railway volume backups restore in place (same project and environment), not into an isolated environment. An isolated restore needs the logical-dump path (this runbook) or PITR (not enabled) | KAN-53 / KAN-83 (decide whether to enable PITR) |
 | G7 | Retention and post-pilot deletion of backups and dumps are undecided. Railway's built-in retention (6 d / 27 d / 89 d) applies once enabled | KAN-67 (open item; institutional and legal input, Ley 29733) |
 | G8 | Production database size and PostgreSQL version not read (would need a database connection, which was out of scope). The client `pg_dump` must be ≥ the server's major version. The local restore target was 18.4; CI uses 16 | KAN-83 inventory |
-| G9 | Single operator: the owner both authorizes and executes. If he is unavailable during operating hours, the RTO cannot be met. Recorded as a risk of the approved decision. Whether it is accepted is for the owner to confirm | KAN-67 |
+| G9 | Single operator: the owner both authorizes and executes. If the owner is unavailable during operating hours, the RTO cannot be met. Recorded as a risk of the approved decision. Whether it is accepted is for the owner to confirm | KAN-67 |
 
 Not gaps: Redis is excluded by design (KAN-63 rescans `pending` tasks from PostgreSQL). WorkOS
 is the external identity system of record. Restored `users.workos_user_id` values stay valid as

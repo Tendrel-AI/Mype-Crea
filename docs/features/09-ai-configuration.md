@@ -67,7 +67,7 @@ tokens, and tenant admins see a usage summary. Logo images always come from fal.
   Enforced by `src/services/__tests__/llm-logger.test.ts` and `execution.test.ts` (KAN-69 A6).
   A logging failure never breaks the turn (same test file).
 - **Unknown cost stays unknown.** The summary reports `complete | partial | unknown |
-  no_attempts` and an `unconfigured` budget instead of inventing zeros. Enforced by
+  no_attempts`, and the budget as `within_budget | exhausted` against the KAN-43 limit, instead of inventing zeros. Enforced by
   `src/repos/__tests__/usage-summary.test.ts`.
 - **Releases are inert, hashed and secret-free.** Enforced by
   `src/services/ai-config/__tests__/manifest.test.ts`.
@@ -89,7 +89,7 @@ tokens, and tenant admins see a usage summary. Logo images always come from fal.
 
 - A fresh database has no release: a platform admin must capture, freeze and activate one before
   the first conversation, or new conversations fail.
-- Monetary budgets and usage caps are not enforced (KAN-43, in progress).
+- Monetary budgets and usage caps are enforced before each call ([13-usage-limits.md](13-usage-limits.md)).
 - A turn whose provider request may have been accepted becomes `uncertain` after its lease
   expires; this is a recoverable report, not an exactly-once guarantee.
 - The KAN-70 migration and repository integration test were not run against PostgreSQL when the

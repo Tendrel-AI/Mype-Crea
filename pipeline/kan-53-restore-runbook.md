@@ -5,7 +5,7 @@ Targets and roles come from KAN-67 (approved 2026-11-02,
 
 - **RPO ≤ 24 h**, and ≈0 for migration-induced loss (dump before every production migration).
 - **RTO ≤ 2 h**, within pilot operating hours: **weekdays 09:00–18:00 America/Lima**.
-- **The owner (Matias) authorizes and executes** every restore. A production restore needs his
+- **The owner (Matias) authorizes and executes** every restore. A production restore needs their
   explicit authorization each time. Write it in the restore log (§6) before step 1.
 - Dumps stay in Railway's region. No copies elsewhere. Retention is still open (Ley 29733), so
   delete nothing on a schedule.
