@@ -24,11 +24,15 @@ plain Spanish and offers at least one way out.
    command.
 3. **Send a command.** `app/actions/deliverable-command.ts:deliverableCommandAction`
    authenticates, checks the terms gate, authorizes the owner's pinned conversation, checks the
-   shape, and calls `OrchestratorCoreImpl.executeCommand`
+   shape (an exact key set: a forged actor or a smuggled brief field is refused), and calls `OrchestratorCoreImpl.executeCommand`
    (`src/core/orchestrator/orchestrator-core.ts`), which adds a per-conversation lock and an
-   in-memory replay cache.
+   in-memory replay cache. Every refused command, whether its shape, a foreign conversation or a
+   core rejection, is logged in `write_rejections`
+   ([05-auth-tenancy-isolation.md](05-auth-tenancy-isolation.md#write-catalog-and-rejection-log-kan-44)).
 4. **Re-validate on the server.** `src/core/orchestrator/deliverable-commands.ts:executeDeliverableCommand`
-   checks, in order: shape → durable replay (the command id is the task `idempotency_key`) →
+   checks, in order: shape → durable replay (the command id is the task `idempotency_key`; a
+   reused id with a different agent, kind or conversation is refused with
+   `COMMAND_MESSAGES.replayConflict`, KAN-44) →
    unknown agent → already-applied replays → `expectedState`/`stateToken` mismatch (`stale`) →
    not in the fresh `allowedCommands` (`not_allowed`) → command-specific checks. Rejections carry
    a neutral-Spanish message (`COMMAND_MESSAGES`) and the fresh states.
@@ -96,6 +100,8 @@ plain Spanish and offers at least one way out.
 
 ## Limits & known gaps
 
+- A durable replay compares the agent, the kind and the conversation, but not an Iterar's
+  observation or parameters. The in-process cache compares the whole command.
 - Retry and iteration have no per-deliverable cap; only the KAN-43 image and budget limits bound them ([13-usage-limits.md](13-usage-limits.md)).
 - Staleness does not yet compare the inputs each candidate was generated from with current
   approvals (future KAN-35 work).
