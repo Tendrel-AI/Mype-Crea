@@ -48,11 +48,14 @@ data within the tenant.
    `app.platform_monthly_metrics` (migration `migrations/1777500000000_platform_global_access.js`):
    per calendar month and organization, active users, new conversations, errors, provider/model
    calls and tokens, estimated cost, and active module versions.
+   Per-conversation metadata, the monthly random sample and the pilot metrics report (KAN-42) are
+   operator scripts over `globalRepos().trace`, never content: [15-trace-and-metrics.md](15-trace-and-metrics.md).
 6. **Audit trail.** `app/platform/audit/page.tsx` reads `platform_audit_events` through
    `getPlatformAuditTrail`; writes go through `src/repos/global-audit.ts:insertGlobalAuditEvent`.
    Tenant-level AI configuration changes are audited separately in `ai_config_audit_events`.
 7. **Tenant admin.** A tenant admin uses `/admin/ai` for the tenant's AI releases, provider
-   availability, usage summary and turn traces ([09-ai-configuration.md](09-ai-configuration.md)),
+   availability, usage summary, turn traces and the full trace of a member's conversation
+   (KAN-42) ([09-ai-configuration.md](09-ai-configuration.md)),
    and RLS lets them read (not write) their members' conversations and approvals.
 
 ## Key rules / invariants

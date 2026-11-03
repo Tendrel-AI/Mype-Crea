@@ -1,10 +1,8 @@
 'use server';
 
-import { resolveIdentity } from '../../src/auth/resolve-identity';
+import { repositoryActor, resolveIdentity } from '../../src/auth/resolve-identity';
 import { repos } from '../../src/repos';
-import { buildDefaultRegistry } from '../../src/core/orchestrator/bootstrap-registry';
 import type { ConversationId } from '../../src/core/contracts';
-import { clientDeliverableUrl } from '../../src/core/deliverable-url';
 import {
   CONVERSATION_NOT_FOUND_MESSAGE,
   CONVERSATIONS_UNAVAILABLE_MESSAGE,
@@ -96,7 +94,11 @@ export type ConversationTraceExportResult =
   | { readonly ok: true; readonly content: string }
   | { readonly ok: false; readonly code: 'conversation_unavailable'; readonly message: string };
 
-/** Export the caller's own persisted conversation and turn evidence. */
+/**
+ * KAN-42: export the conversation's full ordered trace (turns, attempts, LLM calls, messages,
+ * tasks, deliverables, approvals, usage, rejections). The owner and an active tenant admin of
+ * the same tenant get it; anyone else gets the same not-found answer as for a missing id.
+ */
 export async function exportConversationTraceAction(input: {
   readonly conversationId: string;
 }): Promise<ConversationTraceExportResult> {
@@ -105,49 +107,12 @@ export async function exportConversationTraceAction(input: {
   }
   try {
     const identity = await resolveIdentity();
-    const conversationId = input.conversationId as ConversationId;
-    const repository = repos(identity.tenant, identity.user);
-    const registry = buildDefaultRegistry();
-    const pin = await repository.conversations.readPinnedConversation(conversationId, registry.getFieldSchemas());
-    if (!pin) {
+    const timeline = await repos(identity.tenant, identity.user, repositoryActor(identity))
+      .trace.timeline(input.conversationId as ConversationId);
+    if (!timeline) {
       return { ok: false, code: 'conversation_unavailable', message: CONVERSATION_NOT_FOUND_MESSAGE };
     }
-
-    const [turns, messages, deliverables, release] = await Promise.all([
-      repository.aiTurns.listTurns(conversationId),
-      repository.messages.listByConversation(conversationId),
-      repository.deliverables.listByConversation(conversationId),
-      repository.aiConfig.getPinnedRelease(conversationId),
-    ]);
-    const turnEvidence = await Promise.all(turns.map(async (turn) => {
-      const [attempts, notices] = await Promise.all([
-        repository.aiTurns.listAttempts({ turnId: turn.id }),
-        repository.aiTurns.listNotices(turn.id),
-      ]);
-      return { turn, attempts, notices };
-    }));
-
-    return {
-      ok: true,
-      content: JSON.stringify({
-        conversation: {
-          id: conversationId,
-          configurationState: pin.state,
-          releaseId: pin.releaseId,
-          releaseContentHash: release?.contentHash ?? null,
-        },
-        turns: turnEvidence,
-        messages,
-        // The export is a client download too: no provider URL or bucket key for stored images.
-        // (JSON.stringify drops the undefined key.)
-        deliverables: deliverables.map((deliverable) => ({
-          ...deliverable,
-          contentUrl: clientDeliverableUrl(deliverable),
-          storageKey: undefined,
-        })),
-        exportedAt: new Date().toISOString(),
-      }, null, 2),
-    };
+    return { ok: true, content: JSON.stringify(timeline, null, 2) };
   } catch {
     return { ok: false, code: 'conversation_unavailable', message: 'No pudimos exportar esta conversación. Inténtalo de nuevo.' };
   }

@@ -10,6 +10,7 @@ import { agentTasksRepo, type AgentTasksRepo } from './agent-tasks';
 import { approvalsRepo, type ApprovalsRepo } from './approvals';
 import { refinementsRepo, type RefinementsRepo } from './refinements';
 import { conversationsRepo, type ConversationsRepo } from './conversations';
+import { conversationTraceRepo, type ConversationTraceRepo } from './conversation-trace';
 import { deliverablesRepo, type DeliverablesRepo } from './deliverables';
 import { llmCallsRepo, type LlmCallsRepo } from './llm-calls';
 import { identityRepo, type IdentityRepo } from './identity';
@@ -34,6 +35,7 @@ export interface Repos {
   readonly termsAcceptances: TermsAcceptancesRepo;
   readonly usage: UsageRepo;
   readonly writeRejections: WriteRejectionsRepo;
+  readonly trace: ConversationTraceRepo;
 }
 
 export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repos {
@@ -50,6 +52,7 @@ export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repo
     termsAcceptances: termsAcceptancesRepo(tenant, user),
     usage: usageRepo(tenant, user),
     writeRejections: writeRejectionsRepo(tenant, user),
+    trace: conversationTraceRepo(tenant, user, actor),
   };
 }
 

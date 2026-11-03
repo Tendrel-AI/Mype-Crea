@@ -34,9 +34,10 @@ conversación.» with **Ir a mi última conversación**.
    conversation pins the active AI release in the same transaction
    ([09-ai-configuration.md](09-ai-configuration.md)). `app/page.tsx` keys `CreaMype` by
    conversation id so a switch remounts it with fresh state.
-5. **Export.** `exportConversationTraceAction` lets an owner download their own conversation
-   evidence (messages, turns, attempts, notices, deliverables, pinned release identity), read
-   through owner-scoped repositories.
+5. **Export.** `exportConversationTraceAction` downloads the conversation's full ordered trace
+   (KAN-42, [15-trace-and-metrics.md](15-trace-and-metrics.md)). The owner gets it from
+   «Exportar» in the chat header; an active tenant admin of the same tenant gets it from
+   «Exportar conversación» in `/admin/ai`. Anyone else gets the not-found answer.
 
 ## Key rules / invariants
 

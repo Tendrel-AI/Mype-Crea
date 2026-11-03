@@ -403,3 +403,61 @@ Decided (KAN-18 / KAN-63, reversible local defaults):
 - Production scan interval, batch size, alerting, and process ownership.
 - When an `in_progress` task counts as stale, and who may retry it or mark it terminal.
 - Maximum attempts and backoff for image-provider failures.
+
+## 11. Trace, sampling and pilot metrics (KAN-42)
+
+Decided (owner, 2026-11-02, [`pipeline/decisions/KAN-42-trace-access-metrics.md`](../pipeline/decisions/KAN-42-trace-access-metrics.md)).
+Feature description: [`features/15-trace-and-metrics.md`](features/15-trace-and-metrics.md).
+
+**Who sees what.**
+
+| Reader | How | What |
+|---|---|---|
+| Conversation owner | «Exportar» in the chat header | The full ordered timeline, content included |
+| Active tenant admin, same tenant | «Exportar conversación» in `/admin/ai` (Trazas) | The same, plus other members' rows on that conversation (for example a forged write) |
+| Platform operator | `scripts/trace-report.ts` | Metadata and aggregates only: ids, timestamps, statuses, models, versions, latencies, tokens, costs. Never text, brief values, prompts or user ids |
+
+Everyone else gets the not-found answer. The timeline is assembled from existing tables; nothing
+new is stored.
+
+**Monthly random sample.** Run it by hand once a month (nothing is scheduled):
+
+```bash
+npx dotenv -e .env.local -- vite-node scripts/trace-report.ts sample \
+  --month 2026-10 --per-tenant 5 --actor <your WorkOS user id> --out trace-sample-2026-10.json
+```
+
+It picks up to N random conversations per tenant started in that month (America/Lima) and writes
+their metadata-only timelines to the file. Keep the file with the pilot evidence; it holds no
+conversation content. `--actor` must be an active platform superadmin; the database re-checks it.
+The script connects as `app_user` through `APP_DATABASE_URL`, so confirm which database
+`.env.local` points at first.
+
+**Pilot metrics report.**
+
+```bash
+npx dotenv -e .env.local -- vite-node scripts/trace-report.ts metrics \
+  --from 2026-10-01 --to 2026-11-01 --actor <your WorkOS user id> [--out report.json]
+```
+
+`--from`/`--to` are dates at 00:00 America/Lima (end exclusive). The report contains:
+
+| Metric | Definition | Reference |
+|---|---|---|
+| Load | Responded and not-responded turns, completed and failed tasks | — |
+| Interaction latency (count, mean, p50, p95) | Per responded turn, `ai_turns.created_at` → `completed_at` (server side) | p95 < 4 s (KAN-42 AC) |
+| Latency per deliverable (per agent) | Per completed task, `agent_tasks.created_at` → `completed_at` | — |
+| Mean cost per set | A set is a conversation with at least one completed deliverable. Its cost is every non-denied `usage_reservations` row of the conversation (settled amount, else the estimate) | USD 0.48, the thesis estimate. **Not approved as a cap** |
+| Own availability | Not measured (see below) | ≥ 99 % (KAN-42 AC) |
+
+Latencies and failure counts include only samples that started on weekdays 09:00–18:00
+America/Lima. Percentiles use the nearest-rank method. Set costs are not filtered by time of day.
+The report prints values next to their references and never states compliance; do not claim
+pilot compliance from it until the pilot has run under the agreed load.
+
+**Gap: own availability.** The database holds no uptime record, so it cannot be computed from
+existing data. To measure it, point an external uptime monitor at `GET /api/health` (liveness,
+no dependencies) every minute during operating hours. Keep third parties separate: track WorkOS,
+the LLM provider and fal.ai through their status pages or the `ai_turn_attempts` failure
+categories, not in the own-availability figure. Railway's healthcheck runs only during deploys,
+so it is not an availability record.
