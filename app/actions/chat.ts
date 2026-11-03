@@ -11,6 +11,8 @@ import { AiConfigRuntime, AiConfigExecutionError, type AttemptWriter } from '../
 import { captureSourceIdentity, createBaselineDraft } from '../../src/services/ai-config/baseline';
 import { ProviderRegistry } from '../../src/services/ai-config/provider-registry';
 import { loggerFor } from '../../src/services/logger';
+import { checkCurrentTerms } from '../../src/consent/gate';
+import { TERMS_REQUIRED_MESSAGE, TERMS_UNAVAILABLE_MESSAGE } from '../../src/consent/terms';
 
 const log = loggerFor('controller.chat');
 
@@ -54,6 +56,14 @@ export async function chatAction(params: {
     identity = await resolveIdentity();
   } catch {
     return failure(conversationId, requestId, 'identity_unavailable', 'No pudimos verificar el acceso de tu cuenta. Inténtalo de nuevo.', true, false);
+  }
+  // KAN-27: no conversation, turn or LLM work without acceptance of the current terms.
+  const terms = await checkCurrentTerms(identity);
+  if (terms === 'required') {
+    return failure(conversationId, requestId, 'terms_required', TERMS_REQUIRED_MESSAGE, false, false);
+  }
+  if (terms !== 'accepted') {
+    return failure(conversationId, requestId, 'terms_unavailable', TERMS_UNAVAILABLE_MESSAGE, true, false);
   }
   if (process.env.NODE_ENV !== 'test' && !process.env.REDIS_URL) {
     return failure(conversationId, requestId, 'durability_unavailable', 'El servicio de tareas duraderas no está disponible. Inténtalo más tarde.', true, false);

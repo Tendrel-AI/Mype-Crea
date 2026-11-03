@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => {
   const identity = { tenant: { id: 'tenant-1' }, user: { id: 'user-1' } };
   const readPinnedConversation = vi.fn<() => Promise<any>>(async () => ({ state: 'pinned' }));
-  const repos = vi.fn(() => ({ conversations: { readPinnedConversation } }));
+  const acceptedVersions = new Set<string>(['terminos-v1']);
+  const hasAccepted = vi.fn(async (version: string) => acceptedVersions.has(version));
+  const repos = vi.fn(() => ({ conversations: { readPinnedConversation }, termsAcceptances: { hasAccepted } }));
   const startConversation = vi.fn(async () => undefined);
   const executeCommand = vi.fn(async (command: { commandId: string; kind: string }) => ({
     ok: true,
@@ -14,7 +16,7 @@ const mocks = vi.hoisted(() => {
   }));
   const getDeliverableStates = vi.fn(async () => [{ agentId: 'logo-agent', state: 'enabled' }]);
   const resolveIdentity = vi.fn<() => Promise<any>>(async () => identity);
-  return { identity, readPinnedConversation, repos, startConversation, executeCommand, getDeliverableStates, resolveIdentity };
+  return { identity, acceptedVersions, hasAccepted, readPinnedConversation, repos, startConversation, executeCommand, getDeliverableStates, resolveIdentity };
 });
 
 vi.mock('../../../src/auth/resolve-identity', () => ({ resolveIdentity: mocks.resolveIdentity }));
@@ -34,6 +36,7 @@ vi.mock('../../../src/services/logger', () => ({
 }));
 
 import { deliverableCommandAction, loadDeliverableStatesAction } from '../deliverable-command';
+import { CURRENT_TERMS_VERSION, TERMS_REQUIRED_MESSAGE } from '../../../src/consent/terms';
 
 const CONVERSATION = '3f1c2a4e-9b7d-4c2e-8f10-0a1b2c3d4e5f';
 const COMMAND = '6a8f0d3e-1b2c-4d5e-8f90-123456789abc';
@@ -51,6 +54,31 @@ describe('deliverableCommandAction', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.readPinnedConversation.mockResolvedValue({ state: 'pinned' });
+    mocks.acceptedVersions.clear();
+    mocks.acceptedVersions.add('terminos-v1');
+  });
+
+  describe('KAN-27 consent gate', () => {
+    it.each([
+      ['never accepted', [] as string[]],
+      ['accepted only an older version', ['terminos-v0']],
+    ])('rejects a direct command when the user %s, before the core', async (_name, versions) => {
+      mocks.acceptedVersions.clear();
+      for (const version of versions) mocks.acceptedVersions.add(version);
+      const result = await deliverableCommandAction({ ...base, kind: 'generate' });
+      expect(result).toMatchObject({ ok: false, code: 'terms_required', reason: 'unavailable', message: TERMS_REQUIRED_MESSAGE });
+      expect(mocks.hasAccepted).toHaveBeenCalledWith(CURRENT_TERMS_VERSION);
+      expect(mocks.readPinnedConversation).not.toHaveBeenCalled();
+      expect(mocks.startConversation).not.toHaveBeenCalled();
+      expect(mocks.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the acceptance cannot be verified', async () => {
+      mocks.hasAccepted.mockRejectedValueOnce(new Error('db down'));
+      const result = await deliverableCommandAction({ ...base, kind: 'generate' });
+      expect(result).toMatchObject({ ok: false, code: 'terms_unavailable' });
+      expect(mocks.executeCommand).not.toHaveBeenCalled();
+    });
   });
 
   it('authorizes the owner, registers the conversation, and hands the typed command to the core', async () => {

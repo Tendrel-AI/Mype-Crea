@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   requireGlobalAdmin: vi.fn(),
   requireGlobalMfa: vi.fn(),
   resolveHomeConversation: vi.fn(),
+  currentTermsStatus: vi.fn(),
   redirect: vi.fn((to: string) => { throw new Error(`redirect:${to}`); }),
 }));
 
@@ -17,8 +18,11 @@ vi.mock('../../src/auth/resolve-identity', () => ({
 }));
 vi.mock('../../src/conversations/selection', () => ({ resolveHomeConversation: mocks.resolveHomeConversation }));
 vi.mock('../../components/CreaMype', () => ({ default: () => null }));
+vi.mock('../../components/crea-mype/TermsConsent', () => ({ TermsConsent: () => null }));
+vi.mock('../../src/consent/gate', () => ({ currentTermsStatus: mocks.currentTermsStatus }));
 
 import Home from '../page';
+import { CURRENT_TERMS } from '../../src/consent/terms';
 
 type Props = Record<string, unknown>;
 const page = (conversationId?: string | string[]) =>
@@ -31,6 +35,24 @@ describe('/ conversation selection (KAN-25)', () => {
     vi.clearAllMocks();
     mocks.withAuth.mockResolvedValue({ user: { email: 'ana@example.invalid', firstName: 'Ana', lastName: 'Quispe' } });
     mocks.requireGlobalAdmin.mockRejectedValue(new Error('not a platform admin'));
+    mocks.currentTermsStatus.mockResolvedValue('accepted');
+  });
+
+  it('KAN-27: shows the current terms before any conversation is selected or created', async () => {
+    mocks.currentTermsStatus.mockResolvedValueOnce('required');
+    const element = await page() as ReactElement<Props>;
+    expect(element.props).toEqual({ terms: CURRENT_TERMS });
+    expect(mocks.resolveHomeConversation).not.toHaveBeenCalled();
+  });
+
+  it('KAN-27: fails closed with an error when the acceptance cannot be verified', async () => {
+    mocks.currentTermsStatus.mockResolvedValueOnce('unavailable');
+    const element = await page(LIST[0].conversationId) as ReactElement<Props>;
+    expect(element.props).toMatchObject({
+      initialConversationId: '',
+      initialError: 'No pudimos verificar tu aceptación de los términos. Inténtalo de nuevo.',
+    });
+    expect(mocks.resolveHomeConversation).not.toHaveBeenCalled();
   });
 
   it('without an id, redirects to the conversation the server selected (resumed or new)', async () => {

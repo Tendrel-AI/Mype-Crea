@@ -29,6 +29,8 @@ import {
 } from '../../src/core/contracts';
 import { codePointLength } from '../../src/core/refinement';
 import { loggerFor } from '../../src/services/logger';
+import { checkCurrentTerms } from '../../src/consent/gate';
+import { TERMS_REQUIRED_MESSAGE, TERMS_UNAVAILABLE_MESSAGE } from '../../src/consent/terms';
 
 const log = loggerFor('controller.deliverable-command');
 
@@ -62,6 +64,8 @@ type ControllerFailureCode =
   | 'durability_unavailable'
   | 'conversation_unavailable'
   | 'legacy_unversioned'
+  | 'terms_required'
+  | 'terms_unavailable'
   | 'command_failed';
 
 /** Client input: plain JSON from the browser, validated here. */
@@ -96,7 +100,7 @@ export async function loadDeliverableStatesAction(input: {
 }): Promise<DeliverableStatesResult> {
   if (!isUuid(input.conversationId)) return { ok: false, code: 'invalid_request', message: MESSAGES.invalid };
   const conversationId = input.conversationId as ConversationId;
-  const authorized = await authorize(conversationId, { requireDurability: false });
+  const authorized = await authorize(conversationId, { requireDurability: false, requireTerms: false });
   if (!authorized.ok) return authorized;
   try {
     return { ok: true, states: await getOrchestrator().getDeliverableStates(conversationId) };
@@ -115,7 +119,8 @@ export async function deliverableCommandAction(
     return { ok: false, code: 'invalid_request', reason: 'invalid', message: parsed.message, states: [] };
   }
   const command = parsed.command;
-  const authorized = await authorize(command.conversationId, { requireDurability: true });
+  // Commands dispatch agents with the user's brief: KAN-27 consent is required.
+  const authorized = await authorize(command.conversationId, { requireDurability: true, requireTerms: true });
   if (!authorized.ok) {
     return { ok: false, code: authorized.code, reason: 'unavailable', message: authorized.message, states: [] };
   }
@@ -148,13 +153,18 @@ type Unauthorized = { readonly ok: false; readonly code: ControllerFailureCode; 
 /** Owner-scoped, pinned conversation; registers its owner with the core. */
 async function authorize(
   conversationId: ConversationId,
-  options: { readonly requireDurability: boolean },
+  options: { readonly requireDurability: boolean; readonly requireTerms: boolean },
 ): Promise<Authorized | Unauthorized> {
   let identity: ResolvedIdentity;
   try {
     identity = await resolveIdentity();
   } catch {
     return { ok: false, code: 'identity_unavailable', message: MESSAGES.identity };
+  }
+  if (options.requireTerms) {
+    const terms = await checkCurrentTerms(identity);
+    if (terms === 'required') return { ok: false, code: 'terms_required', message: TERMS_REQUIRED_MESSAGE };
+    if (terms !== 'accepted') return { ok: false, code: 'terms_unavailable', message: TERMS_UNAVAILABLE_MESSAGE };
   }
   if (options.requireDurability && process.env.NODE_ENV !== 'test' && !process.env.REDIS_URL) {
     return { ok: false, code: 'durability_unavailable', message: MESSAGES.durability };

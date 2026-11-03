@@ -3,6 +3,9 @@ import { redirect } from 'next/navigation';
 import CreaMype from '../components/CreaMype';
 import { resolveHomeConversation } from '../src/conversations/selection';
 import { requireGlobalAdmin, requireGlobalMfa } from '../src/auth/resolve-identity';
+import { TermsConsent } from '../components/crea-mype/TermsConsent';
+import { currentTermsStatus } from '../src/consent/gate';
+import { CURRENT_TERMS, TERMS_UNAVAILABLE_MESSAGE } from '../src/consent/terms';
 
 export default async function Home({
   searchParams,
@@ -20,6 +23,20 @@ export default async function Home({
   }
 
   const userName = [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email;
+  // KAN-27: the terms come before any conversation; the chat actions enforce it server-side too.
+  const terms = await currentTermsStatus();
+  if (terms === 'required') return <TermsConsent terms={CURRENT_TERMS} />;
+  if (terms === 'unavailable') {
+    return (
+      <CreaMype
+        key="terms-unavailable"
+        userEmail={user.email}
+        userName={userName}
+        initialConversationId=""
+        initialError={TERMS_UNAVAILABLE_MESSAGE}
+      />
+    );
+  }
   // KAN-25: one server-side decision. No id → most recent conversation (or a new one);
   // an id → that conversation only when the caller owns it, else the same «not found».
   const result = await resolveHomeConversation((await searchParams)?.conversationId);
