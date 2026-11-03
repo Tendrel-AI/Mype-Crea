@@ -20,10 +20,13 @@ describe('summarizeUsage', () => {
   it('reports complete cost accounting and the real monthly budget status (KAN-43)', () => {
     expect(summarizeUsage(aggregate(), budget)).toMatchObject({
       costAccountingStatus: 'complete',
-      budgetStatus: { state: 'within_budget', limitUsd: 30, committedUsd: 4.5, periodStart: budget.periodStart },
+      budgetStatus: { state: 'within_budget', limitUsd: 30, committedUsd: 4.5, remainingUsd: 25.5, periodStart: budget.periodStart },
       knownCost: 0.25,
     });
-    expect(summarizeUsage(aggregate(), { ...budget, committedUsd: 30 }).budgetStatus.state).toBe('exhausted');
+    expect(summarizeUsage(aggregate(), { ...budget, committedUsd: 30 }).budgetStatus).toMatchObject({ state: 'exhausted', remainingUsd: 0 });
+    // Concurrent reservations can settle a little above the cap; remaining never goes negative.
+    expect(summarizeUsage(aggregate(), { ...budget, committedUsd: 30.2 }).budgetStatus).toMatchObject({ state: 'exhausted', remainingUsd: 0 });
+    expect(summarizeUsage(aggregate(), { ...budget, committedUsd: 29.7 }).budgetStatus.remainingUsd).toBe(0.3);
   });
 
   it('distinguishes partial and wholly unknown cost accounting', () => {

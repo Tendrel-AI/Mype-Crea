@@ -38,6 +38,8 @@ export function summarizeUsage(
       state: budget.committedUsd >= USAGE_POLICY.tenantMonthlyBudgetUsd ? 'exhausted' : 'within_budget',
       limitUsd: USAGE_POLICY.tenantMonthlyBudgetUsd,
       committedUsd: budget.committedUsd,
+      // Rounded to the ledger's numeric(12,6) so 30 - 4.5 style float noise never shows.
+      remainingUsd: Math.max(0, Math.round((USAGE_POLICY.tenantMonthlyBudgetUsd - budget.committedUsd) * 1_000_000) / 1_000_000),
       periodStart: budget.periodStart,
     },
   };

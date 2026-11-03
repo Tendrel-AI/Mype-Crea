@@ -192,6 +192,9 @@ export interface BudgetStatus {
   readonly limitUsd: number;
   /** Reserved estimates plus settled real costs this calendar month. */
   readonly committedUsd: number;
+  /** limitUsd - committedUsd, never below 0. */
+  readonly remainingUsd: number;
+  /** Start of the calendar month in America/Lima, as an ISO instant. */
   readonly periodStart: string;
 }
 
