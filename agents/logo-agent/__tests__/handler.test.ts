@@ -69,6 +69,8 @@ describe('logo-agent handler', () => {
       purpose: 'logo',
     });
     expect(artifact.metadata?.prompt).toContain('Café Andino');
+    // KAN-43: the image is charged through the usage gate to this task's tenant.
+    expect(captured[0].usage).toEqual({ tenantId: '22222222-2222-2222-2222-222222222222', agentTaskId: '11111111-1111-1111-1111-111111111111' });
   });
 
   it('passes a prompt to the generator that includes business_name, style_keywords, and color_palette', async () => {

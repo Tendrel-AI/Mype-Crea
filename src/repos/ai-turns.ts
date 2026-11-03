@@ -27,6 +27,7 @@ import type { AiConfigManifestV1 } from '../services/ai-config/manifest';
 
 import type { RepositoryActor } from './ai-config';
 import { summarizeUsage } from './usage-summary';
+import { readUsageCounters } from './usage';
 
 interface TurnDbRow {
   readonly id: UUID;
@@ -247,6 +248,7 @@ async function queryUsage(tx: TxClient, tenantId: UUID, input: {
   );
 
   const row = result.rows[0];
+  const budget = await readUsageCounters(tx, tenantId, null);
   return summarizeUsage({
     attempts: row.attempts,
     inputTokens: row.input_tokens,
@@ -255,7 +257,7 @@ async function queryUsage(tx: TxClient, tenantId: UUID, input: {
     unknownOutputAttempts: row.unknown_output,
     knownCost: row.known_cost,
     unknownCostAttempts: row.unknown_cost_attempts,
-  });
+  }, budget);
 
 }
 async function deleteTurnContent(tx: TxClient, turnId: UUID): Promise<boolean> {

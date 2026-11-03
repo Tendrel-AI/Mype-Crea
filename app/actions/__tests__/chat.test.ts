@@ -29,8 +29,9 @@ const mocks = vi.hoisted(() => {
   // KAN-27: the caller's accepted terms versions (the fake applies the exact-version rule).
   const acceptedVersions = new Set<string>(['terminos-v1']);
   const hasAccepted = vi.fn(async (version: string) => acceptedVersions.has(version));
+  const preflight = vi.fn<(request: unknown) => Promise<any>>(async () => ({ allowed: true, reservationId: null }));
   const repository = {
-    conversations: { ensurePinnedConversation }, aiTurns, messages,
+    conversations: { ensurePinnedConversation }, aiTurns, messages, usage: { preflight },
     termsAcceptances: { hasAccepted },
     aiConfig: { getPinnedRelease: vi.fn(async () => undefined), getProviderAvailability: vi.fn(async () => ({ enabled: true, version: 0 })) },
   };
@@ -52,7 +53,7 @@ const mocks = vi.hoisted(() => {
     calls, identity, turn, snapshot, delta, decision, ensurePinnedConversation, claimTurn,
     ensureUserMessage, checkpointTurn, failTurn, completeTurn, listNotices, listTurns,
     repository, repos, startConversation, applyDelta, peekNextDecision, acknowledgeDecisions,
-    getSnapshot, extract, render, runPurpose, childInfo, acceptedVersions, hasAccepted,
+    getSnapshot, extract, render, runPurpose, childInfo, acceptedVersions, hasAccepted, preflight,
   };
 });
 
@@ -78,7 +79,7 @@ vi.mock('../../../src/services/ai-config/baseline', () => ({
 }));
 vi.mock('../../../src/services/ai-config/provider-registry', () => ({ ProviderRegistry: class {} }));
 vi.mock('../../../src/services/logger', () => ({
-  loggerFor: () => ({ child: () => ({ info: mocks.childInfo, error: mocks.childInfo }), info: mocks.childInfo, error: mocks.childInfo }),
+  loggerFor: () => ({ child: () => ({ info: mocks.childInfo, error: mocks.childInfo }), info: mocks.childInfo, error: mocks.childInfo, warn: mocks.childInfo }),
 }));
 
 import { chatAction } from '../chat';
@@ -97,6 +98,7 @@ describe('chatAction durable turn boundary', () => {
     mocks.acceptedVersions.clear();
     mocks.acceptedVersions.add('terminos-v1');
     mocks.hasAccepted.mockImplementation(async (version: string) => mocks.acceptedVersions.has(version));
+    mocks.preflight.mockResolvedValue({ allowed: true, reservationId: null });
     mocks.ensurePinnedConversation.mockResolvedValue({ state: 'pinned', snapshot: mocks.snapshot, releaseId: 'release-1' });
     mocks.claimTurn.mockResolvedValue({ kind: 'acquired', turn: { ...mocks.turn }, ownerToken: 'owner-1' });
     mocks.completeTurn.mockImplementation(async ({ responseContent }) => ({
@@ -121,6 +123,35 @@ describe('chatAction durable turn boundary', () => {
     expect(mocks.ensureUserMessage).toHaveBeenCalledWith(expect.objectContaining({ content: 'Quiero un logo' }));
     expect(mocks.checkpointTurn.mock.calls.map(([value]) => value.stage)).toEqual(['extracted', 'effects_started', 'effects_committed']);
     expect(mocks.completeTurn).toHaveBeenCalledWith(expect.objectContaining({ responseContent: '¡Listo!' }));
+  });
+
+  describe('KAN-43 usage preflight', () => {
+    it('asks for room for a whole turn (two calls) and the input cap before claiming it', async () => {
+      await chatAction(input);
+      expect(mocks.preflight).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'llm', calls: 2, inputChars: 'Quiero un logo'.length, conversationId: input.conversationId,
+      }));
+      expect(mocks.preflight.mock.invocationCallOrder[0]).toBeLessThan(mocks.claimTurn.mock.invocationCallOrder[0]);
+    });
+
+    it.each([
+      ['tenant_budget', 'Alcanzaste el límite de uso de este mes. Avísale al administrador de tu organización.'],
+      ['user_llm_hourly', 'Alcanzaste el límite de mensajes por hora. Espera un momento e inténtalo de nuevo.'],
+      ['input_too_long', 'Tu mensaje es demasiado largo. Escribe hasta 4000 caracteres.'],
+    ])('a %s denial returns the Spanish message and leaves no turn and no model call', async (reason, message) => {
+      mocks.preflight.mockResolvedValueOnce({ allowed: false, reason, reservationId: 'reservation-1' });
+      const result = await chatAction(input);
+      expect(result).toMatchObject({ ok: false, code: 'usage_limited', message, retryable: false });
+      expect(mocks.claimTurn).not.toHaveBeenCalled();
+      expect(mocks.ensureUserMessage).not.toHaveBeenCalled();
+      expect(mocks.runPurpose).not.toHaveBeenCalled();
+      expect(mocks.applyDelta).not.toHaveBeenCalled();
+    });
+
+    it('measures a long message in code points', async () => {
+      await chatAction({ ...input, userMessage: '😀'.repeat(4001) });
+      expect(mocks.preflight).toHaveBeenCalledWith(expect.objectContaining({ inputChars: 4001 }));
+    });
   });
 
   describe('KAN-27 consent gate', () => {

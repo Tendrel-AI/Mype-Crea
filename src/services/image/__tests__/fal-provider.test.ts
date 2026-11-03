@@ -6,10 +6,19 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { subscribeSpy, configSpy } = vi.hoisted(() => ({
+const { subscribeSpy, configSpy, reserveSpy, settleSpy } = vi.hoisted(() => ({
   subscribeSpy: vi.fn(),
   configSpy: vi.fn(),
+  reserveSpy: vi.fn(async () => ({ allowed: true, reservationId: 'reservation-1' })),
+  settleSpy: vi.fn(async () => true),
 }));
+
+// KAN-43: the production generator charges the task's conversation owner; keep it off the DB.
+vi.mock('../../../repos', () => ({
+  systemRepos: () => ({ agentTasks: { findById: async () => ({ conversationId: 'conversation-a' }) } }),
+  repos: () => ({ usage: { reserve: reserveSpy, settle: settleSpy } }),
+}));
+vi.mock('../../../repos/conversations', () => ({ getConversationOwnerUserId: async () => 'owner-a' }));
 
 vi.mock('@fal-ai/client', () => ({
   fal: {
@@ -42,7 +51,9 @@ describe('FalImageProvider', () => {
       data: { images: [{ url: 'https://fal.cdn/independent.png' }] },
     });
 
-    const result = await getImageGenerator().generate({ prompt: 'un logo', purpose: 'logo' });
+    const result = await getImageGenerator().generate({ prompt: 'un logo', purpose: 'logo', usage: { tenantId: 'tenant-a', agentTaskId: 'task-a' } });
+    expect(reserveSpy).toHaveBeenCalledWith(expect.objectContaining({ kind: 'image', agentTaskId: 'task-a', conversationId: 'conversation-a' }));
+    expect(settleSpy).toHaveBeenCalledWith(expect.objectContaining({ reservationId: 'reservation-1', outcome: 'succeeded' }));
 
     expect(configSpy).toHaveBeenCalledWith({ credentials: 'test-fal-key' });
     expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/nano-banana-2', {

@@ -31,10 +31,13 @@ import { codePointLength } from '../../src/core/refinement';
 import { loggerFor } from '../../src/services/logger';
 import { checkCurrentTerms } from '../../src/consent/gate';
 import { TERMS_REQUIRED_MESSAGE, TERMS_UNAVAILABLE_MESSAGE } from '../../src/consent/terms';
+import { usageLimitMessage } from '../../src/services/usage/policy';
 
 const log = loggerFor('controller.deliverable-command');
 
 const COMMAND_KINDS: ReadonlyArray<DeliverableCommandKind> = ['generate', 'iterate', 'approve', 'retry', 'cancel'];
+/** Commands that start an image generation (KAN-43 preflight). */
+const GENERATING_COMMANDS: ReadonlyArray<DeliverableCommandKind> = ['generate', 'iterate', 'retry'];
 const STATE_KINDS: ReadonlyArray<DeliverableStateKind> = [
   'blocked',
   'enabled',
@@ -66,6 +69,7 @@ type ControllerFailureCode =
   | 'legacy_unversioned'
   | 'terms_required'
   | 'terms_unavailable'
+  | 'usage_limited'
   | 'command_failed';
 
 /** Client input: plain JSON from the browser, validated here. */
@@ -125,6 +129,21 @@ export async function deliverableCommandAction(
     return { ok: false, code: authorized.code, reason: 'unavailable', message: authorized.message, states: [] };
   }
   try {
+    // KAN-43: refuse before any task row exists. The worker's reservation stays the guarantee.
+    if (GENERATING_COMMANDS.includes(command.kind)) {
+      const preflight = await repos(authorized.identity.tenant, authorized.identity.user).usage.preflight({
+        kind: 'image',
+        estimatedCostUsd: 0,
+        conversationId: command.conversationId,
+      });
+      if (!preflight.allowed) {
+        log.warn(
+          { conversationId: command.conversationId, kind: command.kind, commandId: command.commandId, reason: preflight.reason, reservationId: preflight.reservationId },
+          'deliverableCommand.usage_denied',
+        );
+        return { ok: false, code: 'usage_limited', reason: 'unavailable', message: usageLimitMessage(preflight.reason), states: [] };
+      }
+    }
     const result = await getOrchestrator().executeCommand(command);
     log.info(
       {

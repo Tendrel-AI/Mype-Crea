@@ -13,6 +13,7 @@ import { ProviderRegistry } from '../../src/services/ai-config/provider-registry
 import { loggerFor } from '../../src/services/logger';
 import { checkCurrentTerms } from '../../src/consent/gate';
 import { TERMS_REQUIRED_MESSAGE, TERMS_UNAVAILABLE_MESSAGE } from '../../src/consent/terms';
+import { inputChars, usageLimitMessage } from '../../src/services/usage/policy';
 
 const log = loggerFor('controller.chat');
 
@@ -87,6 +88,20 @@ export async function chatAction(params: {
       return failure(conversationId, requestId, 'legacy_unversioned', 'Esta conversación usa una configuración anterior. Inicia una conversación nueva para continuar.', false, false);
     }
     await orchestrator.startConversation(conversationId, identity.tenant.id as UUID, identity.user.id as UUID);
+
+    // KAN-43: input cap and room for a full turn (extractor + responder) before any turn row
+    // exists. Each provider call still reserves on its own; this only avoids half-run turns.
+    const preflight = await repository.usage.preflight({
+      kind: 'llm',
+      calls: 2,
+      estimatedCostUsd: 0,
+      inputChars: inputChars(userMessage),
+      conversationId,
+    });
+    if (!preflight.allowed) {
+      log.warn({ conversationId, requestId, reason: preflight.reason, reservationId: preflight.reservationId }, 'chatAction.usage_denied');
+      return failure(conversationId, requestId, 'usage_limited', usageLimitMessage(preflight.reason), false, false);
+    }
 
     const claim = await repository.aiTurns.claimTurn({ conversationId, requestId, inputContent: userMessage });
     if (claim.kind === 'conflict') {
@@ -203,7 +218,9 @@ export async function chatAction(params: {
       conversationId,
       requestId,
       executionError?.category ?? 'turn_failed',
-      executionError ? publicExecutionMessage(executionError.category) : 'No pudimos completar tu solicitud. Inténtalo de nuevo.',
+      executionError?.usageDenial
+        ? usageLimitMessage(executionError.usageDenial)
+        : executionError ? publicExecutionMessage(executionError.category) : 'No pudimos completar tu solicitud. Inténtalo de nuevo.',
       Boolean(executionError?.retryable),
       ambiguous,
     );
@@ -236,6 +253,7 @@ async function buildAiConfigRuntime(_identity: ResolvedIdentity): Promise<AiConf
           await scoped.aiTurns.recordNotice(input);
         },
       },
+      usage: scoped.usage,
     };
   };
   return new AiConfigRuntime(repositoriesFor, new ProviderRegistry(), {

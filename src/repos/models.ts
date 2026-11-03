@@ -166,7 +166,16 @@ export interface UsageSummary {
   readonly knownCost: number;
   readonly unknownCostAttempts: number;
   readonly costAccountingStatus: 'no_attempts' | 'complete' | 'partial' | 'unknown';
-  readonly budgetStatus: 'unconfigured';
+  readonly budgetStatus: BudgetStatus;
+}
+
+/** KAN-43: the tenant's monthly budget from the usage ledger (`usage_reservations`). */
+export interface BudgetStatus {
+  readonly state: 'within_budget' | 'exhausted';
+  readonly limitUsd: number;
+  /** Reserved estimates plus settled real costs this calendar month. */
+  readonly committedUsd: number;
+  readonly periodStart: string;
 }
 
 // ---------------------------------------------------------------------------

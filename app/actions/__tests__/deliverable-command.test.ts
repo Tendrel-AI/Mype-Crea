@@ -5,7 +5,8 @@ const mocks = vi.hoisted(() => {
   const readPinnedConversation = vi.fn<() => Promise<any>>(async () => ({ state: 'pinned' }));
   const acceptedVersions = new Set<string>(['terminos-v1']);
   const hasAccepted = vi.fn(async (version: string) => acceptedVersions.has(version));
-  const repos = vi.fn(() => ({ conversations: { readPinnedConversation }, termsAcceptances: { hasAccepted } }));
+  const preflight = vi.fn<(request: unknown) => Promise<any>>(async () => ({ allowed: true, reservationId: null }));
+  const repos = vi.fn(() => ({ conversations: { readPinnedConversation }, termsAcceptances: { hasAccepted }, usage: { preflight } }));
   const startConversation = vi.fn(async () => undefined);
   const executeCommand = vi.fn(async (command: { commandId: string; kind: string }) => ({
     ok: true,
@@ -16,7 +17,7 @@ const mocks = vi.hoisted(() => {
   }));
   const getDeliverableStates = vi.fn(async () => [{ agentId: 'logo-agent', state: 'enabled' }]);
   const resolveIdentity = vi.fn<() => Promise<any>>(async () => identity);
-  return { identity, acceptedVersions, hasAccepted, readPinnedConversation, repos, startConversation, executeCommand, getDeliverableStates, resolveIdentity };
+  return { identity, acceptedVersions, hasAccepted, preflight, readPinnedConversation, repos, startConversation, executeCommand, getDeliverableStates, resolveIdentity };
 });
 
 vi.mock('../../../src/auth/resolve-identity', () => ({ resolveIdentity: mocks.resolveIdentity }));
@@ -54,8 +55,33 @@ describe('deliverableCommandAction', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.readPinnedConversation.mockResolvedValue({ state: 'pinned' });
+    mocks.preflight.mockResolvedValue({ allowed: true, reservationId: null });
     mocks.acceptedVersions.clear();
     mocks.acceptedVersions.add('terminos-v1');
+  });
+
+  describe('KAN-43 image preflight', () => {
+    it.each([
+      ['generate', {}],
+      ['iterate', { deliverableId: DELIVERABLE, observation: 'Más azul' }],
+      ['retry', { failedTaskId: COMMAND }],
+    ])('denies %s at the daily image limit before the core', async (kind, extra) => {
+      mocks.preflight.mockResolvedValueOnce({ allowed: false, reason: 'user_image_daily', reservationId: 'reservation-1' });
+      const result = await deliverableCommandAction({ ...base, kind, ...extra } as never);
+      expect(result).toMatchObject({
+        ok: false, code: 'usage_limited', reason: 'unavailable',
+        message: 'Alcanzaste el límite de imágenes de hoy. Podrás generar más mañana.',
+      });
+      expect(mocks.preflight).toHaveBeenCalledWith(expect.objectContaining({ kind: 'image', conversationId: CONVERSATION }));
+      expect(mocks.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it.each(['approve', 'cancel'])('does not gate %s, which calls no provider', async (kind) => {
+      const extra = kind === 'approve' ? { deliverableId: DELIVERABLE, expectedApprovedId: null } : { taskId: COMMAND };
+      const result = await deliverableCommandAction({ ...base, kind, ...extra } as never);
+      expect(result.ok).toBe(true);
+      expect(mocks.preflight).not.toHaveBeenCalled();
+    });
   });
 
   describe('KAN-27 consent gate', () => {
