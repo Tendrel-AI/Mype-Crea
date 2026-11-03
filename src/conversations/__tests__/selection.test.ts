@@ -38,6 +38,8 @@ const mocks = vi.hoisted(() => ({
   listNotices: vi.fn(),
   listByConversation: vi.fn(),
   startConversation: vi.fn(async () => undefined),
+  getDeliverableStates: vi.fn(async (): Promise<unknown[]> => []),
+  executeCommand: vi.fn(),
   resolveIdentity: vi.fn(),
 }));
 
@@ -47,7 +49,11 @@ vi.mock('node:crypto', async (importOriginal) => ({
 }));
 vi.mock('../../auth/resolve-identity', () => ({ resolveIdentity: mocks.resolveIdentity }));
 vi.mock('../../core/orchestrator/runtime', () => ({
-  getOrchestrator: () => ({ startConversation: mocks.startConversation }),
+  getOrchestrator: () => ({
+    startConversation: mocks.startConversation,
+    getDeliverableStates: mocks.getDeliverableStates,
+    executeCommand: mocks.executeCommand,
+  }),
 }));
 vi.mock('../../core/orchestrator/bootstrap-registry', () => ({
   buildDefaultRegistry: () => ({ getFieldSchemas: () => [] }),
@@ -171,6 +177,22 @@ describe('resolveHomeConversation (KAN-25)', () => {
       conversations: OWN_LIST,
     });
     expect(mocks.listTurns).toHaveBeenCalledWith(ids.older);
+  });
+
+  it('KAN-30: a reload restores the task in progress and the deliverables from durable state, without dispatching anything', async () => {
+    const generating = { agentId: 'logo-agent', state: 'generating', activeTask: { taskId: 'task-2', status: 'in_progress', iteration: 2 }, candidates: [{ deliverableId: 'deliverable-1' }] };
+    mocks.getDeliverableStates.mockResolvedValueOnce([generating]);
+    const result = await resolveHomeConversation(ids.older);
+    expect(result).toMatchObject({ kind: 'open', history: { states: [generating] } });
+    expect(mocks.startConversation).toHaveBeenCalledWith(ids.older, 'tenant-a', 'user-a');
+    expect(mocks.getDeliverableStates).toHaveBeenCalledWith(ids.older);
+    expect(mocks.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('KAN-30: states that cannot be read leave the rest of the reload intact (the client reloads them)', async () => {
+    mocks.getDeliverableStates.mockRejectedValueOnce(new Error('db down'));
+    const result = await resolveHomeConversation(ids.older);
+    expect(result).toMatchObject({ kind: 'open', history: { states: [], turns: [{ requestId: 'request-1' }] } });
   });
 
   it('resumes a conversation with its persisted brief, as the panel shows it', async () => {
