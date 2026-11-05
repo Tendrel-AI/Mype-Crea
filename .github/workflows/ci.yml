@@ -102,12 +102,22 @@ jobs:
           DATABASE_URL: postgres://postgres:ci_postgres_password@localhost:5432/mype_crea_ci
           APP_DATABASE_URL: postgres://app_user:change_me_immediately@localhost:5432/mype_crea_ci
       - name: Verify cross-tenant isolation
-        run: npx vitest run src/core/__tests__/cross-tenant-isolation.integration.test.ts
+        run: >-
+          npx vitest run src/core/__tests__/cross-tenant-isolation.integration.test.ts
+          --reporter=default --reporter=junit
+          --outputFile.junit=test-results/cross-tenant-isolation.junit.xml
         env:
           DATABASE_URL: postgres://postgres:ci_postgres_password@localhost:5432/mype_crea_ci
           APP_DATABASE_URL: postgres://app_user:change_me_immediately@localhost:5432/mype_crea_ci
           LANGSMITH_TRACING: 'false'
           LOG_LEVEL: warn
+      - name: Upload isolation test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cross-tenant-isolation-report
+          path: test-results/cross-tenant-isolation.junit.xml
+          if-no-files-found: warn
 
   production-build:
     name: Production build
