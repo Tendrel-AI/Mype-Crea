@@ -15,12 +15,36 @@
  * step from prompt-build through generator return is logged with the
  * canonical `taskId` so the lifecycle is auditable end-to-end alongside the
  * worker's logs.
+ *
+ * Traceability (KAN-35): the artifact metadata records the brief fields the
+ * prompt actually used (`inputs`: value plus `inputVersion` fingerprint), so
+ * a later change to one of them marks this logo «Potencialmente
+ * desactualizado». Fields the prompt does not read never do.
+ *
+ * Safety (KAN-33): the image service's classifier result is recorded as
+ * `metadata.safety` (verdict + provenance). The handler does not judge it:
+ * a non-passed logo is still returned, stored and auditable, and every
+ * reader hides it and refuses its approval (src/core/deliverable-safety.ts).
+ *
+ * Failures: an image-generation error is returned as a failed A2ATaskResult
+ * whose `error.kind` is the typed kind from the image service
+ * (`content_policy`, `config_missing`, `rate_limited`, `timeout`, …), or
+ * `handler_threw` when the error carries no kind (architecture §2.5).
  */
 import type { AgentHandler } from '../../src/core/agent-types';
+import type { SafetyRecord } from '../../src/core/deliverable-safety';
+import { inputVersion } from '../../src/core/deliverable-inputs';
+import { taskErrorFromThrown } from '../../src/core/task-errors';
 import { getImageGenerator } from '../../src/services/image';
 import { loggerFor } from '../../src/services/logger';
 
 const log = loggerFor('agent.logo-agent');
+
+/** Recorded on every logo (KAN-29 provenance). Bump it when `buildLogoPrompt` wording changes. */
+export const LOGO_PROMPT_VERSION = 'logo-agent.v1';
+
+/** Brief fields `buildLogoPrompt` reads. */
+const INPUT_FIELDS = ['business_name', 'style_keywords', 'color_palette'] as const;
 
 interface LogoRequirements {
   readonly business_name: string;
@@ -28,7 +52,15 @@ interface LogoRequirements {
   readonly color_palette?: string;
 }
 
-export function buildLogoPrompt(reqs: LogoRequirements): string {
+/**
+ * Build the image prompt. For an «Iterar» task (KAN-28 / KAN-65 R2) the
+ * user's anchored observations are appended as a quoted, flattened note.
+ * They are untrusted text: only quoted as visual guidance, never parsed.
+ */
+export function buildLogoPrompt(
+  reqs: LogoRequirements,
+  refinement?: { readonly observations?: ReadonlyArray<string> },
+): string {
   const parts = [
     `Diseña un logo profesional para el negocio "${reqs.business_name}".`,
     `Estilo: ${reqs.style_keywords}.`,
@@ -36,8 +68,27 @@ export function buildLogoPrompt(reqs: LogoRequirements): string {
   if (reqs.color_palette) {
     parts.push(`Paleta de colores: ${reqs.color_palette}.`);
   }
+  const notes = (refinement?.observations ?? []).map(flattenObservation).filter((note) => note.length > 0);
+  if (notes.length > 0) {
+    parts.push(`Ajustes pedidos sobre la versión anterior: ${notes.map((note) => `"${note}"`).join('; ')}.`);
+  }
   parts.push('Limpio, vectorizado, alta resolución, sin texto adicional.');
   return parts.join(' ');
+}
+
+/** One line, no double quotes, so a note cannot break out of its quotes. */
+function flattenObservation(observation: string): string {
+  return observation.replace(/["“”]/g, "'").replace(/\s+/g, ' ').trim();
+}
+
+/** `{ field: { value, version } }` for every filled field the prompt reads. */
+export function usedInputs(requirements: Readonly<Record<string, unknown>>): Record<string, { value: string; version: string }> {
+  return Object.fromEntries(
+    INPUT_FIELDS.flatMap((name) => {
+      const value = requirements[name];
+      return typeof value === 'string' && value.trim().length > 0 ? [[name, { value, version: inputVersion(value) }]] : [];
+    }),
+  );
 }
 
 export const handler: AgentHandler<undefined> = async (message) => {
@@ -60,27 +111,36 @@ export const handler: AgentHandler<undefined> = async (message) => {
     'agent.logo.start',
   );
 
-  const prompt = buildLogoPrompt(reqs);
+  const prompt = buildLogoPrompt(reqs, message.iteration);
   child.info({ promptLength: prompt.length }, 'agent.logo.prompt_built');
 
   const startedAt = Date.now();
   let url: string;
   let providerId: string;
   let modelId: string;
+  let safety: SafetyRecord;
   try {
     const result = await getImageGenerator().generate({
       prompt,
       purpose: 'logo',
+      usage: { tenantId: message.tenantId, agentTaskId: message.taskId },
     });
     url = result.url;
     providerId = result.providerId;
     modelId = result.modelId;
+    safety = result.safety;
   } catch (err) {
+    const error = taskErrorFromThrown(err);
     child.error(
-      { err, durationMs: Date.now() - startedAt },
+      { err, errorKind: error.kind, durationMs: Date.now() - startedAt },
       'agent.logo.image_generation_failed',
     );
-    throw err;
+    return {
+      status: 'failed',
+      taskId: message.taskId,
+      error,
+      completedAt: new Date().toISOString(),
+    };
   }
 
   child.info(
@@ -89,6 +149,7 @@ export const handler: AgentHandler<undefined> = async (message) => {
       modelId,
       durationMs: Date.now() - startedAt,
       hasUrl: Boolean(url),
+      safetyVerdict: safety.verdict,
     },
     'agent.logo.image_generated',
   );
@@ -100,7 +161,16 @@ export const handler: AgentHandler<undefined> = async (message) => {
       {
         kind: 'image',
         url,
-        metadata: { provider: providerId, model: modelId, prompt, purpose: 'logo' },
+        metadata: {
+          provider: providerId,
+          model: modelId,
+          prompt,
+          purpose: 'logo',
+          inputs: usedInputs(message.requirements),
+          promptVersion: LOGO_PROMPT_VERSION,
+          agentCardVersion: message.agentCardVersion,
+          safety,
+        },
       },
     ],
     completedAt: new Date().toISOString(),

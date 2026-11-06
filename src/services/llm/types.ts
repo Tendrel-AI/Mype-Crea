@@ -1,35 +1,69 @@
-/**
- * LLM provider abstraction.
- *
- * Callers identify what they need by *purpose* (extractor vs responder), not
- * by model id. The provider maps purpose to a concrete OpenAI-compatible
- * client + model id. Adding a new provider (Anthropic-direct, OpenAI-direct,
- * a fake for tests) means adding a new ILLMProvider implementation; nothing
- * else changes.
- *
- * Returning the OpenAI client here is a controlled leak: the entire codebase
- * — including withLlmLogging — speaks the OpenAI protocol, and OpenRouter
- * exposes that protocol natively. Wrapping it in a custom IChatClient would
- * be ceremony with no payoff.
- */
-import type OpenAI from 'openai';
+/** Provider-neutral chat protocol consumed by adapters and the audit logger. */
+/** `naming` (KAN-31, KAN-32): name-agent and tagline-agent candidates; it uses the extractor's default model (forced tool call). */
+export type ModelPurpose = 'extractor' | 'responder' | 'naming';
+export type ProviderModelIds = Partial<Record<ModelPurpose, string>>;
 
-/**
- * What the model is being asked to do, NOT which model is configured. Layer
- * 1 of the orchestrator (the FieldDelta extractor) wants a fast, cheap model;
- * layer 4 (the conversational responder) wants a more capable one.
- */
-export type ModelPurpose = 'extractor' | 'responder';
+export type ChatMessage = {
+  readonly role: 'system' | 'developer' | 'user' | 'assistant';
+  readonly content: string;
+};
+
+export type ChatToolChoice =
+  | 'auto'
+  | 'none'
+  | 'required'
+  | { readonly type: 'function'; readonly function: { readonly name: string } }
+  | { readonly type: 'auto' | 'none' | 'required' };
+
+export interface ChatRequest {
+  readonly model: string;
+  readonly messages: ReadonlyArray<ChatMessage>;
+  readonly temperature?: number;
+  readonly max_tokens?: number;
+  readonly tools?: ReadonlyArray<Record<string, unknown>>;
+  readonly tool_choice?: ChatToolChoice;
+  readonly [key: string]: unknown;
+}
+
+export interface ChatToolCall {
+  readonly type: 'function';
+  readonly function: {
+    readonly name: string;
+    readonly arguments: string;
+  };
+}
+
+export interface ChatCompletion {
+  readonly id: string;
+  readonly model?: string;
+  readonly choices: ReadonlyArray<{
+    readonly message: {
+      readonly role: 'assistant';
+      readonly content: string | null;
+      readonly tool_calls?: ReadonlyArray<ChatToolCall>;
+    };
+    readonly finish_reason: string | null;
+  }>;
+  readonly usage?: {
+    readonly prompt_tokens: number;
+    readonly completion_tokens: number;
+    readonly total_tokens?: number;
+  };
+}
+
+export interface IChatClient {
+  readonly chat: {
+    readonly completions: {
+      create(params: ChatRequest): Promise<ChatCompletion>;
+    };
+  };
+}
 
 export interface ResolvedModel {
-  readonly client: OpenAI;
+  readonly client: IChatClient;
   readonly modelId: string;
   readonly purpose: ModelPurpose;
-  /**
-   * Optional pinned revision string. When set, callers should pass it to
-   * withLlmLogging so the llm_calls audit row records the served revision
-   * rather than just the configured id.
-   */
+  readonly provider?: 'openrouter' | 'anthropic';
   readonly modelRevision?: string;
 }
 

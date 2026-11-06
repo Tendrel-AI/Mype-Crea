@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [developer]
+  push:
+    branches: [developer]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run ESLint
+        run: npm run lint
+
+  typecheck:
+    name: TypeScript
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Check TypeScript
+        run: npx tsc --noEmit
+
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run unit tests
+        run: npx vitest run --exclude '**/*.integration.test.ts' --exclude 'evals/**'
+        env:
+          LANGSMITH_TRACING: 'false'
+          LOG_LEVEL: warn
+
+  database-migrations:
+    name: Database migrations
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: mype_crea_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_postgres_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d mype_crea_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply database migrations
+        run: npx node-pg-migrate up
+        env:
+          DATABASE_URL: postgres://postgres:ci_postgres_password@localhost:5432/mype_crea_ci
+      - name: Verify app_user role and connection
+        run: node scripts/ci-db-check.mjs
+        env:
+          DATABASE_URL: postgres://postgres:ci_postgres_password@localhost:5432/mype_crea_ci
+          APP_DATABASE_URL: postgres://app_user:change_me_immediately@localhost:5432/mype_crea_ci
+      - name: Verify cross-tenant isolation
+        run: >-
+          npx vitest run src/core/__tests__/cross-tenant-isolation.integration.test.ts
+          --reporter=default --reporter=junit
+          --outputFile.junit=test-results/cross-tenant-isolation.junit.xml
+        env:
+          DATABASE_URL: postgres://postgres:ci_postgres_password@localhost:5432/mype_crea_ci
+          APP_DATABASE_URL: postgres://app_user:change_me_immediately@localhost:5432/mype_crea_ci
+          LANGSMITH_TRACING: 'false'
+          LOG_LEVEL: warn
+      - name: Upload isolation test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cross-tenant-isolation-report
+          path: test-results/cross-tenant-isolation.junit.xml
+          if-no-files-found: warn
+
+  production-build:
+    name: Production build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build Next.js application
+        run: npm run build
+        env:
+          LANGSMITH_TRACING: 'false'

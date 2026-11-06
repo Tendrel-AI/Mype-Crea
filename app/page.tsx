@@ -1,35 +1,83 @@
 import { withAuth } from '@workos-inc/authkit-nextjs';
+import { redirect } from 'next/navigation';
 import CreaMype from '../components/CreaMype';
-import { resolveIdentity } from '../src/auth/resolve-identity';
-import { loggerFor } from '../src/services/logger';
+import { resolveHomeConversation } from '../src/conversations/selection';
+import { requireGlobalAdmin, requireGlobalMfa } from '../src/auth/resolve-identity';
+import { TermsConsent } from '../components/crea-mype/TermsConsent';
+import { currentTermsStatus } from '../src/consent/gate';
+import { CURRENT_TERMS, TERMS_UNAVAILABLE_MESSAGE } from '../src/consent/terms';
 
-const log = loggerFor('controller.home');
-
-export default async function Home() {
-  log.info('home.render.start');
+export default async function Home({
+  searchParams,
+}: {
+  readonly searchParams?: Promise<{ readonly conversationId?: string | string[] }>;
+}) {
   const { user } = await withAuth();
-  if (!user) {
-    log.info('home.render.no_user_redirect');
-    return null;
-  }
-  log.info({ workosUserId: user.id, email: user.email }, 'home.render.workos_user');
-
-  // Ensure a `users` row exists for this WorkOS identity before the chat UI
-  // mounts. Subsequent chatAction calls reuse the row instead of upserting
-  // mid-request. If this throws, surface it to the terminal — Next.js will
-  // otherwise show a generic error overlay with no signal of the cause.
-  try {
-    const identity = await resolveIdentity();
-    log.info(
-      { tenantId: identity.tenant.id, userId: identity.user.id },
-      'home.render.identity_resolved',
-    );
-  } catch (err) {
-    log.error({ err: (err as Error).message, stack: (err as Error).stack }, 'home.render.resolve_identity_failed');
-    throw err;
+  if (!user) return null;
+  let isGlobalAdmin = false;
+  try { await requireGlobalAdmin(); isGlobalAdmin = true; } catch { /* Tenant access is checked by its server actions. */ }
+  if (isGlobalAdmin) {
+    let hasRecentMfa = false;
+    try { await requireGlobalMfa(); hasRecentMfa = true; } catch { /* Route global users through step-up. */ }
+    redirect(hasRecentMfa ? '/platform' : '/platform/mfa');
   }
 
   const userName = [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email;
+  // KAN-27: the terms come before any conversation; the chat actions enforce it server-side too.
+  const terms = await currentTermsStatus();
+  if (terms === 'required') return <TermsConsent terms={CURRENT_TERMS} />;
+  if (terms === 'unavailable') {
+    return (
+      <CreaMype
+        key="terms-unavailable"
+        userEmail={user.email}
+        userName={userName}
+        initialConversationId=""
+        initialError={TERMS_UNAVAILABLE_MESSAGE}
+      />
+    );
+  }
+  // KAN-25: one server-side decision. No id → most recent conversation (or a new one);
+  // an id → that conversation only when the caller owns it, else the same «not found».
+  const result = await resolveHomeConversation((await searchParams)?.conversationId);
 
-  return <CreaMype userEmail={user.email} userName={userName} />;
+  switch (result.kind) {
+    case 'redirect':
+      return redirect(`/?conversationId=${encodeURIComponent(result.conversationId)}`);
+    case 'open':
+      return (
+        <CreaMype
+          key={result.history.conversationId}
+          userEmail={user.email}
+          userName={userName}
+          initialConversationId={result.history.conversationId}
+          initialTurns={result.history.turns}
+          initialDeliverables={result.history.deliverables}
+          initialBrief={result.history.brief}
+          initialStates={result.history.states}
+          initialConversations={result.conversations}
+        />
+      );
+    case 'not_found':
+      return (
+        <CreaMype
+          key="conversation-not-found"
+          userEmail={user.email}
+          userName={userName}
+          initialConversationId=""
+          initialConversations={result.conversations}
+          conversationNotFound
+        />
+      );
+    case 'error':
+      return (
+        <CreaMype
+          key="conversation-error"
+          userEmail={user.email}
+          userName={userName}
+          initialConversationId=""
+          initialError={result.message}
+        />
+      );
+  }
 }

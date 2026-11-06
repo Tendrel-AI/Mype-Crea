@@ -5,22 +5,38 @@
  * aren't set, and a `resetProvider()` for tests that need to swap in a fake.
  */
 import { OpenRouterProvider } from './openrouter-provider';
+import { AnthropicProvider } from './anthropic-provider';
 import type { ILLMProvider } from './types';
 
 export type { ILLMProvider, ModelPurpose, ResolvedModel } from './types';
+export type LLMProviderName = 'openrouter' | 'anthropic';
 
 let provider: ILLMProvider | undefined;
 
 export function getProvider(): ILLMProvider {
   if (provider) return provider;
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      'OPENROUTER_API_KEY is not set. The LLM provider requires an OpenRouter API key.',
-    );
+  const selected = selectedProviderName();
+  const apiKey = selected === 'anthropic'
+    ? process.env.ANTHROPIC_API_KEY
+    : process.env.OPENROUTER_API_KEY;
+  const keyName = selected === 'anthropic'
+    ? 'ANTHROPIC_API_KEY'
+    : 'OPENROUTER_API_KEY';
+  if (!apiKey?.trim()) {
+    throw new Error(`${keyName} is required when LLM_PROVIDER=${selected}.`);
   }
-  provider = new OpenRouterProvider(apiKey);
+  provider = selected === 'anthropic'
+    ? new AnthropicProvider(apiKey.trim())
+    : new OpenRouterProvider(apiKey.trim());
   return provider;
+}
+
+export function selectedProviderName(): LLMProviderName {
+  const selected = process.env.LLM_PROVIDER ?? 'anthropic';
+  if (selected !== 'openrouter' && selected !== 'anthropic') {
+    throw new Error('LLM_PROVIDER must be "openrouter" or "anthropic".');
+  }
+  return selected;
 }
 
 /** Test hook: swap in a fake or clear the cached singleton. */

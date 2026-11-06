@@ -3,7 +3,15 @@ node_modules/
 coverage/
 .DS_Store
 *.log
-CLAUDE.md
-/claude/*
 .env*
 !.env.example
+
+# Local-only agent context (never pushed to GitHub)
+AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
+/claude/
+/.claude/
+/docs/agents/
+/docs/capstone/
+

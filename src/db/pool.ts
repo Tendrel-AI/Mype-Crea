@@ -8,7 +8,7 @@
  * PgBouncer transaction-pooling notes:
  *   - Every DB operation must run inside an explicit transaction so the
  *     `app.tenant_id` / `app.user_id` GUCs we set with set_config(..., true)
- *     reset between tasks. See claude/skills/database/SKILL.md.
+ *     reset between tasks. See docs/agents/database.md.
  *   - Do not use protocol-level prepared statements (do not pass `name:` to
  *     query). Parameterized queries with $1/$2 are fine — those are
  *     parameter bindings, not prepared-statement caches.

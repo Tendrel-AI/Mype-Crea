@@ -1,1 +1,0 @@
-{"nodes": [{"id": "migration_extensions", "label": "Migration: extensions (pgcrypto, citext)", "file_type": "code", "source_file": "migrations/1777045461476_extensions.js", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

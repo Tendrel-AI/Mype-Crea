@@ -117,6 +117,79 @@ SUITE('agent_tasks repository (integration)', () => {
     expect(winners[0]!.attempts).toBe(1);
   });
 
+  it('lists only due pending dispatches for the requested agent within the limit', async () => {
+    const conversationId = await newConversation();
+    const sys = systemRepos({ id: tenantId });
+    const insert = (agentId: string, scheduledFor?: string) => sys.agentTasks.insertRoot({
+      conversationId,
+      agentId,
+      agentCardVersion: '1.0.0',
+      idempotencyKey: randomUUID(),
+      requirementsSnapshot: {},
+      scheduledFor,
+    });
+
+    await Promise.all([
+      insert('logo-agent'),
+      insert('logo-agent'),
+      insert('other-agent'),
+      insert('logo-agent', new Date(Date.now() + 60_000).toISOString()),
+    ]);
+
+    const rows = await sys.agentTasks.listPendingDispatches({ agentId: 'logo-agent', limit: 2 });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.agentId === 'logo-agent' && row.status === 'pending')).toBe(true);
+    expect(rows.every((row) => Date.parse(row.scheduledFor) <= Date.now())).toBe(true);
+  });
+
+  it('claimById with an agent id leaves a task for another agent pending', async () => {
+    const conversationId = await newConversation();
+    const sys = systemRepos({ id: tenantId });
+    const row = await sys.agentTasks.insertRoot({
+      conversationId,
+      agentId: 'tagline-agent',
+      agentCardVersion: '1.0.0',
+      idempotencyKey: randomUUID(),
+      requirementsSnapshot: {},
+    });
+
+    expect(await sys.agentTasks.claimById(row.id, 'logo-agent')).toBeNull();
+    expect((await sys.agentTasks.findById(row.id))?.status).toBe('pending');
+    const owned = await sys.agentTasks.claimById(row.id, 'tagline-agent');
+    expect(owned?.status).toBe('in_progress');
+  });
+
+  it('durably settles a failed task with its error detail and classified category (KAN-58)', async () => {
+    const conversationId = await newConversation();
+    const sys = systemRepos({ id: tenantId });
+    const row = await sys.agentTasks.insertRoot({
+      conversationId,
+      agentId: 'logo-agent',
+      agentCardVersion: '1.0.0',
+      idempotencyKey: randomUUID(),
+      requirementsSnapshot: {},
+    });
+    await sys.agentTasks.claimById(row.id, 'logo-agent');
+
+    const settled = await repos({ id: tenantId }, { id: userId }).aiTurns.settleTaskAndEnqueue({
+      conversationId,
+      taskId: row.id,
+      state: 'failed',
+      deliverableKind: 'logo',
+      artifacts: [],
+      error: { kind: 'content_policy', message: 'synthetic safety rejection' },
+      errorCategory: 'content_policy',
+    });
+
+    expect(settled.deliverableIds).toEqual([]);
+    const stored = await sys.agentTasks.findById(row.id);
+    expect(stored).toMatchObject({
+      status: 'failed',
+      errorCategory: 'content_policy',
+      error: { kind: 'content_policy', message: 'synthetic safety rejection' },
+    });
+  });
+
   it('rejects JSONB writes that embed a UUID not visible under the current tenant', async () => {
     const conversationId = await newConversation();
     const sys = systemRepos({ id: tenantId });

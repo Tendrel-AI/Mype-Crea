@@ -30,6 +30,10 @@
     "displayOrder": 4,
     "outputPreview": "label"
   },
+  "mypes:deliverable": {
+    "kind": "label",
+    "dependsOn": []
+  },
   "supportedInterfaces": [
     { "protocol": "local", "module": "agents/label-agent/handler.ts" }
   ]

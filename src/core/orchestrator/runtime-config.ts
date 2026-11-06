@@ -16,14 +16,12 @@ import { ChatInputAdapter } from '../../adapters/chat-input-adapter';
 import { ChatOutputAdapter } from '../../adapters/chat-output-adapter';
 import type { DeliverableId, TaskId, UUID } from '../contracts';
 import type { IAgentTransport, TaskState } from '../agent-types';
+import type { IApprovalStore } from '../approvals';
+import type { IDeliverableWorkflowStore } from './deliverable-workflow';
 import type { AgentRegistry } from './agent-registry';
 import type { IConversationStore } from './in-memory-store';
 import type { IArtifactNotifier } from './artifact-notifier';
-import {
-  type AgentTasksRepoLike,
-  type IDecisionNotifier,
-  OrchestratorCoreImpl,
-} from './orchestrator-core';
+import { type IDecisionNotifier, OrchestratorCoreImpl } from './orchestrator-core';
 
 /** What `buildRuntime` returns — the wired set callers consume. */
 export interface Runtime {
@@ -41,7 +39,17 @@ export type OnTaskSettled = (
   taskId: TaskId,
   state: TaskState,
   deliverableIds: ReadonlyArray<DeliverableId>,
-) => void;
+  context?: TaskSettlementContext,
+) => Promise<void> | void;
+
+/** Server-verified task ownership recovered from the canonical task/conversation rows. */
+export interface TaskSettlementContext {
+  readonly tenantId: UUID;
+  readonly conversationId: UUID;
+  readonly ownerUserId: UUID;
+  readonly agentId: string;
+  readonly durableSettlement?: true;
+}
 
 /** Inputs to `buildRuntime`. Every field is replaceable. */
 export interface RuntimeConfig {
@@ -50,7 +58,10 @@ export interface RuntimeConfig {
   readonly newTaskId: () => TaskId;
   readonly decisionNotifier: IDecisionNotifier;
   readonly artifactNotifier?: IArtifactNotifier;
-  readonly agentTasksFor?: (tenantId: UUID) => AgentTasksRepoLike;
+  /** Deliverable workflow store (tasks + candidates); omitted -> in-memory. */
+  readonly workflowFor?: (tenantId: UUID, userId: UUID) => IDeliverableWorkflowStore;
+  /** Approval store (KAN-34 port); omitted -> in-memory. */
+  readonly approvalsFor?: (tenantId: UUID, userId: UUID) => IApprovalStore;
   /**
    * Build the agent transport. The factory receives the unified
    * `onTaskSettled` callback; the transport (or any workers it spawns) must
@@ -66,8 +77,8 @@ export interface RuntimeConfig {
  */
 export function buildRuntime(config: RuntimeConfig): Runtime {
   let coreRef: OrchestratorCoreImpl | null = null;
-  const onTaskSettled: OnTaskSettled = (taskId, state, deliverableIds) => {
-    void coreRef?.onTaskSettled(taskId, state, deliverableIds);
+  const onTaskSettled: OnTaskSettled = async (taskId, state, deliverableIds, context) => {
+    await coreRef?.onTaskSettled(taskId, state, deliverableIds, context);
   };
 
   const transport = config.transportFactory(onTaskSettled);
@@ -79,7 +90,8 @@ export function buildRuntime(config: RuntimeConfig): Runtime {
     notifier: config.decisionNotifier,
     artifactNotifier: config.artifactNotifier,
     newTaskId: config.newTaskId,
-    agentTasksFor: config.agentTasksFor,
+    workflowFor: config.workflowFor,
+    approvalsFor: config.approvalsFor,
   });
   coreRef = core;
 

@@ -11,20 +11,14 @@
  * The lifecycle channel is for status feedback ("is the agent still working?").
  * Three channels keep each consumer narrow and let the planner stay pure.
  *
- * In-process implementation today; production replaces with a Redis
- * pub/sub-backed implementation when the SSE route and the workers run in
- * different processes (see redis-agent-lifecycle-notifier.ts).
+ * The payload is the `task_processing` kind of the notification contract
+ * (`src/core/contracts/notifications.ts`).
  */
-import { EventEmitter } from 'node:events';
-import type { AgentId, ConversationId, TaskId } from '../contracts';
+import type { ConversationId } from '../contracts';
+import type { NotificationPayload } from '../contracts/notifications';
+import { InProcessNotificationChannel, type NotificationChannel } from './notification-channels';
 
-export interface AgentTaskProcessingEvent {
-  readonly conversationId: ConversationId;
-  readonly agentId: AgentId;
-  readonly taskId: TaskId;
-  /** ISO-8601 timestamp at which the worker claimed the row. */
-  readonly claimedAt: string;
-}
+export type AgentTaskProcessingEvent = NotificationPayload<'task_processing'>;
 
 export interface IAgentLifecycleNotifier {
   publishProcessing(event: AgentTaskProcessingEvent): void;
@@ -34,23 +28,25 @@ export interface IAgentLifecycleNotifier {
   ): { dispose(): void };
 }
 
-const PROCESSING_CHANNEL = 'processing';
-
-export class InProcessAgentLifecycleNotifier implements IAgentLifecycleNotifier {
-  private readonly emitter = new EventEmitter();
+/** Lifecycle notifier over any `task_processing` channel. */
+export class ChannelAgentLifecycleNotifier implements IAgentLifecycleNotifier {
+  constructor(private readonly channel: NotificationChannel<'task_processing'>) {}
 
   publishProcessing(event: AgentTaskProcessingEvent): void {
-    this.emitter.emit(`${PROCESSING_CHANNEL}:${event.conversationId}`, event);
+    this.channel.publish(event);
   }
 
   subscribeProcessing(
     conversationId: ConversationId,
     handler: (event: AgentTaskProcessingEvent) => void,
   ): { dispose(): void } {
-    const key = `${PROCESSING_CHANNEL}:${conversationId}`;
-    this.emitter.on(key, handler);
-    return {
-      dispose: () => this.emitter.off(key, handler),
-    };
+    return this.channel.subscribe(conversationId, handler);
+  }
+}
+
+/** In-process notifier (single-process dev/tests). */
+export class InProcessAgentLifecycleNotifier extends ChannelAgentLifecycleNotifier {
+  constructor() {
+    super(new InProcessNotificationChannel('task_processing'));
   }
 }

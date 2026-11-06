@@ -13,3 +13,5 @@ export * from './conversation';
 export * from './decisions';
 export * from './deltas';
 export * from './core';
+export * from './deliverables';
+export * from './notifications';

@@ -1,7 +1,7 @@
 /**
  * messages repository.
  *
- * Per claude/skills/database/SKILL.md:
+ * Per docs/agents/database.md:
  *   - messages RLS is tenant + (admin OR own user). Both GUCs must be set.
  *   - All queries inside an explicit transaction; no raw pool access.
  *   - Index (tenant_id, conversation_id, created_at DESC) supports list reads.

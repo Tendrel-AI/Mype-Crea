@@ -14,7 +14,7 @@
  * and inspect `provider.create.mock.calls[i]` for fine-grained checks.
  */
 import { vi } from 'vitest';
-import type OpenAI from 'openai';
+import type { IChatClient } from '../../../services/llm/types';
 import type {
   ILLMProvider,
   ModelPurpose,
@@ -72,7 +72,7 @@ export class FakeLLMProvider implements ILLMProvider {
       modelId: this.opts.modelId ?? 'fake-model',
       client: {
         chat: { completions: { create: this.create } },
-      } as unknown as OpenAI,
+      } as unknown as IChatClient,
     };
   }
 

@@ -1,0 +1,127 @@
+/**
+ * KAN-43 usage policy: THE place for the approved limits, the cost estimates and the
+ * client-facing denial copy. Pure (no I/O). Owner-approved values (2026-11-02); the policy
+ * record is pipeline/decisions/KAN-43-usage-limits-policy.md. Change a limit here, nowhere else.
+ */
+import { codePointLength } from '../../core/refinement';
+
+export const USAGE_POLICY = Object.freeze({
+  /** Tenant budget per calendar month (America/Lima), in USD. */
+  tenantMonthlyBudgetUsd: 30,
+  /** LLM calls per user in a rolling 60-minute window. */
+  userLlmCallsPerHour: 60,
+  /** Image generations per user per calendar day (America/Lima). */
+  userImagesPerDay: 15,
+  /** Characters (Unicode code points) per user chat message. */
+  maxInputChars: 4000,
+  /** Calendar month/day boundaries are taken in this zone (pilot users are in Peru). */
+  timeZone: 'America/Lima',
+});
+
+export type UsagePolicy = typeof USAGE_POLICY;
+export type UsageKind = 'llm' | 'image';
+export type UsageDenialReason = 'tenant_budget' | 'user_llm_hourly' | 'user_image_daily' | 'input_too_long';
+
+/** What the ledger has already committed, read under the tenant lock. */
+export interface UsageCounters {
+  /** Reserved estimates plus settled real costs this month, all users of the tenant. */
+  readonly committedUsd: number;
+  readonly userLlmCallsLastHour: number;
+  readonly userImagesToday: number;
+}
+
+export interface UsageAsk {
+  readonly kind: UsageKind;
+  readonly estimatedCostUsd: number;
+  /** Provider calls this request needs (a chat turn preflight asks for 2). */
+  readonly calls?: number;
+  readonly inputChars?: number;
+}
+
+/** Null when allowed; otherwise the first limit the request would break. */
+export function evaluateUsage(
+  counters: UsageCounters,
+  ask: UsageAsk,
+  policy: UsagePolicy = USAGE_POLICY,
+): UsageDenialReason | null {
+  const calls = ask.calls ?? 1;
+  if (ask.inputChars !== undefined && ask.inputChars > policy.maxInputChars) return 'input_too_long';
+  const budget = policy.tenantMonthlyBudgetUsd;
+  if (counters.committedUsd >= budget || counters.committedUsd + ask.estimatedCostUsd > budget) return 'tenant_budget';
+  if (ask.kind === 'llm' && counters.userLlmCallsLastHour + calls > policy.userLlmCallsPerHour) return 'user_llm_hourly';
+  if (ask.kind === 'image' && counters.userImagesToday + calls > policy.userImagesPerDay) return 'user_image_daily';
+  return null;
+}
+
+export function inputChars(text: string): number {
+  return codePointLength(text);
+}
+
+/** Neutral Latin-American Spanish, tuteo. Shown to the user when a call is denied. */
+export function usageLimitMessage(reason: UsageDenialReason): string {
+  switch (reason) {
+    case 'tenant_budget':
+      return 'Alcanzaste el límite de uso de este mes. Avísale al administrador de tu organización.';
+    case 'user_llm_hourly':
+      return 'Alcanzaste el límite de mensajes por hora. Espera un momento e inténtalo de nuevo.';
+    case 'user_image_daily':
+      return 'Alcanzaste el límite de imágenes de hoy. Podrás generar más mañana.';
+    case 'input_too_long':
+      return `Tu mensaje es demasiado largo. Escribe hasta ${USAGE_POLICY.maxInputChars} caracteres.`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Prices. shortcut: list prices typed in by hand on 2026-11-03, not read from provider invoices
+// or the provider's own cost field; replace with provider-reported cost when KAN-42 lands.
+// Unknown models use the conservative default so an unpriced model can't look cheap.
+// ---------------------------------------------------------------------------
+
+export const PRICING_VERSION = 'kan-43.2026-11-03';
+
+interface TokenPrice { readonly inputPerMTok: number; readonly outputPerMTok: number }
+
+const LLM_PRICES: Readonly<Record<string, TokenPrice>> = {
+  'google/gemini-2.5-flash': { inputPerMTok: 0.3, outputPerMTok: 2.5 },
+  'google/gemini-2.5-pro': { inputPerMTok: 1.25, outputPerMTok: 10 },
+  'claude-sonnet-5-5': { inputPerMTok: 2, outputPerMTok: 10 },
+  // shortcut: Haiku 5.5's rate for prompts up to 100k tokens (5x above); ours stay far below, add the tier if that changes.
+  'claude-haiku-5-5': { inputPerMTok: 0.1, outputPerMTok: 0.5 },
+};
+const DEFAULT_LLM_PRICE: TokenPrice = { inputPerMTok: 5, outputPerMTok: 25 };
+/** One fal FLUX.2 [dev] 1024x1024 image: USD 0.012/MP, an edit also bills its ~1 MP reference (~0.024). */
+export const IMAGE_PRICE_USD = 0.03;
+/** Output tokens assumed when a request sets no max_tokens. */
+const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+
+function priceFor(model: string): TokenPrice {
+  return LLM_PRICES[model] ?? DEFAULT_LLM_PRICE;
+}
+
+/** Upper-bound estimate before the call: ~3 chars per input token, the full output allowance. */
+export function estimateLlmCostUsd(request: {
+  readonly model: string;
+  readonly messages?: unknown;
+  readonly tools?: unknown;
+  readonly max_tokens?: number;
+}): number {
+  const price = priceFor(request.model);
+  const inputTokens = Math.ceil(JSON.stringify({ messages: request.messages, tools: request.tools }).length / 3);
+  const outputTokens = request.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  return roundUsd((inputTokens * price.inputPerMTok + outputTokens * price.outputPerMTok) / 1_000_000);
+}
+
+/** Cost of a finished call from the provider-reported token usage; null when usage is missing. */
+export function llmCostUsd(
+  model: string,
+  usage: { readonly prompt_tokens: number; readonly completion_tokens: number } | undefined,
+): number | null {
+  if (!usage) return null;
+  const price = priceFor(model);
+  return roundUsd((usage.prompt_tokens * price.inputPerMTok + usage.completion_tokens * price.outputPerMTok) / 1_000_000);
+}
+
+/** numeric(12,6) in the ledger. */
+function roundUsd(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
+}

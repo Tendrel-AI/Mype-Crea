@@ -13,7 +13,7 @@
  *
  * Mirrors the singleton shape of src/services/llm/index.ts.
  *
- * See claude/skills/mypes-architecture/SKILL.md §2.5, §2.10.
+ * See docs/agents/architecture.md §2.5, §2.10.
  */
 import Redis, { type Redis as RedisClient } from 'ioredis';
 import { loggerFor } from '../logger';
@@ -92,4 +92,50 @@ export function setRedisClients(
 export function resetRedis(): void {
   delete holder[PUBLISHER_SLOT];
   delete holder[SUBSCRIBER_SLOT];
+}
+
+export type RedisProbeResult = 'ok' | 'not_configured';
+
+/**
+ * Readiness check for the shared publisher connection (`GET /api/health/ready`).
+ *
+ * Returns `'not_configured'` when `REDIS_URL` is unset, `'ok'` when the
+ * publisher is connected and answers PING within `timeoutMs`, and rejects
+ * otherwise. It waits for the `ready` state instead of issuing PING on a
+ * disconnected client: the publisher uses `maxRetriesPerRequest: null`, so a
+ * command sent while offline would sit in the offline queue indefinitely.
+ */
+export async function probeRedis(timeoutMs: number): Promise<RedisProbeResult> {
+  const client = getRedisPublisher();
+  if (!client) return 'not_configured';
+  const deadline = Date.now() + timeoutMs;
+  await waitUntilReady(client, timeoutMs);
+  const reply = await withTimeout(client.ping(), Math.max(deadline - Date.now(), 1), 'PING');
+  if (reply !== 'PONG') throw new Error('Unexpected Redis PING reply');
+  return 'ok';
+}
+
+function waitUntilReady(client: RedisClient, timeoutMs: number): Promise<void> {
+  if (client.status === 'ready') return Promise.resolve();
+  if (client.status === 'end') return Promise.reject(new Error('Redis connection has ended'));
+  return new Promise((resolve, reject) => {
+    const onReady = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      client.off('ready', onReady);
+      reject(new Error(`Redis not ready within ${timeoutMs} ms`));
+    }, timeoutMs);
+    client.once('ready', onReady);
+  });
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Redis ${label} exceeded ${timeoutMs} ms`)), timeoutMs);
+  });
+  promise.catch(() => undefined);
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }

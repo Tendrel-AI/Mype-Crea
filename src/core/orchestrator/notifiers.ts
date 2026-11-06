@@ -5,7 +5,7 @@
  * every event the orchestrator publishes.
  *
  * Backed by Redis Pub/Sub when `REDIS_URL` is set (see
- * claude/skills/mypes-architecture/SKILL.md §2.5, §2.10), and by an
+ * docs/agents/architecture.md §2.5, §2.10), and by an
  * in-process EventEmitter otherwise — useful for local single-process
  * dev/tests where Redis is not available.
  *

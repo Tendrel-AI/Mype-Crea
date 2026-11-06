@@ -12,9 +12,38 @@
  *   - confidence >= STORE_AND_CONFIRM -> slot becomes 'pending_confirmation'
  *   - confidence <  STORE_AND_CONFIRM -> slot left untouched (we will re-ask)
  *
- * Conflict policy (same field already filled):
+ * Conflict policy (same field already filled or pending):
  *   - If incoming confidence >= existing confidence -> overwrite
  *   - Else -> no-op (we trust the existing stronger signal)
+ *   - Unless the same delta reset that field (see order below): a reset slot
+ *     is empty, so the incoming value has nothing to conflict with.
+ *
+ * Application order within one delta (deterministic, independent of the
+ * order of `fields` vs `intents` in the payload):
+ *   1. `reset_field` intents, in delta order. Each one empties its slot.
+ *   2. Field values, in delta order, under the rules above.
+ *   3. Every other intent (`select_deliverable`, `request_iteration`,
+ *      `cancel_task`). None of them touches field slots, so their position
+ *      after the values changes nothing they do today.
+ * Resets go first so that `reset_field(F)` + `F = X` in one delta means
+ * "replace F with X", whatever X's confidence is relative to the old value.
+ * A reset with no value (or with a value below STORE_AND_CONFIRM) leaves F
+ * empty, which is what a reset alone means.
+ *
+ * Unknown agents and unknown fields are rejected the same way for values and
+ * for `reset_field`: no store write, and the rejection is reported in the
+ * returned `MergeResult` and the `merger.output` log.
+ *
+ * KAN-26: a value for a brief catalog field (`../brief.ts`) is normalized and
+ * validated by `validateBriefValue` before it is stored, whatever channel
+ * produced it; an invalid value is `rejected_invalid_value` (no write). The
+ * slot records `delta.source` for provenance; nothing here branches on it.
+ *
+ * KAN-44: only a field a registered Agent Card declares is accepted, and
+ * every one is validated (`fieldRule`: the catalog rule, else plain text).
+ * An undeclared field is rejected before the confidence check, and a
+ * confidence outside [0, 1] is `rejected_invalid_value`. Merge only REPORTS
+ * rejections (`MergeResult`); the controller writes the rejection log.
  *
  * This function does NOT dispatch agents. Dispatch is the orchestrator's
  * responsibility, triggered AFTER merge completes.
@@ -26,33 +55,93 @@
 
 import {
   CONFIDENCE_THRESHOLDS,
+  type AgentRequirementState,
   type FieldDelta,
   type FieldSlot,
+  type RejectedFieldWrite,
+  type UserIntent,
 } from '../contracts';
 import { loggerFor } from '../../services/logger';
+import { fieldRule, validateBriefValue } from '../brief';
 import type { AgentRegistry } from './agent-registry';
-import type { IConversationStore } from './in-memory-store';
+import type { AgentFieldSchema, IConversationStore } from './in-memory-store';
 
 const log = loggerFor('orchestrator.merge');
 
-type FieldOutcome =
+export type FieldOutcome =
   | 'filled'
   | 'pending_confirmation'
   | 'rejected_low_confidence'
   | 'rejected_unknown_agent'
   | 'rejected_unknown_field'
-  | 'conflict_kept_existing';
+  | 'rejected_invalid_value'
+  | 'conflict_kept_existing'
+  | 'stale_confirmation';
+
+export type IntentOutcome =
+  | 'reset'
+  | 'rejected_unknown_agent'
+  | 'rejected_unknown_field'
+  | 'noop'
+  | 'deferred_to_dispatch'
+  | 'stale_confirmation';
+
+export interface MergeFieldOutcome {
+  readonly agentId: string;
+  readonly fieldName: string;
+  readonly outcome: FieldOutcome;
+  readonly confidence?: number;
+}
+
+export interface MergeIntentOutcome {
+  readonly kind: UserIntent['kind'];
+  readonly agentId?: string;
+  readonly fieldName?: string;
+  readonly outcome: IntentOutcome;
+}
+
+/** What one merge did. Callers may ignore it; it exists for audit and tests. */
+export interface MergeResult {
+  readonly mutationsApplied: number;
+  readonly fieldOutcomes: ReadonlyArray<MergeFieldOutcome>;
+  readonly intentOutcomes: ReadonlyArray<MergeIntentOutcome>;
+}
+
+const REJECTION_REASONS: Readonly<Record<string, RejectedFieldWrite['reason']>> = {
+  rejected_unknown_agent: 'unknown_agent',
+  rejected_unknown_field: 'unknown_field',
+  rejected_invalid_value: 'invalid_value',
+};
+
+/** The writes a merge refused as outside the schema or invalid (KAN-44); low confidence, conflicts and stale answers are normal flow. */
+export function rejectedWrites(result: MergeResult): RejectedFieldWrite[] {
+  const values = result.fieldOutcomes.flatMap(({ agentId, fieldName, outcome }) =>
+    REJECTION_REASONS[outcome] ? [{ agentId, fieldName, target: 'value' as const, reason: REJECTION_REASONS[outcome] }] : [],
+  );
+  const resets = result.intentOutcomes.flatMap(({ agentId, fieldName, outcome }) =>
+    REJECTION_REASONS[outcome] && agentId !== undefined && fieldName !== undefined
+      ? [{ agentId, fieldName, target: 'reset' as const, reason: REJECTION_REASONS[outcome] }]
+      : [],
+  );
+  return [...values, ...resets];
+}
+
+type FieldResolution =
+  | { readonly kind: 'unknown_agent' }
+  | { readonly kind: 'unknown_field' }
+  | { readonly kind: 'known'; readonly isRequired: boolean };
 
 export async function mergeFieldDelta(
   delta: FieldDelta,
   store: IConversationStore,
   registry: AgentRegistry,
-): Promise<void> {
+): Promise<MergeResult> {
   const fieldsCount = Object.values(delta.fields).reduce(
     (acc, fields) => acc + Object.keys(fields).length,
     0,
   );
-  const intentsCount = delta.intents?.length ?? 0;
+  const intents = delta.intents ?? [];
+  const intentsCount = intents.length;
   const child = log.child({
     op: 'mergeFieldDelta',
     conversationId: delta.conversationId,
@@ -77,18 +166,14 @@ export async function mergeFieldDelta(
       fieldsCount,
       intentsCount,
       fields: incomingFields,
-      intents: (delta.intents ?? []).map((i) => ({ kind: i.kind, agentId: 'agentId' in i ? i.agentId : undefined })),
+      intents: intents.map((i) => ({ kind: i.kind, agentId: 'agentId' in i ? i.agentId : undefined })),
     },
     'merger.input',
   );
   child.info({ fieldsCount, intentsCount }, 'merge.delta.received');
 
-  const outcomes: Array<{
-    agentId: string;
-    fieldName: string;
-    outcome: FieldOutcome;
-    confidence?: number;
-  }> = [];
+  const fieldOutcomes: MergeFieldOutcome[] = [];
+  const intentOutcomes: MergeIntentOutcome[] = [];
 
   const snapshot = await store.get(delta.conversationId);
   if (!snapshot) {
@@ -98,33 +183,82 @@ export async function mergeFieldDelta(
     );
   }
 
+  const schemas = registry.getFieldSchemas();
   let mutationsApplied = 0;
 
-  for (const [agentId, fields] of Object.entries(delta.fields)) {
-    // Validate agent is registered — deltas for unknown agents are dropped.
-    let agentKnown = true;
-    try {
-      registry.get(agentId);
-    } catch {
-      agentKnown = false;
+  // -------------------------------------------------------------------------
+  // Phase 1: reset_field intents. Slots reset here count as empty in phase 2.
+  // -------------------------------------------------------------------------
+  const resetSlots = new Set<string>();
+  for (const intent of intents) {
+    if (intent.kind !== 'reset_field') continue;
+    const { agentId, fieldName } = intent;
+    const resolution = resolveField(registry, schemas, agentId, fieldName);
+    if (resolution.kind !== 'known') {
+      const outcome =
+        resolution.kind === 'unknown_agent' ? 'rejected_unknown_agent' : 'rejected_unknown_field';
+      intentOutcomes.push({ kind: intent.kind, agentId, fieldName, outcome });
+      child.debug({ kind: intent.kind, agentId, fieldName, outcome }, 'merge.intent.rejected');
+      continue;
     }
-    if (!agentKnown) {
-      for (const fieldName of Object.keys(fields)) {
-        outcomes.push({ agentId, fieldName, outcome: 'rejected_unknown_agent' });
+    if (isStale(intent, snapshot.agentStates[agentId], fieldName, resolution.isRequired)) {
+      intentOutcomes.push({ kind: intent.kind, agentId, fieldName, outcome: 'stale_confirmation' });
+      child.debug({ kind: intent.kind, agentId, fieldName }, 'merge.intent.stale_confirmation');
+      continue;
+    }
+    await store.updateFieldSlot(
+      delta.conversationId,
+      agentId,
+      fieldName,
+      resolution.isRequired,
+      { status: 'empty' },
+    );
+    mutationsApplied++;
+    resetSlots.add(slotKey(agentId, fieldName));
+    intentOutcomes.push({ kind: intent.kind, agentId, fieldName, outcome: 'reset' });
+    child.debug({ kind: intent.kind, agentId, fieldName }, 'merge.intent.processed');
+  }
+
+  // -------------------------------------------------------------------------
+  // Phase 2: field values.
+  // -------------------------------------------------------------------------
+  for (const [agentId, fields] of Object.entries(delta.fields)) {
+    for (const [fieldName, incoming] of Object.entries(fields)) {
+      const resolution = resolveField(registry, schemas, agentId, fieldName);
+
+      // Deltas for unknown agents are dropped before any other check.
+      if (resolution.kind === 'unknown_agent') {
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_unknown_agent' });
         child.debug(
           { agentId, fieldName, outcome: 'rejected_unknown_agent' satisfies FieldOutcome },
           'merge.field.rejected',
         );
+        continue;
       }
-      continue;
-    }
 
-    const fieldSchemas = registry.getFieldSchemas().find((s) => s.agentId === agentId);
-    if (!fieldSchemas) continue;
+      // KAN-44: an undeclared field is rejected whatever its confidence.
+      if (resolution.kind === 'unknown_field') {
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_unknown_field' });
+        child.debug(
+          {
+            agentId,
+            fieldName,
+            outcome: 'rejected_unknown_field' satisfies FieldOutcome,
+          },
+          'merge.field.rejected',
+        );
+        continue; // unknown field for this agent
+      }
 
-    for (const [fieldName, incoming] of Object.entries(fields)) {
+      // KAN-44: a confidence outside [0, 1] (or not a number) is an invalid value, not a low one.
+      if (typeof incoming?.confidence !== 'number' || !(incoming.confidence >= 0 && incoming.confidence <= 1)) {
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_invalid_value' });
+        child.debug({ agentId, fieldName, outcome: 'rejected_invalid_value' satisfies FieldOutcome }, 'merge.field.rejected');
+        continue;
+      }
+
       if (incoming.confidence < CONFIDENCE_THRESHOLDS.STORE_AND_CONFIRM) {
-        outcomes.push({ agentId, fieldName, outcome: 'rejected_low_confidence', confidence: incoming.confidence });
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_low_confidence', confidence: incoming.confidence });
         child.debug(
           {
             agentId,
@@ -137,25 +271,29 @@ export async function mergeFieldDelta(
         continue; // too low — we'll re-ask explicitly
       }
 
-      const isRequired = fieldSchemas.requiredFields.includes(fieldName);
-      const isOptional = fieldSchemas.optionalFields.includes(fieldName);
-      if (!isRequired && !isOptional) {
-        outcomes.push({ agentId, fieldName, outcome: 'rejected_unknown_field' });
+      // Every accepted field is validated: the catalog rule, or plain text for a card field outside it (KAN-44).
+      const checked = validateBriefValue(fieldRule(fieldName), incoming.value);
+      if (!checked.ok) {
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'rejected_invalid_value', confidence: incoming.confidence });
         child.debug(
-          {
-            agentId,
-            fieldName,
-            outcome: 'rejected_unknown_field' satisfies FieldOutcome,
-          },
+          { agentId, fieldName, outcome: 'rejected_invalid_value' satisfies FieldOutcome },
           'merge.field.rejected',
         );
-        continue; // unknown field for this agent
+        continue;
       }
 
-      const currentSlot =
-        snapshot.agentStates[agentId]?.[isRequired ? 'requiredFields' : 'optionalFields']?.[
-          fieldName
-        ];
+      const { isRequired } = resolution;
+      if (isStale(incoming, snapshot.agentStates[agentId], fieldName, isRequired)) {
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'stale_confirmation', confidence: incoming.confidence });
+        child.debug({ agentId, fieldName, outcome: 'stale_confirmation' satisfies FieldOutcome }, 'merge.field.rejected');
+        continue;
+      }
+      // A slot reset in phase 1 is empty now, whatever the snapshot read said.
+      const currentSlot = resetSlots.has(slotKey(agentId, fieldName))
+        ? undefined
+        : snapshot.agentStates[agentId]?.[isRequired ? 'requiredFields' : 'optionalFields']?.[
+            fieldName
+          ];
 
       // Conflict: if existing is filled with higher confidence, keep it.
       if (
@@ -163,7 +301,7 @@ export async function mergeFieldDelta(
         currentSlot.status !== 'empty' &&
         currentSlot.confidence > incoming.confidence
       ) {
-        outcomes.push({ agentId, fieldName, outcome: 'conflict_kept_existing', confidence: incoming.confidence });
+        fieldOutcomes.push({ agentId, fieldName, outcome: 'conflict_kept_existing', confidence: incoming.confidence });
         child.debug(
           {
             agentId,
@@ -181,10 +319,12 @@ export async function mergeFieldDelta(
         incoming.confidence >= CONFIDENCE_THRESHOLDS.AUTO_ACCEPT
           ? 'filled'
           : 'pending_confirmation';
-      const nextSlot: FieldSlot =
-        nextStatus === 'filled'
-          ? { status: 'filled', value: incoming.value, confidence: incoming.confidence }
-          : { status: 'pending_confirmation', value: incoming.value, confidence: incoming.confidence };
+      const nextSlot: FieldSlot = {
+        status: nextStatus,
+        value: checked.value,
+        confidence: incoming.confidence,
+        source: delta.source,
+      };
 
       await store.updateFieldSlot(
         delta.conversationId,
@@ -194,7 +334,7 @@ export async function mergeFieldDelta(
         nextSlot,
       );
       mutationsApplied++;
-      outcomes.push({ agentId, fieldName, outcome: nextStatus, confidence: incoming.confidence });
+      fieldOutcomes.push({ agentId, fieldName, outcome: nextStatus, confidence: incoming.confidence });
       child.debug(
         {
           agentId,
@@ -207,59 +347,95 @@ export async function mergeFieldDelta(
     }
   }
 
-  // Intents are merged separately (selection, iteration, cancel, reset).
-  if (delta.intents) {
-    for (const intent of delta.intents) {
-      switch (intent.kind) {
-        case 'select_deliverable': {
-          // The merge stage records the selection. Figuring out WHICH agent
-          // the deliverable belongs to is a storage lookup; for now, callers
-          // include the agentId context via other means (future: enrich the
-          // intent). We no-op here to keep the harness small.
-          child.debug({ kind: intent.kind }, 'merge.intent.processed');
-          break;
-        }
-        case 'reset_field': {
-          const schemas = registry.getFieldSchemas().find((s) => s.agentId === intent.agentId);
-          if (!schemas) {
-            child.debug(
-              { kind: intent.kind, agentId: intent.agentId, outcome: 'rejected_unknown_agent' },
-              'merge.intent.rejected',
-            );
-            break;
-          }
-          const isRequired = schemas.requiredFields.includes(intent.fieldName);
-          await store.updateFieldSlot(
-            delta.conversationId,
-            intent.agentId,
-            intent.fieldName,
-            isRequired,
-            { status: 'empty' },
-          );
-          mutationsApplied++;
-          child.debug(
-            { kind: intent.kind, agentId: intent.agentId, fieldName: intent.fieldName },
-            'merge.intent.processed',
-          );
-          break;
-        }
-        case 'request_iteration':
-        case 'cancel_task':
-          // Handled by the orchestrator's dispatch logic, not the merge stage.
-          child.debug({ kind: intent.kind }, 'merge.intent.deferred_to_dispatch');
-          break;
+  // -------------------------------------------------------------------------
+  // Phase 3: every other intent. None of these writes field slots.
+  // -------------------------------------------------------------------------
+  for (const intent of intents) {
+    switch (intent.kind) {
+      case 'reset_field':
+        break; // applied in phase 1
+      case 'select_deliverable': {
+        // The merge stage records the selection. Figuring out WHICH agent
+        // the deliverable belongs to is a storage lookup; for now, callers
+        // include the agentId context via other means (future: enrich the
+        // intent). We no-op here to keep the harness small.
+        intentOutcomes.push({ kind: intent.kind, outcome: 'noop' });
+        child.debug({ kind: intent.kind }, 'merge.intent.processed');
+        break;
       }
+      case 'request_iteration':
+      case 'cancel_task':
+        // Handled by the orchestrator's dispatch logic, not the merge stage.
+        intentOutcomes.push({
+          kind: intent.kind,
+          ...('agentId' in intent ? { agentId: intent.agentId } : {}),
+          outcome: 'deferred_to_dispatch',
+        });
+        child.debug({ kind: intent.kind }, 'merge.intent.deferred_to_dispatch');
+        break;
     }
   }
 
   child.info({ mutationsApplied }, 'merge.delta.complete');
   child.info(
-    { mutationsApplied, outcomes, intentsProcessed: intentsCount },
+    {
+      mutationsApplied,
+      outcomes: fieldOutcomes,
+      intentOutcomes,
+      intentsProcessed: intentsCount,
+    },
     'merger.output',
   );
+  return { mutationsApplied, fieldOutcomes, intentOutcomes };
+}
+
+/**
+ * Classify `agentId.fieldName` against the registry: unknown agent, unknown
+ * field for that agent, or a declared required/optional field. Shared by field
+ * values and `reset_field` so both reject the same inputs.
+ */
+function resolveField(
+  registry: AgentRegistry,
+  schemas: ReadonlyArray<AgentFieldSchema>,
+  agentId: string,
+  fieldName: string,
+): FieldResolution {
+  try {
+    registry.get(agentId);
+  } catch {
+    return { kind: 'unknown_agent' };
+  }
+  const agentSchemas = schemas.find((s) => s.agentId === agentId);
+  if (!agentSchemas) return { kind: 'unknown_agent' };
+  if (agentSchemas.requiredFields.includes(fieldName)) return { kind: 'known', isRequired: true };
+  if (agentSchemas.optionalFields.includes(fieldName)) return { kind: 'known', isRequired: false };
+  return { kind: 'unknown_field' };
+}
+
+function slotKey(agentId: string, fieldName: string): string {
+  return `${agentId}\u0000${fieldName}`;
 }
 
 function previewValue(value: unknown): string {
   if (typeof value !== 'string') return JSON.stringify(value);
   return value.length > 80 ? `${value.slice(0, 77)}...` : value;
+}
+
+/**
+ * True when a confirmation answer no longer applies: it names the pending
+ * value it answers, and the slot (as read before this delta) no longer holds
+ * that value as pending — e.g. the user set the field in the panel since.
+ */
+function isStale(
+  input: { readonly expectedPendingValue?: unknown },
+  state: AgentRequirementState | undefined,
+  fieldName: string,
+  isRequired: boolean,
+): boolean {
+  if (input.expectedPendingValue === undefined) return false;
+  const slot = state?.[isRequired ? 'requiredFields' : 'optionalFields']?.[fieldName];
+  return (
+    slot?.status !== 'pending_confirmation' ||
+    JSON.stringify(slot.value) !== JSON.stringify(input.expectedPendingValue)
+  );
 }

@@ -21,6 +21,31 @@
         "name": "color_palette",
         "type": "string",
         "promptHint": "¿Tienes colores preferidos para tu marca?"
+      },
+      {
+        "name": "business_category",
+        "type": "string",
+        "promptHint": "¿A qué rubro pertenece tu negocio? (por ejemplo: alimentos, cosmética, artesanía)"
+      },
+      {
+        "name": "product_name",
+        "type": "string",
+        "promptHint": "¿Qué producto vas a lanzar?"
+      },
+      {
+        "name": "product_composition",
+        "type": "string",
+        "promptHint": "¿De qué está hecho tu producto? (ingredientes o materiales principales)"
+      },
+      {
+        "name": "product_presentation",
+        "type": "string",
+        "promptHint": "¿Cómo se presenta tu producto? (por ejemplo: frasco de 250 g, caja de 6 unidades)"
+      },
+      {
+        "name": "manufacturer",
+        "type": "string",
+        "promptHint": "¿Quién fabrica tu producto? (empresa o productor)"
       }
     ]
   },
@@ -29,6 +54,10 @@
     "tabIcon": "image",
     "displayOrder": 2,
     "outputPreview": "logo"
+  },
+  "mypes:deliverable": {
+    "kind": "logo",
+    "dependsOn": ["business_name"]
   },
   "supportedInterfaces": [
     { "protocol": "local", "module": "agents/logo-agent/handler.ts" }

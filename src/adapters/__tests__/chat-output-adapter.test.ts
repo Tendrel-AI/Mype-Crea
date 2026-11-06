@@ -25,6 +25,7 @@ import {
 } from '../../core/__tests__/_fixtures';
 import { resetProvider, setProvider } from '../../services/llm';
 import type { PlannerDecision } from '../../core/contracts';
+import { createCurrentAdapterBehaviorSnapshot } from '../../services/ai-config/adapter-behavior';
 
 const conversationId = TEST_CONVERSATION_ID;
 const tenantId = TEST_TENANT_ID;
@@ -76,7 +77,7 @@ describe('ChatOutputAdapter', () => {
   });
 
   it('renders request_fields with both field names in one ask, no leaked user values', async () => {
-    setProvider(provider = makeResponderProvider('¿Cómo se llama tu negocio y qué estilo buscás?'));
+    setProvider(provider = makeResponderProvider('¿Cómo se llama tu negocio y qué estilo buscas?'));
     const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
     const decisions: ReadonlyArray<PlannerDecision> = [
@@ -210,7 +211,7 @@ describe('ChatOutputAdapter', () => {
 
   it('bundles announce_dispatch with request_fields and instructs a single bridged reply', async () => {
     setProvider(
-      provider = makeResponderProvider('Ya estoy generando tu logo. Para el slogan, ¿qué tono buscás?'));
+      provider = makeResponderProvider('Ya estoy generando tu logo. Para el slogan, ¿qué tono buscas?'));
     const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
     const decisions: ReadonlyArray<PlannerDecision> = [
@@ -222,7 +223,7 @@ describe('ChatOutputAdapter', () => {
       {
         kind: 'request_fields',
         agentId: 'tagline-agent',
-        fields: [{ fieldName: 'tone', promptHint: '¿Qué tono buscás?' }],
+        fields: [{ fieldName: 'tone', promptHint: '¿Qué tono buscas?' }],
       },
     ];
     await adapter.render({
@@ -381,5 +382,122 @@ describe('ChatOutputAdapter', () => {
 
     // 1 system + 2 chat turns; the system row from recentMessages is dropped.
     expect(provider.captured[0].messageCount).toBe(3);
+  });
+
+  it('uses frozen responder templates and explicit model, and honors a zero-history policy', async () => {
+    const provider = makeResponderProvider('ok');
+    const behavior = createCurrentAdapterBehaviorSnapshot();
+    const frozen = {
+      ...behavior,
+      responder: {
+        ...behavior.responder,
+        promptTemplate: `${behavior.responder.promptTemplate}\nFrozen template marker.`,
+        historyLimit: 0,
+      },
+    };
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+
+    await adapter.render({
+      decisions: [{ kind: 'announce_all_complete' }],
+      recentMessages: [{ role: 'user', content: 'must not be included' }],
+      snapshot: emptySnapshot,
+      llmContext: ctx,
+      execution: { model: { ...provider.resolve('responder'), provider: 'anthropic', modelId: 'claude-sonnet-5-5' }, behavior: frozen },
+    });
+
+    expect(provider.create).toHaveBeenCalledTimes(1);
+    expect(provider.captured[0].systemPrompt).toContain('Frozen template marker.');
+    expect(provider.captured[0].systemPrompt).toContain('español neutro latinoamericano');
+    expect(provider.captured[0].messageCount).toBe(1);
+    expect((provider.create.mock.calls[0][0] as any).temperature).toBe(0.7);
+    // KAN-69 A6: the llm_calls row carries the execution's effective provenance.
+    expect(recordSpy).toHaveBeenCalledTimes(1);
+    expect((recordSpy.mock.calls[0] as any[])[0]).toMatchObject({
+      provider: 'anthropic',
+      purpose: 'responder',
+      model: 'claude-sonnet-5-5',
+      inputTokens: 50,
+      outputTokens: 30,
+    });
+  });
+
+  it('renders offer_generation as a pointer to the Generar button, never as «generating»', async () => {
+    setProvider(provider = makeResponderProvider('Ya tienes todo listo para tu logo. Cuando quieras, toca el botón Generar.'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+
+    await adapter.render({
+      decisions: [{ kind: 'offer_generation', agentId: 'test-fixture-agent', deliverableKind: 'logo' }],
+      recentMessages: [],
+      snapshot: filledSnapshot,
+      llmContext: ctx,
+    });
+
+    const prompt = provider.captured[0].systemPrompt;
+    expect(prompt).toContain('offer_generation');
+    expect(prompt).toContain('botón Generar');
+    expect(prompt).toContain('PROHIBIDO decir que ya empezaste a generar');
+    expect(prompt).not.toContain('Café Andino');
+  });
+
+  it('every prompt guides chat change requests to the panel buttons (KAN-28)', async () => {
+    setProvider(provider = makeResponderProvider('ok'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+    await adapter.render({
+      decisions: [{ kind: 'announce_all_complete' }],
+      recentMessages: [{ role: 'user', content: 'cámbiale el color al logo' }],
+      snapshot: filledSnapshot,
+      llmContext: ctx,
+    });
+    const prompt = provider.captured[0].systemPrompt;
+    expect(prompt).toContain('Para ajustar este logo, toca el botón Iterar y escribe qué quieres cambiar.');
+    expect(prompt).toContain('nunca digas que ya generaste');
+    expect(prompt).toContain('español neutro latinoamericano');
+  });
+
+  it('bumps the responder prompt version for the command guidance', () => {
+    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v6');
+  });
+
+  it('a release frozen before v6 still renders offer_generation through the fragment fallbacks', async () => {
+    setProvider(provider = makeResponderProvider('ok'));
+    const behavior = createCurrentAdapterBehaviorSnapshot();
+    const {
+      offerGenerationDecision: _offer,
+      commandGuidanceGuardrail: _guidance,
+      ...olderFragments
+    } = behavior.responder.promptFragments;
+    const frozen = { ...behavior, responder: { ...behavior.responder, promptFragments: olderFragments } };
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+
+    await adapter.render({
+      decisions: [{ kind: 'offer_generation', agentId: 'test-fixture-agent', deliverableKind: 'logo' }],
+      recentMessages: [],
+      snapshot: filledSnapshot,
+      llmContext: ctx,
+      execution: { model: { ...provider.resolve('responder'), provider: 'openrouter' }, behavior: frozen },
+    });
+
+    const prompt = provider.captured[0].systemPrompt;
+    expect(prompt).toContain('botón Generar');
+    expect(prompt).not.toContain('undefined');
+  });
+
+  it('rejects unsupported frozen responder renderers before provider invocation', async () => {
+    const provider = makeResponderProvider('ok');
+    const behavior = createCurrentAdapterBehaviorSnapshot();
+    const frozen = {
+      ...behavior,
+      responder: { ...behavior.responder, rendererVersion: 'responder.renderer.unknown' },
+    };
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+
+    await expect(adapter.render({
+      decisions: [{ kind: 'announce_all_complete' }],
+      recentMessages: [],
+      snapshot: emptySnapshot,
+      llmContext: ctx,
+      execution: { model: { ...provider.resolve('responder'), provider: 'openrouter' }, behavior: frozen },
+    })).rejects.toThrow(/Unsupported frozen responder adapter behavior/);
+    expect(provider.create).not.toHaveBeenCalled();
   });
 });

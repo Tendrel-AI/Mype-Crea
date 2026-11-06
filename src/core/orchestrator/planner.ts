@@ -16,9 +16,10 @@
  *
  * Decision rules (first match wins; one match produces the entire plan):
  *
- *   1. Any required slot in `pending_confirmation`
+ *   1. Any slot (required or optional) in `pending_confirmation`
  *      -> `[confirm_field]` (solo; never batched with anything else, since
- *         confirms are y/n turns).
+ *         confirms are y/n turns). KAN-26: an ambiguous optional brief value
+ *         (rubro, producto, …) is confirmed too before it counts.
  *
  *   2. There exists a "focus agent" — the lex-first registered agent that
  *      (a) has at least one missing required slot, (b) is not currently
@@ -28,15 +29,28 @@
  *         `MAX_FIELD_BATCH_SIZE` missing required field names from that
  *         agent.
  *
- *   3. Otherwise — every agent is either fully filled (and dispatched, or
- *      will be dispatched by the orchestrator on the same turn) or already
- *      in-flight, and there is nothing to ask.
+ *   3. A deliverable is ready to generate — lex-first agent whose derived
+ *      state is `enabled` (KAN-64: preconditions met, nothing generated, no
+ *      task in flight)
+ *      -> `[offer_generation]`. The planner never dispatches and neither
+ *         does the core after a merge: generation starts only through a
+ *         typed «Generar» command (`DeliverableCommandPort`). This decision
+ *         only lets the Responder point the user at the button.
+ *
+ *   4. Otherwise — every agent is filled and generated (or generating, or
+ *      waiting for an upstream approval), and there is nothing to ask.
  *      -> `[announce_all_complete]`.
+ *
+ * Rule 3 reads the per-deliverable states the caller derived with the pure
+ * `deriveDeliverableStates` (passed in `context.deliverableStates`). Without
+ * that context (unit tests, legacy callers) it falls back to the snapshot
+ * predicate `findAgentReadyToGenerate`. Both inputs are plain data: same
+ * snapshot + same states → same plan.
  *
  * `announce_dispatch` and `announce_completion` decisions are NOT produced
  * here. The orchestrator core queues them on dispatch / settlement and
  * splices them onto the front of this plan inside `getNextDecision` so the
- * Responder can render "ya empezó X" + "y para Y, contame…" in a single
+ * Responder can render "ya empezó X" + "y para Y, cuéntame…" in a single
  * turn. The planner stays pure: same snapshot → same plan.
  *
  * Tiebreakers are deterministic and lexicographic — by `agentId` first
@@ -57,13 +71,14 @@
  *                     planner reads)
  *   - orchestrator-core.ts (queues `announce_dispatch` /
  *                     `announce_completion` and composes the final plan)
- *   - .claude/skills/mypes-architecture/SKILL.md
+ *   - docs/agents/architecture.md
  */
 
 import {
   MAX_FIELD_BATCH_SIZE,
   type AgentId,
   type ConversationSnapshot,
+  type DeliverableStateView,
   type PlannerDecision,
   type RequestFieldEntry,
 } from '../contracts';
@@ -72,9 +87,16 @@ import type { AgentRegistry } from './agent-registry';
 
 const log = loggerFor('orchestrator.planner');
 
+/** Optional, already-derived inputs. Plain data; reading them keeps the planner pure. */
+export interface PlannerContext {
+  /** Output of `deriveDeliverableStates` for the same snapshot. */
+  readonly deliverableStates?: ReadonlyArray<Pick<DeliverableStateView, 'agentId' | 'deliverableKind' | 'state'>>;
+}
+
 export function planNextDecision(
   snapshot: ConversationSnapshot,
   registry: AgentRegistry,
+  context: PlannerContext = {},
 ): ReadonlyArray<PlannerDecision> {
   const child = log.child({
     op: 'planNextDecision',
@@ -137,7 +159,7 @@ export function planNextDecision(
     'planner.input',
   );
 
-  // Rule 1: any pending_confirmation? Pick the lex-first (agentId, fieldName)
+  // Rule 1: any pending_confirmation (required or optional)? Pick the lex-first (agentId, fieldName)
   // pair so the same field gets confirmed once even if multiple agents own it.
   const pending = collectPendingConfirmations(snapshot, schemas);
   if (pending.length > 0) {
@@ -183,27 +205,56 @@ export function planNextDecision(
     );
   }
 
-  // Rule 3: nothing pending, no focus agent — every agent is satisfied,
-  // dispatched, or in-flight. Wizard step is done.
+  // Rule 3: a deliverable is ready — offer the «Generar» button. Never
+  // dispatches; generation is a typed command (KAN-64 Option B).
+  const offer = pickGenerationOffer(snapshot, registry, context);
+  if (offer) {
+    return decide(
+      [{ kind: 'offer_generation', agentId: offer.agentId, deliverableKind: offer.deliverableKind }],
+      'offer_generation',
+    );
+  }
+
+  // Rule 4: nothing pending, no focus agent, nothing to offer — every agent
+  // is generated, generating, or waiting on an upstream approval.
   return decide([{ kind: 'announce_all_complete' }], 'all_complete');
 }
 
+function pickGenerationOffer(
+  snapshot: ConversationSnapshot,
+  registry: AgentRegistry,
+  context: PlannerContext,
+): { readonly agentId: AgentId; readonly deliverableKind: string } | null {
+  if (context.deliverableStates) {
+    const enabled = context.deliverableStates
+      .filter((view) => view.state === 'enabled')
+      .filter((view) => !snapshot.agentStates[view.agentId]?.lastDispatchedTaskId)
+      .map((view) => ({ agentId: view.agentId, deliverableKind: view.deliverableKind }))
+      .sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0));
+    return enabled[0] ?? null;
+  }
+  const agentId = findAgentReadyToGenerate(snapshot, registry.getFieldSchemas());
+  if (!agentId) return null;
+  const spec = registry.getDeliverableSpecs().find((s) => s.agentId === agentId);
+  return { agentId, deliverableKind: spec?.deliverableKind ?? agentId };
+}
+
 /**
- * Find any agent whose required slots are all `filled` and that has never
- * been dispatched in this conversation. Lex-tiebreak by `agentId` for stable
- * output.
+ * Snapshot-only fallback for Rule 3: any agent whose required slots are all
+ * `filled` and that has never been dispatched in this conversation.
+ * Lex-tiebreak by `agentId` for stable output.
  *
  * Eligibility:
  *   - skip agents with no required fields (nothing to gate on)
  *   - skip agents currently in flight (`lastDispatchedTaskId` set)
  *   - skip agents that have already been dispatched at least once
- *     (`iterationCount > 0`) — re-runs are user-triggered iterations per
- *     architecture §2.7, never auto-dispatch
+ *     (`iterationCount > 0`)
  *
- * Exposed so the orchestrator core can answer "which agent, if any, should
- * I dispatch right now?" after a merge.
+ * KAN-28: this used to be `findAgentReadyToDispatch`, which the core called
+ * after every merge to auto-dispatch. Nothing dispatches from it anymore; it
+ * only decides whether to *offer* «Generar».
  */
-export function findAgentReadyToDispatch(
+export function findAgentReadyToGenerate(
   snapshot: ConversationSnapshot,
   schemas: ReadonlyArray<{ readonly agentId: AgentId; readonly requiredFields: ReadonlyArray<string> }>,
 ): AgentId | null {
@@ -264,16 +315,25 @@ interface FieldRef {
 
 function collectPendingConfirmations(
   snapshot: ConversationSnapshot,
-  schemas: ReadonlyArray<{ readonly agentId: AgentId; readonly requiredFields: ReadonlyArray<string> }>,
+  schemas: ReadonlyArray<{
+    readonly agentId: AgentId;
+    readonly requiredFields: ReadonlyArray<string>;
+    readonly optionalFields: ReadonlyArray<string>;
+  }>,
 ): FieldRef[] {
   const out: FieldRef[] = [];
   for (const schema of schemas) {
     const agentState = snapshot.agentStates[schema.agentId];
     if (!agentState) continue;
-    for (const fieldName of schema.requiredFields) {
-      const slot = agentState.requiredFields[fieldName];
-      if (slot?.status === 'pending_confirmation') {
-        out.push({ agentId: schema.agentId, fieldName, value: slot.value });
+    for (const [fieldNames, slots] of [
+      [schema.requiredFields, agentState.requiredFields],
+      [schema.optionalFields, agentState.optionalFields],
+    ] as const) {
+      for (const fieldName of fieldNames) {
+        const slot = slots[fieldName];
+        if (slot?.status === 'pending_confirmation') {
+          out.push({ agentId: schema.agentId, fieldName, value: slot.value });
+        }
       }
     }
   }

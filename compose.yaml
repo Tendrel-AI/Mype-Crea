@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: creamype-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: creamype
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: local_dev_only
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - creamype-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d creamype"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: creamype-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - creamype-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  creamype-postgres-data:
+  creamype-redis-data:
