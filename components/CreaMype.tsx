@@ -15,6 +15,8 @@ import { chatAction } from '../app/actions/chat';
 import { createConversationAction, exportConversationTraceAction, listConversationsAction } from '../app/actions/conversations';
 import type { ConversationListEntry } from '../src/conversations/selection';
 import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/actions/deliverable-command';
+import { deliverableFeedbackAction, loadDeliverableFeedbackAction } from '../app/actions/deliverable-feedback';
+import type { FeedbackValue } from '../src/repos/deliverable-feedback';
 import type { DeliverableStateView } from '../src/core/contracts';
 import { CLIENT_NOTIFICATION_KINDS, parseNotification } from '../src/core/contracts/notifications';
 import { developerFailureChatText } from './crea-mype/failure-copy';
@@ -134,6 +136,9 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   const [commandError, setCommandError] = useState('');
   // The card whose command produced `commandError`; only that card shows it.
   const [commandErrorAgent, setCommandErrorAgent] = useState('');
+  // F13: the owner's 👍 / 👎 by deliverable id (loaded from the server; updated optimistically).
+  const [feedback, setFeedback] = useState<Readonly<Record<string, FeedbackValue>>>({});
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
   const logoView = deliverableStates.find((view) => view.agentId === LOGO_AGENT_ID);
   const nameView = deliverableStates.find((view) => view.agentId === NAME_AGENT_ID);
   const taglineView = deliverableStates.find((view) => view.agentId === TAGLINE_AGENT_ID);
@@ -221,6 +226,16 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     void refreshBrief(conversationId);
   }, [conversationId, refreshBrief]);
 
+  useEffect(() => {
+    setFeedback({});
+    if (!conversationId) return;
+    let active = true; // a slower load of the previous conversation must not overwrite this one
+    void loadDeliverableFeedbackAction({ conversationId })
+      .then((result) => { if (active && result.ok) setFeedback(result.feedback); })
+      .catch((error) => console.error('Failed to load deliverable feedback', error));
+    return () => { active = false; };
+  }, [conversationId]);
+
   // Subscribe to artifact events from the orchestrator. The SSE stream is
   // scoped to the current conversationId; resetting the conversation
   // (Nuevo button) closes the old EventSource and opens a fresh one.
@@ -297,6 +312,31 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     };
   }, [conversationId, refreshStates]);
 
+  const handleFeedback = async (agentId: string, deliverableId: string, value: FeedbackValue | null) => {
+    if (!conversationId || feedbackBusy) return;
+    const previous = feedback[deliverableId] ?? null;
+    const apply = (next: FeedbackValue | null) =>
+      setFeedback(({ [deliverableId]: _old, ...rest }) => (next ? { ...rest, [deliverableId]: next } : rest));
+    apply(value);
+    setFeedbackBusy(true);
+    setCommandError('');
+    try {
+      const result = await deliverableFeedbackAction({ conversationId, deliverableId, value });
+      if (!result.ok) {
+        apply(previous);
+        setCommandErrorAgent(agentId);
+        setCommandError(result.message || 'No pudimos guardar tu calificación. Inténtalo de nuevo.');
+      }
+    } catch (error) {
+      console.error('Deliverable feedback failed.', error);
+      apply(previous);
+      setCommandErrorAgent(agentId);
+      setCommandError('No pudimos guardar tu calificación. Inténtalo de nuevo.');
+    } finally {
+      setFeedbackBusy(false);
+    }
+  };
+
   const handleDeliverableCommand = async (agentId: string, view: DeliverableStateView, request: DeliverableCommandRequest) => {
     if (!conversationId || commandBusy) return;
     setCommandBusy(true);
@@ -340,6 +380,9 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       busy={commandBusy}
       error={commandErrorAgent === LOGO_AGENT_ID ? commandError : ''}
       onCommand={(request) => { if (logoView) void handleDeliverableCommand(LOGO_AGENT_ID, logoView, request); }}
+      feedback={feedback}
+      feedbackBusy={feedbackBusy}
+      onFeedback={(deliverableId, value) => void handleFeedback(LOGO_AGENT_ID, deliverableId, value)}
       onAdvance={() => document.getElementById('brand-step-3')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
     />
   );
@@ -355,6 +398,9 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
         busy={commandBusy}
         error={commandErrorAgent === agentId ? commandError : ''}
         onCommand={(request) => void handleDeliverableCommand(agentId, view, request)}
+        feedback={feedback}
+        feedbackBusy={feedbackBusy}
+        onFeedback={(deliverableId, value) => void handleFeedback(agentId, deliverableId, value)}
       />
     </section>
   );

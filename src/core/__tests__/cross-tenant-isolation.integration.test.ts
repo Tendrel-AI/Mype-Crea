@@ -323,6 +323,21 @@ describe('cross-tenant isolation (PostgreSQL integration)', () => {
     expect(otherUserAudit.rowCount).toBe(0);
   });
 
+  it('prompt ledger F13: deliverable feedback is private to the owner, across members and tenants', async () => {
+    const ownA = repos(tenantA.tenant, tenantA.user);
+    const { conversationId, deliverableId } = tenantA;
+    expect(await ownA.deliverableFeedback.set(conversationId, deliverableId, 'up')).toEqual({ found: true, value: 'up' });
+    expect(await ownA.deliverableFeedback.listByConversation(conversationId)).toEqual({ [deliverableId]: 'up' });
+
+    // Another member of tenant A and tenant B know every UUID: they can neither rate nor read.
+    for (const stranger of [repos(tenantA.tenant, tenantA.otherUser), repos(tenantB.tenant, tenantB.user)]) {
+      expect((await stranger.deliverableFeedback.set(conversationId, deliverableId, 'down')).found).toBe(false);
+      expect(await stranger.deliverableFeedback.listByConversation(conversationId)).toEqual({});
+    }
+    // Their failed attempts left the owner's rating untouched.
+    expect(await ownA.deliverableFeedback.listByConversation(conversationId)).toEqual({ [deliverableId]: 'up' });
+  });
+
   it('KAN-52: a stored asset key is readable only by its owner, never across tenants or members', async () => {
     const ownA = repos(tenantA.tenant, tenantA.user);
     const task = await ownA.agentTasks.insertRoot({

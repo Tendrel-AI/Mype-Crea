@@ -15,10 +15,11 @@
  */
 
 import React, { useState } from 'react';
-import { CheckCircle2, Loader2, RefreshCw, Sparkles, Wand2, XCircle, ArrowRight } from 'lucide-react';
+import { CheckCircle2, Loader2, RefreshCw, Sparkles, Wand2, XCircle, ArrowRight, ThumbsUp, ThumbsDown } from 'lucide-react';
 import type { DeliverableCommandKind, DeliverableStateKind, DeliverableStateView } from '../../src/core/contracts';
 import { failedCardMessage } from './failure-copy';
 import { briefFieldSpec } from '../../src/core/brief';
+import type { FeedbackValue } from '../../src/repos/deliverable-feedback';
 
 /** Owner decision 2026-11-02 (KAN-31): shown on every set of name candidates. No availability claims. */
 export const NAME_AVAILABILITY_NOTE = 'Verifica la disponibilidad del nombre en INDECOPI antes de usarlo.';
@@ -162,6 +163,9 @@ export function DeliverableCommands({
   error,
   onCommand,
   onAdvance,
+  feedback,
+  feedbackBusy = false,
+  onFeedback,
 }: {
   view: DeliverableStateView | undefined;
   /** Lowercase noun for copy, e.g. "logo". */
@@ -173,6 +177,11 @@ export function DeliverableCommands({
   onCommand: (request: DeliverableCommandRequest) => void;
   /** UI-only navigation to the next section. Omit to hide «Avanzar». */
   onAdvance?: () => void;
+  /** The owner's 👍 / 👎 by deliverable id. */
+  feedback?: Readonly<Record<string, FeedbackValue>>;
+  feedbackBusy?: boolean;
+  /** Omit to hide the thumbs. Clicking the active thumb again sends `null` (clears the rating). */
+  onFeedback?: (deliverableId: string, value: FeedbackValue | null) => void;
 }) {
   const [iterating, setIterating] = useState(false);
   const [observation, setObservation] = useState('');
@@ -259,6 +268,27 @@ export function DeliverableCommands({
                   {isApproved && <CheckCircle2 size={12} />}
                   {candidateStatusLine(candidate, isApproved)}
                 </p>
+                {onFeedback && candidate.approvable && (
+                  <div className="flex gap-1 px-1">
+                    {(['up', 'down'] as const).map((value) => {
+                      const pressed = feedback?.[candidate.deliverableId] === value;
+                      const Icon = value === 'up' ? ThumbsUp : ThumbsDown;
+                      return (
+                        <button
+                          key={value}
+                          type="button"
+                          aria-pressed={pressed}
+                          aria-label={value === 'up' ? 'Me gusta esta versión' : 'No me gusta esta versión'}
+                          disabled={feedbackBusy}
+                          onClick={() => onFeedback(candidate.deliverableId, pressed ? null : value)}
+                          className={`rounded p-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${pressed ? 'bg-orange-100 text-orange-700' : 'text-neutral-500 hover:bg-neutral-100'}`}
+                        >
+                          <Icon size={14} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
                 {candidate.stale && (
                   <span className="mx-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">{STALE_LABEL}</span>
                 )}
