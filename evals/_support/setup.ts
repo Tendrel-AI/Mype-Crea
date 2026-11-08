@@ -12,7 +12,8 @@
  * - pino is quieted to `warn` so the reporter output stays readable;
  *   override with LOG_LEVEL=info to see the per-stage contract logs.
  */
-import { vi } from 'vitest';
+import { afterAll, beforeEach, vi } from 'vitest';
+import { beginEvalCase, captureCall, closeEvalLedger } from './ledger';
 import { applyEvalModelProfile, evalModelProfile } from '../../src/services/llm/eval-model-profile';
 
 process.env.LOG_LEVEL ??= 'warn';
@@ -29,7 +30,11 @@ if (profileModels) {
   );
 }
 
+// Rows are captured so evals can record them in the prompt ledger (see ./ledger.ts).
+const llmCalls = { record: async (row: Parameters<typeof captureCall>[0]) => (captureCall(row), 'eval-llm-call') };
 vi.mock('../../src/repos', () => ({
-  repos: () => ({ llmCalls: { record: async () => 'eval-llm-call' } }),
-  systemRepos: () => ({ llmCalls: { record: async () => 'eval-llm-call' } }),
+  repos: () => ({ llmCalls }),
+  systemRepos: () => ({ llmCalls }),
 }));
+beforeEach(beginEvalCase);
+afterAll(closeEvalLedger);
