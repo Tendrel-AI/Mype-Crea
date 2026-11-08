@@ -4,12 +4,13 @@ const mocked = vi.hoisted(() => ({ query: vi.fn() }));
 vi.mock('../../db/with-transaction', () => ({
   withTenantTransaction: async (_tenant: unknown, _user: unknown, work: (tx: { query: typeof mocked.query }) => unknown) =>
     work({ query: mocked.query }),
-  withTenantAdminTransaction: vi.fn(),
+  withTenantAdminTransaction: async (_tenant: unknown, work: (tx: { query: typeof mocked.query }) => unknown) =>
+    work({ query: mocked.query }),
 }));
 
 import type { ConversationId, TaskId } from '../../core/contracts';
 import { parseNotification } from '../../core/contracts/notifications';
-import { aiTurnsRepo } from '../ai-turns';
+import { aiEventsRepo, aiTurnsRepo } from '../ai-turns';
 
 const TENANT = 'tenant-a';
 const USER = 'user-a';
@@ -228,5 +229,24 @@ describe('aiTurnsRepo task settlement artifact parity (KAN-81)', () => {
       expect(calls().some((call) => call.sql.includes('INSERT INTO deliverables'))).toBe(false);
       expect((outboxPayload() as { artifacts: Array<{ url: string }> }).artifacts[0].url).toBe('/api/assets/deliverable-a');
     });
+  });
+});
+
+describe('aiEventsRepo.reconcileSettledTasks sweep', () => {
+  beforeEach(() => {
+    mocked.query.mockReset();
+  });
+
+  it('selects only settled tasks that lack their durable notice, so the limit never stalls on repaired rows', async () => {
+    mocked.query.mockImplementation(async (sql: string) => ({ rows: String(sql).includes('DISTINCT') ? [{ userId: USER }] : [] }));
+
+    await aiEventsRepo({ id: TENANT } as never).reconcileSettledTasks({ limit: 1 });
+
+    const select = calls().find((call) => call.sql.includes('LEFT JOIN ai_turn_events e'))!;
+    expect(select.sql).toContain('e.id IS NULL');
+    expect(select.sql).toContain('c.user_id=$2');
+    expect(select.params).toEqual([TENANT, USER, 1, 'announce_completion', 'announce_failure']);
+    // events are only visible once the owner is bound (RLS), so the owner is set before the query
+    expect(calls().findIndex((call) => call.sql.includes("set_config('app.user_id'"))).toBeLessThan(calls().findIndex((call) => call.sql.includes('LEFT JOIN ai_turn_events e')));
   });
 });
