@@ -17,6 +17,7 @@ import { getOrchestrator } from '../../src/core/orchestrator/runtime';
 import { briefFieldSpec, validateBriefValue } from '../../src/core/brief';
 import { BRIEF_PANEL_SOURCE, briefPanelFields, type BriefPanelField } from '../../src/conversations/brief-panel';
 import type { ConversationId, DeliverableStateView, FieldDelta } from '../../src/core/contracts';
+import { repos } from '../../src/repos';
 import { loggerFor } from '../../src/services/logger';
 import { authorizeConversation, isUuid, type AccessFailureCode } from './conversation-access';
 import { hasOnlyKeys, recordRejectedWrites } from './write-rejections';
@@ -45,7 +46,7 @@ export async function loadBriefAction(input: { readonly conversationId: string }
   const authorized = await authorizeConversation(conversationId, { requireDurability: false, requireTerms: false });
   if (!authorized.ok) return authorized;
   try {
-    return await currentBrief(conversationId);
+    return await currentBrief(conversationId, authorized.identity);
   } catch (error) {
     log.error({ conversationId, err: error }, 'brief.load_failed');
     return { ok: false, code: 'brief_failed', message: MESSAGES.loadFailed };
@@ -129,18 +130,20 @@ export async function updateBriefFieldAction(input: {
       return { ok: false, code: 'invalid_value', message: MESSAGES.invalid };
     }
     log.info({ conversationId, fieldName: spec.name, owners }, 'brief.field_updated');
-    return await currentBrief(conversationId);
+    return await currentBrief(conversationId, identity);
   } catch (error) {
     log.error({ conversationId, fieldName: spec.name, err: error }, 'brief.update_failed');
     return { ok: false, code: 'brief_failed', message: MESSAGES.saveFailed };
   }
 }
 
-async function currentBrief(conversationId: ConversationId): Promise<BriefResult> {
+async function currentBrief(conversationId: ConversationId, identity: ResolvedIdentity): Promise<BriefResult> {
   const orchestrator = getOrchestrator();
-  const [snapshot, states] = await Promise.all([
+  const [snapshot, states, context] = await Promise.all([
     orchestrator.getSnapshot(conversationId),
     orchestrator.getDeliverableStates(conversationId),
+    repos(identity.tenant, identity.user).conversations.context(conversationId),
   ]);
-  return { ok: true, fields: briefPanelFields(snapshot), states };
+  const links = { hasBrand: Boolean(context?.brandId), hasProduct: Boolean(context?.productId) };
+  return { ok: true, fields: briefPanelFields(snapshot, links), states };
 }

@@ -217,7 +217,7 @@ export async function loadOwnedConversation(
         selectedAt: deliverable.selectedAt ?? null,
         createdAt: deliverable.createdAt,
       })),
-      brief: briefPanelFields(pin.snapshot),
+      brief: briefPanelFields(pin.snapshot, { hasBrand: context !== null && context.brandId !== null, hasProduct: context?.productId != null }),
       states,
     },
   };
