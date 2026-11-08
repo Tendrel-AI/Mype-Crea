@@ -32,7 +32,7 @@ const mocks = vi.hoisted(() => {
   const getPinnedRelease = vi.fn(async () => ({ id: 'release-1', contentHash: 'hash-1' }));
   const startConversation = vi.fn(async () => undefined);
   const listRecent = vi.fn(async (): Promise<Array<{
-    conversationId: string; startedAt: string; lastActivityAt: string; businessName: string | null; brandId: string | null;
+    conversationId: string; startedAt: string; lastActivityAt: string; businessName: string | null; brandId: string | null; productId: string | null;
   }>> => []);
   const timeline = vi.fn(async (): Promise<Record<string, unknown> | undefined> => ({
     conversationId: '11111111-1111-4111-8111-111111111111', access: 'owner', generatedAt: '2026-11-02T15:00:00.000Z',
@@ -42,10 +42,12 @@ const mocks = vi.hoisted(() => {
     { ok: true as const, pin: await ensurePinnedConversation(input as never) }
   ));
   const listActive = vi.fn(async () => []);
+  const context = vi.fn(async (): Promise<unknown> => ({ brandId: '99999999-9999-4999-8999-999999999999', brandName: 'Café Andino', productId: null, productName: null }));
   const repos = vi.fn((..._args: unknown[]) => ({
     brands: { createConversation: brandsCreateConversation, listActive },
+    products: { listActive },
     trace: { timeline },
-    conversations: { ensurePinnedConversation, readPinnedConversation, listRecent },
+    conversations: { ensurePinnedConversation, readPinnedConversation, listRecent, context },
     messages: { listByConversation: listMessages },
     deliverables: { listByConversation },
     aiConfig: { getPinnedRelease },
@@ -60,7 +62,7 @@ const mocks = vi.hoisted(() => {
     identity, pinned, ensurePinnedConversation, brandsCreateConversation, readPinnedConversation,
     listTurns, listNotices, listAttempts, listByConversation, listMessages, getPinnedRelease,
     startConversation, repos, getOrchestrator, getFieldSchemas, listRecent, timeline,
-    getDeliverableStates, executeCommand, applyDelta,
+    getDeliverableStates, executeCommand, applyDelta, context,
   };
 });
 
@@ -207,16 +209,16 @@ describe('conversation actions', () => {
   });
   it('lists the caller’s recent conversations with server-side labels (KAN-25)', async () => {
     mocks.listRecent.mockResolvedValueOnce([
-      { conversationId: CONVERSATION_ID, startedAt: '2026-10-20T15:00:00.000Z', lastActivityAt: '2026-10-24T15:00:00.000Z', businessName: 'Café Andino', brandId: BRAND_ID },
-      { conversationId: '22222222-2222-4222-8222-222222222222', startedAt: '2026-10-01T15:00:00.000Z', lastActivityAt: '2026-10-01T15:00:00.000Z', businessName: null, brandId: null },
+      { conversationId: CONVERSATION_ID, startedAt: '2026-10-20T15:00:00.000Z', lastActivityAt: '2026-10-24T15:00:00.000Z', businessName: 'Café Andino', brandId: BRAND_ID, productId: null },
+      { conversationId: '22222222-2222-4222-8222-222222222222', startedAt: '2026-10-01T15:00:00.000Z', lastActivityAt: '2026-10-01T15:00:00.000Z', businessName: null, brandId: null, productId: null },
     ]);
     const result = await listConversationsAction();
     expect(result).toEqual({
       ok: true,
       brands: [],
       conversations: [
-        { conversationId: CONVERSATION_ID, brandId: BRAND_ID, label: 'Café Andino · 24 oct', lastActivityAt: '2026-10-24T15:00:00.000Z' },
-        { conversationId: '22222222-2222-4222-8222-222222222222', brandId: null, label: 'Nueva conversación · 1 oct', lastActivityAt: '2026-10-01T15:00:00.000Z' },
+        { conversationId: CONVERSATION_ID, brandId: BRAND_ID, productId: null, label: 'Café Andino · 24 oct', lastActivityAt: '2026-10-24T15:00:00.000Z' },
+        { conversationId: '22222222-2222-4222-8222-222222222222', brandId: null, productId: null, label: 'Nueva conversación · 1 oct', lastActivityAt: '2026-10-01T15:00:00.000Z' },
       ],
     });
     expect(mocks.repos).toHaveBeenCalledWith(mocks.identity.tenant, mocks.identity.user);
@@ -249,13 +251,20 @@ describe('conversation actions', () => {
     expect(mocks.readPinnedConversation).not.toHaveBeenCalled();
   });
 
-  it('passes the brand to the repo and reports the per-brand limit with its message', async () => {
-    mocks.brandsCreateConversation.mockResolvedValueOnce({ ok: false, code: 'conversation_limit_reached', limit: 5 } as never);
+  it('has no per-brand conversation limit: it pins under the brand and returns the header context', async () => {
     const result = await createConversationAction({ brandId: BRAND_ID });
-    expect(result).toEqual({
-      ok: false, code: 'conversation_limit_reached', limit: 5, message: 'Esta marca llegó al límite de 5 conversaciones.',
-    });
-    expect(mocks.startConversation).not.toHaveBeenCalled();
+    expect(mocks.brandsCreateConversation).toHaveBeenCalledWith(expect.objectContaining({ brandId: BRAND_ID, productId: undefined }));
+    expect(result).toMatchObject({ ok: true, brandId: BRAND_ID, productId: null, context: { brandName: 'Café Andino', productId: null } });
+  });
+
+  it('a product conversation passes the product to the repo; a product of another brand is product_not_found', async () => {
+    const PRODUCT = '88888888-8888-4888-8888-888888888888';
+    await createConversationAction({ brandId: BRAND_ID, productId: PRODUCT });
+    expect(mocks.brandsCreateConversation).toHaveBeenCalledWith(expect.objectContaining({ brandId: BRAND_ID, productId: PRODUCT }));
+    mocks.brandsCreateConversation.mockResolvedValueOnce({ ok: false, code: 'product_not_found' } as never);
+    expect(await createConversationAction({ brandId: BRAND_ID, productId: PRODUCT })).toMatchObject({ ok: false, code: 'product_not_found' });
+    expect(await createConversationAction({ brandId: BRAND_ID, productId: 'nope' })).toMatchObject({ ok: false, code: 'product_not_found' });
+    expect(mocks.startConversation).toHaveBeenCalledTimes(1);
   });
 
   it('answers a foreign, missing or malformed brand with the same not-found result', async () => {

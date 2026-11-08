@@ -9,10 +9,17 @@ const mocks = vi.hoisted(() => {
     resolveIdentity: vi.fn(async () => identity),
     requireTenantAdmin: vi.fn(),
     setLimits: vi.fn(async () => undefined),
-    getLimits: vi.fn(async () => ({ maxBrandsPerUser: 3, maxConversationsPerBrand: 5 })),
+    getLimits: vi.fn(async () => ({ maxBrandsPerUser: 3, maxProductsPerBrand: 5 })),
     archive: vi.fn(async () => true),
     productCreate: vi.fn(),
+    productUpdate: vi.fn(),
+    productGet: vi.fn(),
+    brandUpdate: vi.fn(),
+    brandGet: vi.fn(),
+    listFiles: vi.fn(async () => []),
     listByBrand: vi.fn(async () => []),
+    createOwnedBrand: vi.fn(),
+    createOwnedProduct: vi.fn(),
   };
 });
 
@@ -23,21 +30,28 @@ vi.mock('../../../src/auth/resolve-identity', () => ({
 }));
 vi.mock('../../../src/repos', () => ({
   repos: () => ({
-    brands: { setLimits: mocks.setLimits, getLimits: mocks.getLimits, archive: mocks.archive },
-    products: { create: mocks.productCreate, listByBrand: mocks.listByBrand },
+    brands: { setLimits: mocks.setLimits, getLimits: mocks.getLimits, archive: mocks.archive, update: mocks.brandUpdate, get: mocks.brandGet },
+    products: { create: mocks.productCreate, listByBrand: mocks.listByBrand, update: mocks.productUpdate, get: mocks.productGet },
+    brandFiles: { listByBrand: mocks.listFiles },
   }),
 }));
 vi.mock('../../../src/conversations/selection', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/conversations/selection')>()),
-  createOwnedBrand: vi.fn(),
+  createOwnedBrand: mocks.createOwnedBrand,
+  createOwnedProduct: mocks.createOwnedProduct,
   listOwnedBrands: vi.fn(async () => []),
 }));
 
 import { NotTenantAdminError } from '../../../src/repos/tenant-accounts';
 import {
   archiveBrandAction,
+  createBrandAction,
   createProductAction,
+  getBrandAction,
   getBrandLimitsAction,
+  getProductAction,
+  updateBrandAction,
+  updateProductAction,
   updateBrandLimitsAction,
 } from '../brands';
 
@@ -52,24 +66,24 @@ describe('updateBrandLimitsAction', () => {
 
   it('refuses a member before touching any repo', async () => {
     mocks.requireTenantAdmin.mockRejectedValueOnce(new mocks.TenantAdminRequiredError(mocks.identity));
-    const result = await updateBrandLimitsAction({ maxBrandsPerUser: 9, maxConversationsPerBrand: 9 });
+    const result = await updateBrandLimitsAction({ maxBrandsPerUser: 9, maxProductsPerBrand: 9 });
     expect(result).toMatchObject({ ok: false, code: 'not_admin' });
     expect(mocks.setLimits).not.toHaveBeenCalled();
   });
 
   it('refuses when the database says the user is not an active admin', async () => {
     mocks.setLimits.mockRejectedValueOnce(new NotTenantAdminError());
-    expect(await updateBrandLimitsAction({ maxBrandsPerUser: 9, maxConversationsPerBrand: 9 })).toMatchObject({ ok: false, code: 'not_admin' });
+    expect(await updateBrandLimitsAction({ maxBrandsPerUser: 9, maxProductsPerBrand: 9 })).toMatchObject({ ok: false, code: 'not_admin' });
   });
 
   it('saves for an admin', async () => {
-    expect(await updateBrandLimitsAction({ maxBrandsPerUser: 4, maxConversationsPerBrand: 0 }))
-      .toEqual({ ok: true, maxBrandsPerUser: 4, maxConversationsPerBrand: 0 });
-    expect(mocks.setLimits).toHaveBeenCalledWith({ maxBrandsPerUser: 4, maxConversationsPerBrand: 0 });
+    expect(await updateBrandLimitsAction({ maxBrandsPerUser: 4, maxProductsPerBrand: 0 }))
+      .toEqual({ ok: true, maxBrandsPerUser: 4, maxProductsPerBrand: 0 });
+    expect(mocks.setLimits).toHaveBeenCalledWith({ maxBrandsPerUser: 4, maxProductsPerBrand: 0 });
   });
 
   it.each([[-1, 5], [1001, 5], [1.5, 5], [5, Number.NaN], ['3' as never, 5]])('rejects invalid values %j / %j', async (brands, conversations) => {
-    const result = await updateBrandLimitsAction({ maxBrandsPerUser: brands, maxConversationsPerBrand: conversations });
+    const result = await updateBrandLimitsAction({ maxBrandsPerUser: brands, maxProductsPerBrand: conversations });
     expect(result).toMatchObject({ ok: false, code: 'invalid_input' });
     expect(mocks.setLimits).not.toHaveBeenCalled();
   });
@@ -77,35 +91,67 @@ describe('updateBrandLimitsAction', () => {
 
 describe('getBrandLimitsAction', () => {
   it('returns the tenant limits', async () => {
-    expect(await getBrandLimitsAction()).toEqual({ ok: true, maxBrandsPerUser: 3, maxConversationsPerBrand: 5 });
+    expect(await getBrandLimitsAction()).toEqual({ ok: true, maxBrandsPerUser: 3, maxProductsPerBrand: 5 });
   });
 });
 
-describe('createProductAction', () => {
+const VALID_BRAND = { business_name: 'Café', business_category: 'Café', market_proposition: 'a', target_audience: 'b' };
+const PRODUCT = '88888888-8888-4888-8888-888888888888';
+
+describe('create actions (KAN-87)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('answers a foreign brand like a malformed id (same not-found)', async () => {
-    mocks.productCreate.mockResolvedValueOnce({ ok: false, code: 'brand_not_found' });
-    const foreign = await createProductAction({ brandId: BRAND, name: 'Café' });
-    const malformed = await createProductAction({ brandId: 'nope' });
+  it('createBrandAction delegates with the import flag and answers a failure safely', async () => {
+    mocks.createOwnedBrand.mockResolvedValueOnce({ ok: true, conversationId: 'c', brandId: BRAND });
+    await createBrandAction({ attributes: VALID_BRAND, imported: true });
+    expect(mocks.createOwnedBrand).toHaveBeenCalledWith(mocks.identity, { attributes: VALID_BRAND, imported: true });
+    mocks.createOwnedBrand.mockRejectedValueOnce(new Error('db down'));
+    expect(await createBrandAction({ attributes: VALID_BRAND })).toMatchObject({ ok: false, code: 'configuration_unavailable' });
+  });
+
+  it('createProductAction answers a foreign brand like a malformed id (same not-found)', async () => {
+    mocks.createOwnedProduct.mockResolvedValueOnce({ ok: false, code: 'brand_not_found', message: 'No encontramos esta marca.' });
+    const foreign = await createProductAction({ brandId: BRAND, attributes: {} });
+    const malformed = await createProductAction({ brandId: 'nope', attributes: {} });
     expect(foreign).toEqual(malformed);
     expect(foreign).toMatchObject({ ok: false, code: 'brand_not_found' });
   });
+});
 
-  it.each([
-    ['an array', [] as never],
-    ['a class instance', new Date() as never],
-    ['an oversized object', { blob: 'x'.repeat(17 * 1024) }],
-  ])('rejects attributes that are %s', async (_label, attributes) => {
-    expect(await createProductAction({ brandId: BRAND, attributes })).toMatchObject({ ok: false, code: 'invalid_input' });
-    expect(mocks.productCreate).not.toHaveBeenCalled();
+describe('update actions (KAN-87 edit validation)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('updateBrandAction: an invalid patch returns per-field errors and never reaches the repo', async () => {
+    const result = await updateBrandAction({ brandId: BRAND, attributes: { business_category: '', evil: 'x' } });
+    expect(result).toMatchObject({ ok: false, code: 'invalid_input', fieldErrors: { business_category: expect.any(String), evil: expect.any(String) } });
+    expect(mocks.brandUpdate).not.toHaveBeenCalled();
   });
 
-  it('creates with plain attributes', async () => {
-    const product = { id: 'p1', brandId: BRAND, name: 'Café', attributes: { size: 'L' }, createdAt: 'x' };
-    mocks.productCreate.mockResolvedValueOnce({ ok: true, product });
-    expect(await createProductAction({ brandId: BRAND, name: ' Café ', attributes: { size: 'L' } })).toEqual({ ok: true, product });
-    expect(mocks.productCreate).toHaveBeenCalledWith({ brandId: BRAND, name: 'Café', attributes: { size: 'L' } });
+  it('updateBrandAction: passes the validated patch; the repo verdict on the merged object is surfaced as field errors', async () => {
+    mocks.brandUpdate.mockResolvedValueOnce({ ok: true, name: 'Nuevo' });
+    expect(await updateBrandAction({ brandId: BRAND, attributes: { business_name: 'Nuevo', imported: false } })).toEqual({ ok: true, name: 'Nuevo' });
+    expect(mocks.brandUpdate).toHaveBeenCalledWith(BRAND, { ok: true, values: { business_name: 'Nuevo' }, cleared: [] });
+    mocks.brandUpdate.mockResolvedValueOnce({ ok: false, code: 'invalid_input', errors: { market_proposition: 'Completa «Propuesta de mercado».' } });
+    expect(await updateBrandAction({ brandId: BRAND, attributes: { location: 'Lima' } })).toMatchObject({ ok: false, code: 'invalid_input', fieldErrors: { market_proposition: expect.any(String) } });
+  });
+
+  it('updateBrandAction / updateProductAction answer a foreign, archived or malformed id with the same not-found', async () => {
+    mocks.brandUpdate.mockResolvedValueOnce({ ok: false, code: 'brand_not_found' });
+    const foreign = await updateBrandAction({ brandId: BRAND, attributes: { location: 'Lima' } });
+    expect(foreign).toEqual(await updateBrandAction({ brandId: 'nope', attributes: {} }));
+    mocks.productUpdate.mockResolvedValueOnce({ ok: false, code: 'product_not_found' });
+    expect(await updateProductAction({ productId: PRODUCT, attributes: { product_name: 'X' } })).toMatchObject({ ok: false, code: 'product_not_found' });
+    expect(await updateProductAction({ productId: 'nope', attributes: {} })).toMatchObject({ ok: false, code: 'product_not_found' });
+  });
+
+  it('getBrandAction / getProductAction return only the owner\'s data and files (foreign = not found)', async () => {
+    mocks.brandGet.mockResolvedValueOnce(null);
+    expect(await getBrandAction({ brandId: BRAND })).toMatchObject({ ok: false, code: 'brand_not_found' });
+    mocks.productGet.mockResolvedValueOnce(null);
+    expect(await getProductAction({ productId: PRODUCT })).toMatchObject({ ok: false, code: 'product_not_found' });
+    mocks.productGet.mockResolvedValueOnce({ id: PRODUCT, brandId: BRAND, attributes: { product_name: 'X' } });
+    mocks.brandGet.mockResolvedValueOnce({ id: BRAND, attributes: { business_name: 'Café' } });
+    expect(await getProductAction({ productId: PRODUCT })).toMatchObject({ ok: true, brandAttributes: { business_name: 'Café' }, files: [] });
   });
 });
 

@@ -3,17 +3,20 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { ConversationMenu, ConversationMenuItems, conversationHref } from '../ConversationMenu';
 import { ChatPanel } from '../ChatPanel';
-import { RestartModal } from '../RestartModal';
+import { contextLine } from '../ChatPanel';
 import type { BrandAssets } from '../types';
 
 const noop = () => {};
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
 const BRAND = '99999999-9999-4999-8999-999999999999';
-const BRANDS = [{ brandId: BRAND, name: 'Café Andino' }];
+const PRODUCT = '88888888-8888-4888-8888-888888888888';
+const P_CONV = '33333333-3333-4333-8333-333333333333';
+const BRANDS = [{ brandId: BRAND, name: 'Café Andino', products: [] }];
+const BRANDS_WITH_PRODUCT = [{ brandId: BRAND, name: 'Café Andino', products: [{ productId: PRODUCT, name: 'Café molido' }] }];
 const ENTRIES = [
-  { conversationId: A, brandId: BRAND, label: 'Café Andino · 24 oct', lastActivityAt: '2026-10-24T15:00:00.000Z' },
-  { conversationId: B, brandId: null, label: 'Nueva conversación · 20 oct', lastActivityAt: '2026-10-20T15:00:00.000Z' },
+  { conversationId: A, brandId: BRAND, productId: null, label: 'Café Andino · 24 oct', lastActivityAt: '2026-10-24T15:00:00.000Z' },
+  { conversationId: B, brandId: null, productId: null, label: 'Nueva conversación · 20 oct', lastActivityAt: '2026-10-20T15:00:00.000Z' },
 ];
 const loadNever = () => new Promise<never>(() => {});
 
@@ -35,7 +38,7 @@ const textOf = (node: React.ReactNode): string =>
 describe('«Mis conversaciones» menu (KAN-25)', () => {
   it('renders only the closed trigger until opened', () => {
     const markup = renderToStaticMarkup(
-      <ConversationMenu initialConversations={ENTRIES} currentConversationId={A} initialBrands={BRANDS} onCreateBrand={noop} onNewConversation={noop} onArchiveBrand={noop} loadConversations={loadNever} />,
+      <ConversationMenu initialConversations={ENTRIES} currentConversationId={A} initialBrands={BRANDS} onCreateBrand={noop} onImportBrand={noop} onNewProduct={noop} onEditBrand={noop} onEditProduct={noop} onNewProductConversation={noop} onNewConversation={noop} onArchiveBrand={noop} loadConversations={loadNever} />,
     );
     expect(markup).toContain('Mis conversaciones');
     expect(markup).toContain('aria-haspopup="menu"');
@@ -43,12 +46,12 @@ describe('«Mis conversaciones» menu (KAN-25)', () => {
     expect(markup).not.toContain('Café Andino');
   });
 
-  it('renders «Crear marca» first, then each brand group with its actions, then legacy conversations', () => {
+  it('renders «Crear marca» and «Ya tengo una marca» first, then each brand group with its actions, then legacy conversations', () => {
     const markup = renderToStaticMarkup(
       <ConversationMenuItems brands={BRANDS} conversations={ENTRIES} currentConversationId={A} onCreateBrand={noop} onNewConversation={noop} />,
     );
     const items = [...markup.matchAll(/role="menuitem"[^>]*>(.*?)<\/(?:a|button)>/g)].map((m) => m[1].replace(/<[^>]+>/g, '').trim());
-    expect(items).toEqual(['Crear marca', 'Café Andino · 24 oct', 'Nueva conversación', 'Archivar marca', 'Nueva conversación · 20 oct']);
+    expect(items).toEqual(['Crear marca', 'Ya tengo una marca', 'Café Andino · 24 oct', 'Nuevo producto', 'Editar marca', 'Nueva conversación', 'Archivar marca', 'Nueva conversación · 20 oct']);
     expect(markup).toContain('aria-label="Conversaciones anteriores"');
     expect(markup).toContain('aria-label="Mis conversaciones"');
   });
@@ -70,22 +73,31 @@ describe('«Mis conversaciones» menu (KAN-25)', () => {
     )).toContain('No pudimos cargar tus conversaciones. Inténtalo de nuevo.');
   });
 
-  it('«Crear marca» opens the restart modal, whose copy keeps the current conversation', () => {
-    let showRestartModal = false;
-    const setShowRestartModal = vi.fn((open: boolean) => { showRestartModal = open; });
-    const tree = ConversationMenuItems({
-      brands: BRANDS, conversations: ENTRIES, currentConversationId: A, onCreateBrand: () => setShowRestartModal(true), onNewConversation: noop,
-    });
-    const [createButton] = findAll(tree, (el) => el.type === 'button' && textOf(el.props.children).includes('Crear marca'));
-    createButton.props.onClick?.();
-    expect(setShowRestartModal).toHaveBeenCalledWith(true);
+  it('«Crear marca», «Ya tengo una marca», «Nuevo producto», «Editar marca» and «Editar producto» call their handlers with the right ids', () => {
+    const handlers = { onCreateBrand: vi.fn(), onImportBrand: vi.fn(), onNewProduct: vi.fn(), onEditBrand: vi.fn(), onEditProduct: vi.fn(), onNewProductConversation: vi.fn() };
+    const entries = [...ENTRIES, { conversationId: P_CONV, brandId: BRAND, productId: PRODUCT, label: 'Café molido · 25 oct', lastActivityAt: '2026-10-25T15:00:00.000Z' }];
+    const tree = ConversationMenuItems({ brands: BRANDS_WITH_PRODUCT, conversations: entries, currentConversationId: A, onNewConversation: noop, ...handlers });
+    const click = (label: string) => findAll(tree, (el) => el.type === 'button' && textOf(el.props.children) === label)[0].props.onClick?.();
+    click('Crear marca'); click('Ya tengo una marca'); click('Nuevo producto'); click('Editar marca'); click('Editar producto');
+    // Product-level «Nueva conversación» renders before the brand-level one.
+    click('Nueva conversación');
+    expect(handlers.onNewProductConversation).toHaveBeenCalledWith(BRAND, PRODUCT);
+    expect(handlers.onCreateBrand).toHaveBeenCalledTimes(1);
+    expect(handlers.onImportBrand).toHaveBeenCalledTimes(1);
+    expect(handlers.onNewProduct).toHaveBeenCalledWith(BRAND);
+    expect(handlers.onEditBrand).toHaveBeenCalledWith(BRAND);
+    expect(handlers.onEditProduct).toHaveBeenCalledWith(PRODUCT);
+  });
 
-    const modal = renderToStaticMarkup(
-      <RestartModal showRestartModal={showRestartModal} setShowRestartModal={setShowRestartModal} handleRestart={noop} />,
+  it('groups conversations: brand conversations under the brand, product conversations under their product', () => {
+    const entries = [...ENTRIES, { conversationId: P_CONV, brandId: BRAND, productId: PRODUCT, label: 'Café molido · 25 oct', lastActivityAt: '2026-10-25T15:00:00.000Z' }];
+    const markup = renderToStaticMarkup(
+      <ConversationMenuItems brands={BRANDS_WITH_PRODUCT} conversations={entries} currentConversationId={A} onCreateBrand={noop} onNewConversation={noop} />,
     );
-    expect(modal).toContain('Tu conversación actual seguirá disponible en «Mis conversaciones».');
-    expect(modal).not.toContain('descartará');
-    expect(modal).not.toMatch(/\b(querés|tenés|podés|vos|sos)\b/);
+    const productGroup = markup.slice(markup.indexOf('aria-label="Producto: Café molido"'));
+    expect(productGroup).toContain('Café molido · 25 oct');
+    expect(markup.indexOf('Café Andino · 24 oct')).toBeLessThan(markup.indexOf('aria-label="Producto: Café molido"'));
+    expect(markup.slice(0, markup.indexOf('aria-label="Producto: Café molido"'))).not.toContain('Café molido · 25 oct');
   });
 
   it('«Nueva conversación» of a brand passes that brand id', () => {
@@ -119,7 +131,7 @@ describe('«Mis conversaciones» menu (KAN-25)', () => {
 
   it('shows «Marca sin nombre» for a brand without a name', () => {
     const markup = renderToStaticMarkup(
-      <ConversationMenuItems brands={[{ brandId: BRAND, name: null }]} conversations={[]} currentConversationId="" onCreateBrand={noop} onNewConversation={noop} />,
+      <ConversationMenuItems brands={[{ brandId: BRAND, name: null, products: [] }]} conversations={[]} currentConversationId="" onCreateBrand={noop} onNewConversation={noop} />,
     );
     expect(markup).toContain('Marca sin nombre');
   });
@@ -133,7 +145,8 @@ describe('ChatPanel with the conversation menu and the not-found state (KAN-25)'
     conversationId: A,
     handleExportConversation: noop,
     step: 1,
-    setShowRestartModal: noop,
+    onCreateBrand: noop,
+    onImportBrand: noop,
     messages: [],
     isLoading: false,
     messagesEndRef: React.createRef<HTMLDivElement>(),
@@ -147,14 +160,33 @@ describe('ChatPanel with the conversation menu and the not-found state (KAN-25)'
     needsNewConversation: false,
   };
 
-  it('places «Mis conversaciones» in the header right before the restart button', () => {
+  it('places «Mis conversaciones» in the header right before the «Nuevo» (create brand) button', () => {
     const markup = renderToStaticMarkup(
-      <ChatPanel {...base} conversationMenu={<ConversationMenu initialConversations={ENTRIES} currentConversationId={A} initialBrands={BRANDS} onCreateBrand={noop} onNewConversation={noop} onArchiveBrand={noop} loadConversations={loadNever} />} />,
+      <ChatPanel {...base} conversationMenu={<ConversationMenu initialConversations={ENTRIES} currentConversationId={A} initialBrands={BRANDS} onCreateBrand={noop} onImportBrand={noop} onNewProduct={noop} onEditBrand={noop} onEditProduct={noop} onNewProductConversation={noop} onNewConversation={noop} onArchiveBrand={noop} loadConversations={loadNever} />} />,
     );
     const menuAt = markup.indexOf('Mis conversaciones');
-    const restartAt = markup.indexOf('title="Crear un nuevo producto"');
+    const restartAt = markup.indexOf('title="Crear una marca nueva"');
     expect(menuAt).toBeGreaterThan(-1);
     expect(restartAt).toBeGreaterThan(menuAt);
+  });
+
+  it('the header shows «Marca: X» and, for a product conversation, «· Producto: Y»; a legacy conversation shows neither', () => {
+    const brandOnly = { brandId: BRAND, brandName: 'Café Andino', productId: null, productName: null };
+    expect(contextLine(brandOnly)).toBe('Marca: Café Andino');
+    expect(contextLine({ ...brandOnly, productId: PRODUCT, productName: 'Café molido' })).toBe('Marca: Café Andino · Producto: Café molido');
+    expect(contextLine({ ...brandOnly, brandName: null, productId: PRODUCT, productName: null })).toBe('Marca: Marca sin nombre · Producto: Producto sin nombre');
+    expect(contextLine({ brandId: null, brandName: null, productId: null, productName: null })).toBeNull();
+    expect(contextLine(null)).toBeNull();
+    const markup = renderToStaticMarkup(<ChatPanel {...base} context={{ ...brandOnly, productId: PRODUCT, productName: 'Café molido' }} />);
+    expect(markup).toContain('Marca: Café Andino · Producto: Café molido');
+    expect(renderToStaticMarkup(<ChatPanel {...base} />)).not.toContain('Marca:');
+  });
+
+  it('with no conversation the composer is disabled and «Crear marca» / «Ya tengo una marca» are offered', () => {
+    const markup = renderToStaticMarkup(<ChatPanel {...base} conversationId="" />);
+    expect(markup).toContain('Crear marca');
+    expect(markup).toContain('Ya tengo una marca');
+    expect(markup).toMatch(/<textarea[^>]*disabled/);
   });
 
   it('shows «No encontramos esta conversación.» with a link to the latest conversation', () => {
