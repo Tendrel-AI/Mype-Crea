@@ -1,4 +1,4 @@
-/** In-memory `IObjectStorage` for tests (KAN-52). Never used at runtime. */
+/** In-memory `IObjectStorage` for tests (KAN-52). Also the local-dev fallback for brand uploads (KAN-87). */
 import type { IObjectStorage } from './types';
 
 export interface StoredObject {
@@ -16,6 +16,14 @@ export class InMemoryObjectStorage implements IObjectStorage {
   async putObject(key: string, bytes: Uint8Array, contentType: string): Promise<void> {
     if (this.failPuts) throw this.failPuts;
     this.objects.set(key, { bytes, contentType });
+  }
+
+  async getObject(key: string): Promise<Uint8Array | null> {
+    return this.objects.get(key)?.bytes ?? null;
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    this.objects.delete(key);
   }
 
   async presignGet(key: string, ttlSeconds: number): Promise<string> {

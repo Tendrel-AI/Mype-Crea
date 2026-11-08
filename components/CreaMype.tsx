@@ -3,7 +3,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Sidebar } from './crea-mype/Sidebar';
 import { type BrandAssets, type Message, type Step } from './crea-mype/types';
-import { RestartModal } from './crea-mype/RestartModal';
+import { FormModal } from './crea-mype/FormModal';
+import { BrandForm, brandFormTitle, type BrandFiles, type BrandFormMode, type BrandFormResult } from './crea-mype/BrandForm';
+import { ProductForm, productFormTitle } from './crea-mype/ProductForm';
+import type { FormResult } from './crea-mype/CatalogForm';
+import { uploadBrandFiles } from './crea-mype/brand-files-client';
 import { ConversationMenu } from './crea-mype/ConversationMenu';
 import { ChatPanel } from './crea-mype/ChatPanel';
 import { Dashboard } from './crea-mype/Dashboard';
@@ -13,8 +17,8 @@ import { BriefPanel } from './crea-mype/BriefPanel';
 import { loadBriefAction, updateBriefFieldAction, type BriefPanelField } from '../app/actions/brief';
 import { chatAction } from '../app/actions/chat';
 import { createConversationAction, exportConversationTraceAction, listConversationsAction } from '../app/actions/conversations';
-import { archiveBrandAction, createBrandAction } from '../app/actions/brands';
-import type { BrandListEntry, ConversationListEntry } from '../src/conversations/selection';
+import { archiveBrandAction, createBrandAction, createProductAction, getBrandAction, getProductAction, updateBrandAction, updateProductAction } from '../app/actions/brands';
+import type { BrandFileView, BrandListEntry, ConversationContext, ConversationListEntry, NewOwnedConversation } from '../src/conversations/selection';
 import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/actions/deliverable-command';
 import { deliverableFeedbackAction, loadDeliverableFeedbackAction } from '../app/actions/deliverable-feedback';
 import type { FeedbackValue } from '../src/repos/deliverable-feedback';
@@ -53,6 +57,10 @@ interface CreaMypeProps {
   initialConversations?: ReadonlyArray<ConversationListEntry>;
   /** KAN-85: the caller's active brands, to group «Mis conversaciones». */
   initialBrands?: ReadonlyArray<BrandListEntry>;
+  /** KAN-87: brand/product of the open conversation, for the header line. */
+  initialContext?: ConversationContext | null;
+  /** KAN-27: the terms gate could not be read; no brand can be created. */
+  creationBlocked?: boolean;
   /** KAN-25: the requested id is foreign, missing or malformed (one identical outcome). */
   conversationNotFound?: boolean;
 }
@@ -89,7 +97,7 @@ const EMPTY_ASSETS: BrandAssets = {
   marketingPlan: '',
 };
 
-export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialBrief = [], initialStates = [], landingPageContent, initialError, initialConversations = [], initialBrands = [], conversationNotFound = false }: CreaMypeProps) {
+export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialBrief = [], initialStates = [], landingPageContent, initialError, initialConversations = [], initialBrands = [], initialContext = null, creationBlocked = false, conversationNotFound = false }: CreaMypeProps) {
   const [activeTab, setActiveTab] = useState<'create' | 'gallery' | 'landing'>('create');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
@@ -99,7 +107,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     typedLandingPage: landingPageContent,
   }));
   const [notFound, setNotFound] = useState(conversationNotFound);
-  const [messages, setMessages] = useState<Message[]>(() => conversationNotFound ? [] : initialTurns.length
+  const [messages, setMessages] = useState<Message[]>(() => conversationNotFound || !initialConversationId ? [] : initialTurns.length
     ? initialTurns.flatMap((turn) => [
         ...(turn.userMessage ? [{ id: `${turn.requestId}:user`, role: 'user' as const, text: turn.userMessage }] : []),
         ...(turn.content ? [{ id: `${turn.requestId}:assistant`, role: 'model' as const, text: turn.content }] : []),
@@ -111,7 +119,14 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   const incompleteTurn = [...initialTurns].reverse().find((turn) => turn.stage !== 'responded');
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [showRestartModal, setShowRestartModal] = useState(false);
+  // KAN-87: the open brand/product form (a modal), and the header context of the open conversation.
+  type FormModalState =
+    | { kind: 'brand'; mode: BrandFormMode; brandId?: string; initial?: Record<string, unknown>; files?: ReadonlyArray<BrandFileView> }
+    | { kind: 'product'; mode: 'create' | 'edit'; brandId?: string; productId?: string; initial?: Record<string, unknown>; brandAttributes?: Record<string, unknown> };
+  const [formModal, setFormModal] = useState<FormModalState | null>(null);
+  const [context, setContext] = useState<ConversationContext | null>(initialContext);
+  // A created brand whose files failed to upload: its conversation opens when the form is closed or the upload succeeds.
+  const [pendingOpen, setPendingOpen] = useState<Extract<NewOwnedConversation, { ok: true }> | null>(null);
   // Set of agent ids that are currently processing (claimed but no artifact
   // delivered yet). Populated by `task_processing` SSE events from the worker
   // and cleared by `artifact` events. Drives the per-panel spinner.
@@ -121,6 +136,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   // "Nuevo". Threaded into chatAction so messages and llm_calls rows are
   // attributed to the right conversation row.
   const [conversationId, setConversationId] = useState<string>(initialConversationId);
+  // Async results of a previous conversation must not land in the current one.
+  const currentConversationRef = useRef(initialConversationId);
   const [retryTurn, setRetryTurn] = useState<{ requestId: string; userMessage: string } | null>(() =>
     incompleteTurn && ['reserved', 'extracted', 'effects_committed'].includes(incompleteTurn.stage) && incompleteTurn.userMessage
       ? { requestId: incompleteTurn.requestId, userMessage: incompleteTurn.userMessage }
@@ -160,7 +177,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     if (!forConversation) return;
     try {
       const result = await loadDeliverableStatesAction({ conversationId: forConversation });
-      if (result.ok) applyStates(result.states);
+      if (result.ok && currentConversationRef.current === forConversation) applyStates(result.states);
     } catch (error) {
       console.error('Failed to load deliverable states', error);
     }
@@ -171,7 +188,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     if (!forConversation) return;
     try {
       const result = await loadBriefAction({ conversationId: forConversation });
-      if (!result.ok) return;
+      if (!result.ok || currentConversationRef.current !== forConversation) return;
       setBriefFields(result.fields);
       applyStates(result.states);
     } catch (error) {
@@ -249,6 +266,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     let errorsSinceOpen = 0;
     source.addEventListener('open', () => {
       console.info('[SSE] connected', { conversationId, readyState: source.readyState });
+      // Durable events are acked once for everyone: re-read what a dropped connection or another tab may have missed.
+      void refreshStates(conversationId);
       errorsSinceOpen = 0;
       setLiveLost(false);
     });
@@ -438,9 +457,11 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       ? prev
       : [...prev, { id: `${requestId}:user`, role: 'user', text: userText }]);
     setIsLoading(true);
+    const turnConversation = conversationId;
 
     try {
-      const result = await chatAction({ conversationId, requestId, userMessage: userText });
+      const result = await chatAction({ conversationId: turnConversation, requestId, userMessage: userText });
+      if (currentConversationRef.current !== turnConversation) return; // the user switched conversations mid-turn
       if (!result.ok) {
         setMessages(prev => [...prev, { id: `${requestId}:error`, role: 'model', text: result.message }]);
         setRetryTurn(result.retryable && !result.uncertain ? { requestId, userMessage: userText } : null);
@@ -460,14 +481,15 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       ]);
       setRetryTurn(null);
       setNeedsNewConversation(false);
-      void refreshBrief(conversationId);
+      void refreshBrief(turnConversation);
     } catch (error: unknown) {
       console.error('Chat request failed.', error);
+      if (currentConversationRef.current !== turnConversation) return;
       const text = 'No pudimos confirmar el resultado de esta solicitud. Recarga la conversación antes de continuar.';
       setMessages(prev => [...prev, { id: Date.now().toString(), role: 'model', text }]);
       setRetryTurn(null);
     } finally {
-      setIsLoading(false);
+      if (currentConversationRef.current === turnConversation) setIsLoading(false);
     }
   };
 
@@ -478,42 +500,112 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     }
   };
 
-  /** Start a fresh conversation: a new brand («Crear marca») or a new conversation in an existing brand. */
-  const startConversation = (create: () => ReturnType<typeof createBrandAction>) => {
+  /** Open a freshly created conversation: reset every per-conversation state and move the URL. */
+  const openConversation = (result: Extract<NewOwnedConversation, { ok: true }>) => {
+    setAssets(EMPTY_ASSETS);
+    setMessages([WELCOME_MESSAGE]);
+    currentConversationRef.current = result.conversationId;
+    setConversationId(result.conversationId);
+    setIsLoading(false);
+    setContext(result.context);
+    setRetryTurn(null);
+    setNeedsNewConversation(false);
+    setConversationError('');
+    setProcessingAgents(new Set());
+    setLiveLost(false);
+    setDeliverableStates([]);
+    setBriefFields([]);
+    setBriefError(null);
+    setCommandError('');
+    setNotFound(false);
+    window.history.pushState({}, '', `/?conversationId=${encodeURIComponent(result.conversationId)}`);
+  };
+
+  /** A new conversation in an existing brand; a failure is shown in the chat panel. */
+  const handleNewConversationInBrand = (brandId: string, productId?: string) => {
     void (async () => {
       setIsLoading(true);
       try {
-        const result = await create();
-        if (!result.ok) {
-          setConversationError(result.message);
-          return;
-        }
-        setAssets(EMPTY_ASSETS);
-        setMessages([WELCOME_MESSAGE]);
-        setConversationId(result.conversationId);
-        setRetryTurn(null);
-        setNeedsNewConversation(false);
-        setConversationError('');
-        setProcessingAgents(new Set());
-        setLiveLost(false);
-        setDeliverableStates([]);
-        setBriefFields([]);
-        setBriefError(null);
-        setCommandError('');
-        setNotFound(false);
-        window.history.pushState({}, '', `/?conversationId=${encodeURIComponent(result.conversationId)}`);
-        setShowRestartModal(false);
+        const result = await createConversationAction({ brandId, productId });
+        if (result.ok) openConversation(result);
+        else setConversationError(result.message);
       } finally {
         setIsLoading(false);
       }
     })();
   };
 
-  const handleRestart = () => startConversation(createBrandAction);
-  const handleNewConversationInBrand = (brandId: string) => startConversation(() => createConversationAction({ brandId }));
+  const toFormResult = (result: Extract<NewOwnedConversation, { ok: false }> | { ok: false; message: string; fieldErrors?: Record<string, string> }): FormResult =>
+    ({ ok: false, message: result.message, fieldErrors: result.fieldErrors });
+
+  const UPLOAD_PARTIAL = 'Guardamos los datos, pero no pudimos subir algunos archivos. Corrígelos y vuelve a guardar, o cierra para continuar.';
+
+  const submitBrand = async (mode: BrandFormMode, brandId: string | undefined, attributes: Record<string, unknown>, files: BrandFiles): Promise<BrandFormResult> => {
+    let targetId = brandId;
+    let opened = pendingOpen;
+    if (mode === 'edit' && brandId) {
+      const result = await updateBrandAction({ brandId, attributes });
+      if (!result.ok) return toFormResult(result as Parameters<typeof toFormResult>[0]);
+      setContext((prev) => (prev && prev.brandId === brandId ? { ...prev, brandName: result.name } : prev));
+    } else {
+      const result = await createBrandAction({ attributes, imported: mode === 'import' });
+      if (!result.ok) return toFormResult(result);
+      targetId = result.brandId;
+      opened = result;
+    }
+    const { errors, remaining } = await uploadBrandFiles(targetId!, files);
+    if (errors.length > 0) {
+      // Keep the form open on the brand that now exists; its conversation opens when the form closes or the upload succeeds.
+      if (opened) setPendingOpen(opened);
+      setFormModal({ kind: 'brand', mode: 'edit', brandId: targetId, initial: attributes });
+      return { ok: false, message: UPLOAD_PARTIAL, uploadErrors: errors, remaining };
+    }
+    setPendingOpen(null);
+    if (opened) openConversation(opened);
+    setFormModal(null);
+    return { ok: true };
+  };
+
+  /** Close the form; a created brand waiting for its files still gets its conversation opened. */
+  const closeForm = () => {
+    if (pendingOpen) openConversation(pendingOpen);
+    setPendingOpen(null);
+    setFormModal(null);
+  };
+
+  const submitProduct = async (modal: Extract<FormModalState, { kind: 'product' }>, attributes: Record<string, unknown>): Promise<FormResult> => {
+    if (modal.mode === 'edit' && modal.productId) {
+      const result = await updateProductAction({ productId: modal.productId, attributes });
+      if (!result.ok) return toFormResult(result as Parameters<typeof toFormResult>[0]);
+      setContext((prev) => (prev && prev.productId === modal.productId ? { ...prev, productName: result.name } : prev));
+    } else {
+      const result = await createProductAction({ brandId: modal.brandId ?? '', attributes });
+      if (!result.ok) return toFormResult(result);
+      openConversation(result);
+    }
+    setFormModal(null);
+    return { ok: true };
+  };
+
+  const openEditBrand = async (brandId: string) => {
+    const result = await getBrandAction({ brandId });
+    if (!result.ok) { setConversationError(result.message); return; }
+    setFormModal({ kind: 'brand', mode: 'edit', brandId, initial: result.attributes, files: result.files });
+  };
+  const openNewProduct = async (brandId: string) => {
+    const result = await getBrandAction({ brandId });
+    if (!result.ok) { setConversationError(result.message); return; }
+    setFormModal({ kind: 'product', mode: 'create', brandId, brandAttributes: result.attributes });
+  };
+  const openEditProduct = async (productId: string) => {
+    const result = await getProductAction({ productId });
+    if (!result.ok) { setConversationError(result.message); return; }
+    setFormModal({ kind: 'product', mode: 'edit', productId, initial: result.attributes, brandAttributes: result.brandAttributes });
+  };
+
   const handleArchiveBrand = (brandId: string) => {
     void archiveBrandAction({ brandId }).then((result) => {
-      // Reload through `/`: it opens the latest remaining conversation, or creates a brand if none is left.
+      // Reload through `/`: it opens the latest remaining conversation, or the empty state if none is left.
       if (result.ok) window.location.assign('/');
       else setConversationError(result.message);
     });
@@ -543,10 +635,31 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden relative">
 
-      <RestartModal showRestartModal={showRestartModal} setShowRestartModal={setShowRestartModal} handleRestart={handleRestart} />
+      {formModal?.kind === 'brand' && (
+        <FormModal title={brandFormTitle(formModal.mode)} onClose={closeForm}>
+          <BrandForm
+            mode={formModal.mode}
+            initialValues={formModal.initial}
+            existingFiles={formModal.files}
+            onSubmit={(attributes, files) => submitBrand(formModal.mode, formModal.brandId, attributes, files)}
+            onCancel={closeForm}
+          />
+        </FormModal>
+      )}
+      {formModal?.kind === 'product' && (
+        <FormModal title={productFormTitle(formModal.mode)} onClose={closeForm}>
+          <ProductForm
+            mode={formModal.mode}
+            initialValues={formModal.initial}
+            brandAttributes={formModal.brandAttributes}
+            onSubmit={(attributes) => submitProduct(formModal, attributes)}
+            onCancel={closeForm}
+          />
+        </FormModal>
+      )}
       {activeTab === 'create' && (
         <>
-          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} setShowRestartModal={setShowRestartModal} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || logoView || nameView || taglineView ? (
+          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} context={context} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || logoView || nameView || taglineView ? (
             <>
               {briefFields.length > 0 && (
                 <details className="mb-2">
@@ -557,8 +670,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
               {renderNameCommands()}
               {renderTextCommands(LOGO_AGENT_ID, logoView, 'Logo', 'logo')}
             </>
-          ) : undefined} conversationNotFound={notFound} liveConnectionLost={liveLost} conversationMenu={
-            <ConversationMenu initialConversations={initialConversations} initialBrands={initialBrands} currentConversationId={conversationId} onCreateBrand={() => setShowRestartModal(true)} onNewConversation={handleNewConversationInBrand} onArchiveBrand={handleArchiveBrand} loadConversations={listConversationsAction} />
+          ) : undefined} conversationNotFound={notFound} liveConnectionLost={liveLost} creationBlocked={creationBlocked} conversationMenu={creationBlocked ? undefined :
+            <ConversationMenu initialConversations={initialConversations} initialBrands={initialBrands} currentConversationId={conversationId} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} onNewProduct={(brandId) => void openNewProduct(brandId)} onEditBrand={(brandId) => void openEditBrand(brandId)} onEditProduct={(productId) => void openEditProduct(productId)} onNewProductConversation={handleNewConversationInBrand} onNewConversation={handleNewConversationInBrand} onArchiveBrand={handleArchiveBrand} loadConversations={listConversationsAction} />
           } />
           <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
       </>

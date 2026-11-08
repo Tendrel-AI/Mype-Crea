@@ -8,6 +8,7 @@ import {
   CONVERSATION_NOT_FOUND_MESSAGE,
   CONVERSATIONS_UNAVAILABLE_MESSAGE,
   NEW_CONVERSATION_FAILED_MESSAGE,
+  PRODUCT_NOT_FOUND_MESSAGE,
   createOwnedConversation,
   isConversationId,
   listOwnedBrands,
@@ -24,16 +25,20 @@ export type NewConversationResult = NewOwnedConversation;
 /**
  * Create and durably pin a new conversation under one of the caller's active brands before the UI
  * opens SSE. The caller's previous conversations are left untouched and stay listed (KAN-25).
- * A foreign, missing or archived brand gets the same not-found answer; the per-brand limit
- * (KAN-85) comes back as `conversation_limit_reached`.
+ * A foreign, missing or archived brand gets the same not-found answer; with `productId`
+ * the conversation belongs to that product of the brand (another brand's product is `product_not_found`).
+ * Conversations per brand are not limited (KAN-87).
  */
-export async function createConversationAction(input: { readonly brandId: string }): Promise<NewConversationResult> {
+export async function createConversationAction(input: { readonly brandId: string; readonly productId?: string }): Promise<NewConversationResult> {
   if (!isConversationId(input?.brandId)) {
     return { ok: false, code: 'brand_not_found', message: BRAND_NOT_FOUND_MESSAGE };
   }
+  if (input.productId !== undefined && !isConversationId(input.productId)) {
+    return { ok: false, code: 'product_not_found', message: PRODUCT_NOT_FOUND_MESSAGE };
+  }
   try {
     const identity = await resolveIdentity();
-    return await createOwnedConversation(identity, input.brandId as UUID);
+    return await createOwnedConversation(identity, input.brandId as UUID, input.productId as UUID | undefined);
   } catch {
     return { ok: false, code: 'configuration_unavailable', message: NEW_CONVERSATION_FAILED_MESSAGE };
   }

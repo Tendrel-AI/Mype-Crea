@@ -17,28 +17,28 @@ const ACTION_LABEL: Record<Audit[number]['action'], string> = {
 const OUTCOME_LABEL: Record<Audit[number]['outcome'], string> = { success: 'Completada', refused: 'Rechazada', failed: 'Falló' };
 
 /** KAN-85: the two tenant-admin limits; the server re-checks the admin role and the 0..1000 range. */
-function BrandLimitsForm({ limits }: { limits: { maxBrandsPerUser: number; maxConversationsPerBrand: number } }) {
+function BrandLimitsForm({ limits }: { limits: { maxBrandsPerUser: number; maxProductsPerBrand: number } }) {
   const [pending, start] = useTransition();
   const [message, setMessage] = useState('');
   const [brands, setBrands] = useState(String(limits.maxBrandsPerUser));
-  const [conversations, setConversations] = useState(String(limits.maxConversationsPerBrand));
+  const [products, setProducts] = useState(String(limits.maxProductsPerBrand));
   return (
     <form className="grid gap-3 rounded-xl border bg-white p-4 md:grid-cols-3" onSubmit={(event) => {
       event.preventDefault();
       start(async () => {
-        const result = await updateBrandLimitsAction({ maxBrandsPerUser: Number(brands), maxConversationsPerBrand: Number(conversations) });
+        const result = await updateBrandLimitsAction({ maxBrandsPerUser: Number(brands), maxProductsPerBrand: Number(products) });
         setMessage(result.ok ? 'Límites guardados.' : result.message);
       });
     }}>
-      <label className="grid gap-1 text-sm">Marcas activas por usuario<input required type="number" min={0} max={1000} step={1} value={brands} onChange={(event) => setBrands(event.target.value)} className="rounded border p-2" /></label>
-      <label className="grid gap-1 text-sm">Conversaciones por marca<input required type="number" min={0} max={1000} step={1} value={conversations} onChange={(event) => setConversations(event.target.value)} className="rounded border p-2" /></label>
+      <label className="grid gap-1 text-sm">Marcas por usuario<input required type="number" min={0} max={1000} step={1} value={brands} onChange={(event) => setBrands(event.target.value)} className="rounded border p-2" /></label>
+      <label className="grid gap-1 text-sm">Productos por marca<input required type="number" min={0} max={1000} step={1} value={products} onChange={(event) => setProducts(event.target.value)} className="rounded border p-2" /></label>
       <div className="flex items-end"><button disabled={pending} className="rounded bg-orange-600 px-4 py-2 text-white">Guardar límites</button></div>
       <p role="status" className="text-sm md:col-span-3">{message}</p>
     </form>
   );
 }
 
-export default function TenantAccountsAdmin({ members, audit, currentUserId, limits }: { members: Members; audit: Audit; currentUserId: string; limits?: { maxBrandsPerUser: number; maxConversationsPerBrand: number } }) {
+export default function TenantAccountsAdmin({ members, audit, currentUserId, limits }: { members: Members; audit: Audit; currentUserId: string; limits?: { maxBrandsPerUser: number; maxProductsPerBrand: number } }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [message, setMessage] = useState('');

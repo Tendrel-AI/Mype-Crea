@@ -12,7 +12,7 @@
  * recent AWS SDK versions add CRC checksum headers by default, which
  * S3-compatible providers do not all accept.
  */
-import { PutObjectCommand, GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, PutObjectCommand, GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { BucketConfig } from './config';
 import type { IObjectStorage } from './types';
@@ -42,6 +42,20 @@ export class S3ObjectStorage implements IObjectStorage {
     await this.client.send(
       new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: bytes, ContentType: contentType }),
     );
+  }
+
+  async getObject(key: string): Promise<Uint8Array | null> {
+    try {
+      const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+      return (await res.Body?.transformToByteArray()) ?? null;
+    } catch (err) {
+      if ((err as { name?: string }).name === 'NoSuchKey') return null;
+      throw err;
+    }
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 
   async presignGet(key: string, ttlSeconds: number): Promise<string> {

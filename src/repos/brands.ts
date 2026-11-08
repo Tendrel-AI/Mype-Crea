@@ -1,12 +1,13 @@
 /**
- * KAN-85 brands. A user creates a brand before chatting; every new conversation belongs to a brand.
- * Two tenant-admin limits (`tenants.max_brands_per_user`, `tenants.max_conversations_per_brand`)
- * are enforced here, inside the same transaction as the insert:
+ * KAN-85 / KAN-87 brands. A user creates a brand (with validated typed attributes) before chatting;
+ * every new conversation belongs to a brand. Two tenant-admin limits (`tenants.max_brands_per_user`,
+ * `tenants.max_products_per_brand`) are enforced inside the same transaction as the insert:
  *  - brands: a per-(tenant, user) advisory lock serializes creators, then active brands are counted;
- *  - conversations: the owner's active brand row is locked FOR UPDATE, then its conversations are counted.
+ *  - products: see `products.ts` (the owner's active brand row is locked, then its products counted).
+ * Conversations per brand are NOT limited (KAN-87; cost is bounded by KAN-43 usage limits).
  * Over the limit returns a typed refusal (never a throw). Archived brands do not count and take no
- * new conversations. Lowering a limit below the current count only blocks new creation.
- * The limits change only through `app.set_brand_limits` (SECURITY DEFINER, admin re-checked in the DB).
+ * new conversations or edits. Lowering a limit below the current count only blocks new creation.
+ * The limits change only through `app.set_brand_product_limits` (SECURITY DEFINER, admin re-checked in the DB).
  */
 import type { AiConversationPin } from './models';
 import type { UUID } from '../core/contracts';
@@ -15,6 +16,7 @@ import { withTenantTransaction, type Tenant, type TxClient, type User } from '..
 import { loggerFor } from '../services/logger';
 import { businessNameFromAgentStates, pinConversationInTx } from './conversations';
 import { NotTenantAdminError } from './tenant-accounts';
+import { updateAttributesInTx, type AttributePatch } from './attributes';
 
 const log = loggerFor('repos.brands');
 
@@ -28,11 +30,13 @@ export interface BrandRow {
 
 export interface BrandLimits {
   readonly maxBrandsPerUser: number;
-  readonly maxConversationsPerBrand: number;
+  readonly maxProductsPerBrand: number;
 }
 
-export type LimitRefusal = { readonly ok: false; readonly code: 'brand_limit_reached' | 'conversation_limit_reached'; readonly limit: number };
+export type LimitRefusal = { readonly ok: false; readonly code: 'brand_limit_reached'; readonly limit: number };
 export type BrandNotFound = { readonly ok: false; readonly code: 'brand_not_found' };
+export type ProductNotFound = { readonly ok: false; readonly code: 'product_not_found' };
+export type InvalidAttributes = { readonly ok: false; readonly code: 'invalid_input'; readonly errors: Record<string, string> };
 
 export interface FirstConversation {
   readonly conversationId: UUID;
@@ -43,9 +47,13 @@ export interface BrandsRepo {
   /** Create an active brand within the limit; with `firstConversation` it is pinned in the same transaction. */
   create(input: { name?: string | null; attributes?: Record<string, unknown>; firstConversation?: FirstConversation }):
     Promise<{ ok: true; brandId: UUID; pin?: AiConversationPin } | LimitRefusal>;
-  /** Add a conversation to the caller's active brand within the per-brand limit. */
-  createConversation(input: FirstConversation & { brandId: UUID }):
-    Promise<{ ok: true; pin: AiConversationPin } | LimitRefusal | BrandNotFound>;
+  /** Add a conversation to the caller's active brand, optionally under one of that brand's products. */
+  createConversation(input: FirstConversation & { brandId: UUID; productId?: UUID }):
+    Promise<{ ok: true; pin: AiConversationPin } | BrandNotFound | ProductNotFound>;
+  /** The caller's active brand, or null when it is foreign, missing or archived. */
+  get(brandId: UUID): Promise<BrandRow | null>;
+  /** Apply a validated patch; the merged attributes are validated again (required fields stay required). */
+  update(brandId: UUID, patch: AttributePatch): Promise<{ ok: true; name: string | null } | BrandNotFound | InvalidAttributes>;
   /** The caller's active brands, oldest first. */
   listActive(): Promise<BrandRow[]>;
   /** Archive the caller's active brand; false when it is foreign, missing or already archived. */
@@ -55,14 +63,14 @@ export interface BrandsRepo {
   setLimits(limits: BrandLimits): Promise<void>;
 }
 
-async function readLimits(tx: TxClient, tenant: Tenant): Promise<BrandLimits> {
-  const res = await tx.query<{ max_brands_per_user: number; max_conversations_per_brand: number }>(
-    `SELECT max_brands_per_user, max_conversations_per_brand FROM tenants WHERE id = $1`,
+export async function readLimits(tx: TxClient, tenant: Tenant): Promise<BrandLimits> {
+  const res = await tx.query<{ max_brands_per_user: number; max_products_per_brand: number }>(
+    `SELECT max_brands_per_user, max_products_per_brand FROM tenants WHERE id = $1`,
     [tenant.id],
   );
   const row = res.rows[0];
   if (!row) throw new Error('Tenant not visible.');
-  return { maxBrandsPerUser: row.max_brands_per_user, maxConversationsPerBrand: row.max_conversations_per_brand };
+  return { maxBrandsPerUser: row.max_brands_per_user, maxProductsPerBrand: row.max_products_per_brand };
 }
 
 export function brandsRepo(tenant: Tenant, user: User): BrandsRepo {
@@ -94,22 +102,42 @@ export function brandsRepo(tenant: Tenant, user: User): BrandsRepo {
 
     async createConversation(input) {
       return withTenantTransaction(tenant, user, async (tx) => {
+        // FOR SHARE keeps a concurrent archive from slipping between this check and the insert.
         const brand = await tx.query(
-          `SELECT id FROM brands WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active' FOR UPDATE`,
+          `SELECT id FROM brands WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active' FOR SHARE`,
           [input.brandId, tenant.id, user.id],
         );
         if (brand.rows.length === 0) return { ok: false, code: 'brand_not_found' } as const;
-        const { maxConversationsPerBrand } = await readLimits(tx, tenant);
-        const count = await tx.query<{ n: number }>(
-          `SELECT count(*)::int AS n FROM conversations WHERE tenant_id = $1 AND brand_id = $2`,
-          [tenant.id, input.brandId],
-        );
-        if ((count.rows[0]?.n ?? 0) >= maxConversationsPerBrand) {
-          log.info({ tenantId: tenant.id, brandId: input.brandId, limit: maxConversationsPerBrand }, 'brands.conversation.limit_reached');
-          return { ok: false, code: 'conversation_limit_reached', limit: maxConversationsPerBrand } as const;
+        if (input.productId) {
+          // The DB FKs also enforce this; checking first gives a typed refusal instead of a constraint error.
+          const owned = await tx.query(
+            `SELECT id FROM products WHERE id = $1 AND tenant_id = $2 AND brand_id = $3 AND user_id = $4`,
+            [input.productId, tenant.id, input.brandId, user.id],
+          );
+          if (owned.rows.length === 0) return { ok: false, code: 'product_not_found' } as const;
         }
-        const pin = await pinConversationInTx(tx, tenant, user, input, input.brandId);
+        const pin = await pinConversationInTx(tx, tenant, user, input, input.brandId, input.productId ?? null);
         return { ok: true, pin } as const;
+      });
+    },
+
+    async get(brandId) {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<{ id: UUID; name: string | null; attributes: Record<string, unknown>; created_at: Date }>(
+          `SELECT id, name, attributes, created_at FROM brands
+            WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active'`,
+          [brandId, tenant.id, user.id],
+        );
+        const row = res.rows[0];
+        return row ? { id: row.id, name: row.name, attributes: row.attributes, createdAt: row.created_at.toISOString() } : null;
+      });
+    },
+
+    async update(brandId, patch) {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const result = await updateAttributesInTx(tx, { level: 'brand', id: brandId, tenantId: tenant.id, userId: user.id, patch });
+        if (result.ok) return { ok: true, name: result.name } as const;
+        return result.code === 'not_found' ? { ok: false, code: 'brand_not_found' } as const : result;
       });
     },
 
@@ -155,7 +183,7 @@ export function brandsRepo(tenant: Tenant, user: User): BrandsRepo {
       await withTenantTransaction(tenant, user, async (tx) => {
         const admin = await tx.query<{ ok: boolean }>(`SELECT app.has_tenant_admin() AS ok`);
         if (!admin.rows[0]?.ok) throw new NotTenantAdminError();
-        await tx.query(`SELECT app.set_brand_limits($1, $2)`, [limits.maxBrandsPerUser, limits.maxConversationsPerBrand]);
+        await tx.query(`SELECT app.set_brand_product_limits($1, $2)`, [limits.maxBrandsPerUser, limits.maxProductsPerBrand]);
       });
     },
   };

@@ -18,7 +18,11 @@ import type {
   TaskId,
   UUID,
 } from '../core/contracts';
-import type { AiConversationPin, RecentConversationRow } from './models';
+import { applyAttributePatch, entityName, validateAttributes, type AttributeLevel } from '../core/brand-catalog';
+import { BRIEF_PANEL_SOURCE } from '../conversations/brief-panel';
+import { clearedFields, filledChanges, mappingFor, overlayRecords, type Attrs, type RecordContext } from '../core/brief-records';
+import { loggerFor } from '../services/logger';
+import type { AiConversationPin, ConversationContextRow, RecentConversationRow } from './models';
 import type { AgentFieldSchema } from '../core/orchestrator/in-memory-store';
 import {
   withTenantAdminTransaction,
@@ -29,6 +33,8 @@ import {
 } from '../db/with-transaction';
 
 type AgentStatesJson = Record<AgentId, AgentRequirementState>;
+
+const log = loggerFor('repos.conversations');
 
 function emptySlots(names: ReadonlyArray<FieldName>): Record<FieldName, FieldSlot> {
   const out: Record<FieldName, FieldSlot> = {};
@@ -114,10 +120,13 @@ async function loadSnapshot(
 ): Promise<ConversationSnapshot | undefined> {
   const res = await tx.query<{
     tenant_id: string;
+    user_id?: string;
+    brand_id?: string | null;
+    product_id?: string | null;
     agent_states: AgentStatesJson;
     started_at: Date;
   }>(
-    `SELECT tenant_id, agent_states, started_at
+    `SELECT tenant_id, agent_states, started_at, user_id, brand_id, product_id
        FROM conversations
       WHERE id = $1
       LIMIT 1
@@ -129,7 +138,14 @@ async function loadSnapshot(
 
   // Merge schema defaults so newly-registered agents appear with empty slots.
   const defaults = buildEmptyAgentStates(schemas);
-  const merged: AgentStatesJson = { ...defaults, ...row.agent_states };
+  let merged: AgentStatesJson = { ...defaults, ...row.agent_states };
+
+  // KAN-88 (D24): the brand/product records are the source of truth for the fields they map.
+  if (row.brand_id) {
+    const records = await readRecords(tx, row.tenant_id, row.user_id, row.brand_id, row.product_id ?? null);
+    if (records) merged = overlayRecords(merged, records, BRIEF_PANEL_SOURCE);
+    else log.warn({ conversationId, brandId: row.brand_id }, 'brief.records_missing');
+  }
 
   return {
     conversationId,
@@ -137,6 +153,25 @@ async function loadSnapshot(
     agentStates: merged,
     updatedAt: row.started_at.toISOString(),
   };
+}
+
+/** Attributes of the conversation's brand (any status: an archived brand stays readable) and product, owner-scoped. */
+async function readRecords(
+  tx: TxClient,
+  tenantId: string,
+  userId: string | undefined,
+  brandId: string,
+  productId: string | null,
+): Promise<RecordContext | undefined> {
+  const res = await tx.query<{ brand_attributes: Attrs; product_attributes: Attrs | null }>(
+    `SELECT b.attributes AS brand_attributes, p.attributes AS product_attributes
+       FROM brands b
+       LEFT JOIN products p ON p.tenant_id = b.tenant_id AND p.brand_id = b.id AND p.user_id = b.user_id AND p.id = $4
+      WHERE b.id = $1 AND b.tenant_id = $2 AND b.user_id = $3`,
+    [brandId, tenantId, userId, productId],
+  );
+  const row = res.rows[0];
+  return row && { brand: row.brand_attributes, ...(row.product_attributes ? { product: row.product_attributes } : {}) };
 }
 
 /** Brief field that names the business; every live agent card requires it. */
@@ -173,14 +208,95 @@ async function writeAgentStates(
   conversationId: ConversationId,
   agentStates: AgentStatesJson,
 ): Promise<void> {
-  const res = await tx.query(
-    `UPDATE conversations
+  // The subquery sees the row as it was before this UPDATE: the stored states to diff against (KAN-88).
+  const res = await tx.query<{
+    previous_states: AgentStatesJson;
+    tenant_id: string;
+    user_id: string;
+    brand_id: string | null;
+    product_id: string | null;
+  }>(
+    `UPDATE conversations c
         SET agent_states = $2::jsonb
-      WHERE id = $1`,
+       FROM (SELECT id, agent_states FROM conversations WHERE id = $1) o
+      WHERE c.id = o.id
+  RETURNING o.agent_states AS previous_states, c.tenant_id, c.user_id, c.brand_id, c.product_id`,
     [conversationId, JSON.stringify(agentStates)],
   );
   if (res.rowCount === 0) {
     throw new Error(`No conversation row to update: ${conversationId}`);
+  }
+  const row = res.rows?.[0];
+  if (row?.brand_id) await writeBackToRecords(tx, conversationId, row, agentStates);
+}
+
+/**
+ * KAN-88 (D24): confirmed brief values flow back to the brand/product record, in the caller's
+ * transaction. Never fails the turn: a value the catalog refuses is skipped and logged, and an
+ * unexpected SQL error rolls back to a savepoint so the brief write still commits. Lock order is
+ * always brand then product, so two conversations of one brand queue instead of deadlocking.
+ */
+async function writeBackToRecords(
+  tx: TxClient,
+  conversationId: ConversationId,
+  row: { previous_states: AgentStatesJson; tenant_id: string; user_id: string; brand_id: string | null; product_id: string | null },
+  next: AgentStatesJson,
+): Promise<void> {
+  const previous = row.previous_states ?? {};
+  const links = { hasBrand: true, hasProduct: row.product_id !== null };
+  const cleared = clearedFields(previous, next).filter((name) => mappingFor(name, links));
+  if (cleared.length > 0) log.info({ conversationId, fields: cleared }, 'brief.clear_keeps_record_value');
+  const changes = [...filledChanges(previous, next)].flatMap(([name, value]) => {
+    const mapping = mappingFor(name, links);
+    return mapping ? [{ name, value, mapping }] : [];
+  });
+  if (changes.length === 0) return;
+
+  await tx.query('SAVEPOINT brief_writeback');
+  try {
+    const owner = [row.tenant_id, row.user_id];
+    const brand = await tx.query<{ attributes: Attrs; status: string }>(
+      `SELECT attributes, status FROM brands WHERE id = $1 AND tenant_id = $2 AND user_id = $3 FOR UPDATE`,
+      [row.brand_id, ...owner],
+    );
+    if (brand.rows[0]?.status !== 'active') {
+      log.info({ conversationId, brandId: row.brand_id }, 'brief.writeback_skipped_brand_unavailable');
+      await tx.query('RELEASE SAVEPOINT brief_writeback');
+      return;
+    }
+    const product = row.product_id
+      ? await tx.query<{ attributes: Attrs }>(
+          `SELECT attributes FROM products WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND brand_id = $4 FOR UPDATE`,
+          [row.product_id, ...owner, row.brand_id],
+        )
+      : undefined;
+    const current: Record<AttributeLevel, Attrs> = { brand: brand.rows[0].attributes, product: product?.rows[0]?.attributes ?? {} };
+    const dirty = new Map<AttributeLevel, boolean>();
+    for (const { name, value, mapping } of changes) {
+      const ctx: RecordContext = { brand: current.brand, ...(row.product_id ? { product: current.product } : {}) };
+      if (mapping.toBrief(ctx) === value) continue;
+      const verdict = validateAttributes(mapping.level, mapping.fromBrief(value, current[mapping.level]), { partial: true });
+      if (!verdict.ok) {
+        log.warn({ conversationId, field: name, errors: verdict.errors }, 'brief.writeback_skipped_invalid');
+        continue;
+      }
+      current[mapping.level] = applyAttributePatch(current[mapping.level], verdict);
+      dirty.set(mapping.level, dirty.get(mapping.level) || name === 'business_name' || name === 'product_name');
+    }
+    for (const [level, renames] of dirty) {
+      const table = level === 'brand' ? 'brands' : 'products';
+      const id = level === 'brand' ? row.brand_id : row.product_id;
+      await tx.query(
+        `UPDATE ${table} SET name = COALESCE($4, name), attributes = $5::jsonb, updated_at = now()
+          WHERE id = $1 AND tenant_id = $2 AND user_id = $3`,
+        [id, ...owner, renames ? entityName(level, current[level]) : null, JSON.stringify(current[level])],
+      );
+      log.info({ conversationId, level }, 'brief.writeback_applied');
+    }
+    await tx.query('RELEASE SAVEPOINT brief_writeback');
+  } catch (error) {
+    log.error({ conversationId, err: error }, 'brief.writeback_failed');
+    await tx.query('ROLLBACK TO SAVEPOINT brief_writeback');
   }
 }
 
@@ -203,6 +319,7 @@ export async function pinConversationInTx(
   user: User,
   input: { readonly conversationId: ConversationId; readonly schemas: ReadonlyArray<AgentFieldSchema> },
   brandId: UUID | null = null,
+  productId: UUID | null = null,
 ): Promise<AiConversationPin> {
   let pinned = await tx.query<{
     configuration_state: 'pinned' | 'legacy_unversioned';
@@ -219,11 +336,11 @@ export async function pinConversationInTx(
     resolvedReleaseId = await resolveNewConversationRelease(tx, tenant);
     await tx.query(
       `INSERT INTO conversations
-         (id, tenant_id, user_id, ai_release_id, configuration_state)
-       SELECT $1, $2, $3, $4, 'pinned'
+         (id, tenant_id, user_id, ai_release_id, configuration_state, brand_id, product_id)
+       SELECT $1, $2, $3, $4, 'pinned', $5::uuid, $6::uuid
         WHERE $4::uuid IS NOT NULL
        ON CONFLICT (id) DO NOTHING`,
-      [input.conversationId, tenant.id, user.id, resolvedReleaseId ?? null, brandId],
+      [input.conversationId, tenant.id, user.id, resolvedReleaseId ?? null, brandId, productId],
     );
     pinned = await tx.query<{
       configuration_state: 'pinned' | 'legacy_unversioned';
@@ -318,8 +435,9 @@ export function conversationsRepo(tenant: Tenant, user: User) {
           last_activity_at: Date;
           agent_states: unknown;
           brand_id: UUID | null;
+          product_id: UUID | null;
         }>(
-          `SELECT c.id, c.started_at, c.agent_states, c.brand_id,
+          `SELECT c.id, c.started_at, c.agent_states, c.brand_id, c.product_id,
                   COALESCE(last_message.created_at, c.started_at) AS last_activity_at
              FROM conversations c
              LEFT JOIN LATERAL (
@@ -344,7 +462,24 @@ export function conversationsRepo(tenant: Tenant, user: User) {
           lastActivityAt: row.last_activity_at.toISOString(),
           businessName: businessNameFromAgentStates(row.agent_states),
           brandId: row.brand_id,
+          productId: row.product_id,
         }));
+      });
+    },
+
+    /** KAN-87: the brand and product (ids and names) of the caller's own conversation; undefined when foreign or missing. */
+    async context(conversationId: ConversationId): Promise<ConversationContextRow | undefined> {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<{ brand_id: UUID | null; brand_name: string | null; product_id: UUID | null; product_name: string | null }>(
+          `SELECT c.brand_id, b.name AS brand_name, c.product_id, p.name AS product_name
+             FROM conversations c
+             LEFT JOIN brands b ON b.tenant_id = c.tenant_id AND b.id = c.brand_id
+             LEFT JOIN products p ON p.tenant_id = c.tenant_id AND p.id = c.product_id
+            WHERE c.id = $1 AND c.tenant_id = $2 AND c.user_id = $3`,
+          [conversationId, tenant.id, user.id],
+        );
+        const row = res.rows[0];
+        return row && { brandId: row.brand_id, brandName: row.brand_name, productId: row.product_id, productName: row.product_name };
       });
     },
 
