@@ -238,13 +238,15 @@ describe('aiEventsRepo.reconcileSettledTasks sweep', () => {
   });
 
   it('selects only settled tasks that lack their durable notice, so the limit never stalls on repaired rows', async () => {
-    mocked.query.mockResolvedValue({ rows: [] });
+    mocked.query.mockImplementation(async (sql: string) => ({ rows: String(sql).includes('DISTINCT') ? [{ userId: USER }] : [] }));
 
     await aiEventsRepo({ id: TENANT } as never).reconcileSettledTasks({ limit: 1 });
 
-    const [select] = calls();
-    expect(select.sql).toContain('LEFT JOIN ai_turn_events e');
+    const select = calls().find((call) => call.sql.includes('LEFT JOIN ai_turn_events e'))!;
     expect(select.sql).toContain('e.id IS NULL');
-    expect(select.params).toEqual([TENANT, 1, 'announce_completion', 'announce_failure']);
+    expect(select.sql).toContain('c.user_id=$2');
+    expect(select.params).toEqual([TENANT, USER, 1, 'announce_completion', 'announce_failure']);
+    // events are only visible once the owner is bound (RLS), so the owner is set before the query
+    expect(calls().findIndex((call) => call.sql.includes("set_config('app.user_id'"))).toBeLessThan(calls().findIndex((call) => call.sql.includes('LEFT JOIN ai_turn_events e')));
   });
 });
