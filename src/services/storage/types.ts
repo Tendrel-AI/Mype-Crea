@@ -7,8 +7,9 @@
  * which authorizes the caller and redirects to a short-lived presigned URL.
  *
  * Implementations: `S3ObjectStorage` (production) and `InMemoryObjectStorage`
- * (tests). Retention is "keep everything" for the pilot, so the port has no
- * delete operation on purpose.
+ * (tests). Retention of generated images is "keep everything" for the pilot; `deleteObject`
+ * exists only so brand uploads (KAN-87) never leave an orphan when their row cannot be written
+ * or when a logo is replaced.
  */
 import type { A2AArtifact } from '../../core/agent-types';
 import { TaskError } from '../../core/task-errors';
@@ -29,6 +30,10 @@ export interface IObjectStorage {
   putObject(key: string, bytes: Uint8Array, contentType: string): Promise<void>;
   /** A presigned GET URL for `key`, valid for `ttlSeconds`. */
   presignGet(key: string, ttlSeconds: number): Promise<string>;
+  /** The object's bytes, or null when it does not exist (KAN-87: brand uploads are streamed by the app). */
+  getObject(key: string): Promise<Uint8Array | null>;
+  /** Delete one object; deleting a missing key is not an error. */
+  deleteObject(key: string): Promise<void>;
 }
 
 /**

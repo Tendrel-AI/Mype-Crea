@@ -12,6 +12,7 @@ import React, { useState } from 'react';
 import { Check, Loader2, Pencil } from 'lucide-react';
 import type { BriefPanelField } from '../../app/actions/brief';
 
+const ORIGIN_LABELS = { brand: 'De la marca', product: 'Del producto' } as const;
 const SOURCE_LABELS = { chat: 'Del chat', panel: 'Editado aquí' } as const;
 
 export function BriefPanel({
@@ -75,6 +76,9 @@ export function BriefPanel({
                       className="w-full rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-500/50"
                     />
                   )}
+                  {field.origin === 'brand' && (
+                    <p className="text-xs text-neutral-500">Se guarda en la marca para todos sus productos</p>
+                  )}
                   <div className="flex justify-end gap-2">
                     <button
                       type="button"
@@ -97,6 +101,9 @@ export function BriefPanel({
                     <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">
                       Por confirmar
                     </span>
+                  )}
+                  {field.origin !== 'conversation' && (
+                    <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] text-sky-800">{ORIGIN_LABELS[field.origin]}</span>
                   )}
                   {field.source && (
                     <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] text-neutral-600">
