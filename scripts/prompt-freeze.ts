@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { currentPrompts } from '../src/services/prompt-ledger/current-prompts';
-import { planFreeze, type Lock } from '../src/services/prompt-ledger/freeze';
+import { planFreeze, renderIndex, type Lock } from '../src/services/prompt-ledger/freeze';
 
 const dir = join(process.cwd(), 'prompts');
 const lockPath = join(dir, 'lock.json');
@@ -34,4 +34,5 @@ const sorted = Object.fromEntries(
 );
 mkdirSync(dir, { recursive: true });
 writeFileSync(lockPath, JSON.stringify(sorted, null, 2) + '\n');
+writeFileSync(join(dir, 'index.ts'), renderIndex(sorted));
 process.exit(failed ? 1 : 0);

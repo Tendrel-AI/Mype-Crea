@@ -10,6 +10,7 @@ import type { JsonValue } from '../../src/services/ai-config/manifest';
 import { AiConfigRuntime, AiConfigExecutionError, type AttemptWriter } from '../../src/services/ai-config/execution';
 import { captureSourceIdentity, createBaselineDraft } from '../../src/services/ai-config/baseline';
 import { ProviderRegistry } from '../../src/services/ai-config/provider-registry';
+import { activePromptVersions } from '../../src/services/prompts';
 import { loggerFor } from '../../src/services/logger';
 import { checkCurrentTerms } from '../../src/consent/gate';
 import { TERMS_REQUIRED_MESSAGE, TERMS_UNAVAILABLE_MESSAGE } from '../../src/consent/terms';
@@ -100,6 +101,9 @@ export async function chatAction(params: {
     if (pin.state !== 'pinned') {
       return failure(conversationId, requestId, 'legacy_unversioned', 'Esta conversación usa una configuración anterior. Inicia una conversación nueva para continuar.', false, false);
     }
+    // D22: the first turn pins the active prompt versions; later turns read them back.
+    const promptVersions = await repository.conversationPrompts.pin(conversationId, activePromptVersions());
+    log.info({ conversationId, promptVersions }, 'chatAction.prompt_versions');
     await orchestrator.startConversation(conversationId, identity.tenant.id as UUID, identity.user.id as UUID);
 
     // KAN-43: input cap and room for a full turn (extractor + responder) before any turn row
@@ -176,6 +180,7 @@ export async function chatAction(params: {
           priorDecision: priorConfirm,
           llmContext,
           execution,
+          promptVersions,
           onUnaskedFields: (fields) => fields.forEach(({ name, value }) => unasked.set(name, value)),
         }),
       );
@@ -226,7 +231,7 @@ export async function chatAction(params: {
     const rendered = await configRuntime.runPurpose(
       identity,
       { conversationId, turnId: turn.id, ownerToken: claim.ownerToken, purpose: 'responder' },
-      (execution) => outputAdapter.render({ decisions, recentMessages, snapshot, llmContext, execution }),
+      (execution) => outputAdapter.render({ decisions, recentMessages, snapshot, llmContext, execution, promptVersions }),
     );
     const completed = await repository.aiTurns.completeTurn({ turnId: turn.id, ownerToken: claim.ownerToken, responseContent: rendered.value.content });
     log.info({ conversationId, turnId: turn.id, decisionKinds: decisions.map((decision) => decision.kind) }, 'chatAction.complete');

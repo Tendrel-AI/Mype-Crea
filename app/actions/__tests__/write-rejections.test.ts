@@ -46,6 +46,7 @@ vi.mock('../../../src/repos', async () => {
         return { state: 'pinned', releaseId: 'release-1' };
       },
     },
+    conversationPrompts: { pin: async (_id: string, versions: Record<string, string>) => versions },
     termsAcceptances: { hasAccepted: async () => true },
     usage: { preflight: async () => ({ allowed: true, reservationId: null }) },
     llmCalls: { record: async () => 'llm-call-id' },

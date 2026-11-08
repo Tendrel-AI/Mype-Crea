@@ -319,8 +319,7 @@ export function assertExecutable(manifest: AiConfigManifestV1, identity: Runtime
     parseVersion(identity.runtimeVersion),
   ];
   if (compareVersion(current, min) < 0 || compareVersion(current, max) > 0) throw new Error('Runtime version is outside the frozen compatibility range.');
-  if (manifest.snapshot.code !== `sha256:${identity.codeFingerprint}`) throw new Error('Runtime code fingerprint differs from the frozen release.');
-  if (manifest.snapshot.dependencies !== `sha256:${identity.dependencyFingerprint}`) throw new Error('Runtime dependency fingerprint differs from the frozen release.');
+  // D22: no code/dependency fingerprint gate; those stay in the manifest as provenance only.
 }
 
 function applyProfileSettings(

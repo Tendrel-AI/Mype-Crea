@@ -384,17 +384,10 @@ describe('ChatOutputAdapter', () => {
     expect(provider.captured[0].messageCount).toBe(3);
   });
 
-  it('uses frozen responder templates and explicit model, and honors a zero-history policy', async () => {
+  it('takes the prompt from the frozen file and the model/settings from the execution (D22)', async () => {
     const provider = makeResponderProvider('ok');
     const behavior = createCurrentAdapterBehaviorSnapshot();
-    const frozen = {
-      ...behavior,
-      responder: {
-        ...behavior.responder,
-        promptTemplate: `${behavior.responder.promptTemplate}\nFrozen template marker.`,
-        historyLimit: 0,
-      },
-    };
+    const frozen = { ...behavior, responder: { ...behavior.responder, promptTemplate: 'ignored: the manifest no longer supplies the prompt', temperature: 0.7 } };
     const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
     await adapter.render({
@@ -406,9 +399,9 @@ describe('ChatOutputAdapter', () => {
     });
 
     expect(provider.create).toHaveBeenCalledTimes(1);
-    expect(provider.captured[0].systemPrompt).toContain('Frozen template marker.');
+    expect(provider.captured[0].systemPrompt).not.toContain('ignored');
     expect(provider.captured[0].systemPrompt).toContain('español neutro latinoamericano');
-    expect(provider.captured[0].messageCount).toBe(1);
+    expect(provider.captured[0].messageCount).toBe(2);
     expect((provider.create.mock.calls[0][0] as any).temperature).toBe(0.7);
     // KAN-69 A6: the llm_calls row carries the execution's effective provenance.
     expect(recordSpy).toHaveBeenCalledTimes(1);
@@ -482,22 +475,26 @@ describe('ChatOutputAdapter', () => {
     expect(prompt).not.toContain('undefined');
   });
 
-  it('rejects unsupported frozen responder renderers before provider invocation', async () => {
+  it('uses the active frozen version without an execution, and the pinned one when given (D22)', async () => {
     const provider = makeResponderProvider('ok');
-    const behavior = createCurrentAdapterBehaviorSnapshot();
-    const frozen = {
-      ...behavior,
-      responder: { ...behavior.responder, rendererVersion: 'responder.renderer.unknown' },
-    };
+    setProvider(provider);
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+    const base = { decisions: [{ kind: 'announce_all_complete' as const }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx };
+
+    await adapter.render(base);
+    await adapter.render({ ...base, promptVersions: { responder: 'responder.chat-step1.v6' } });
+    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v6', 'responder.chat-step1.v6']);
+  });
+
+  it('falls back to the active version when the pinned one no longer exists', async () => {
+    const provider = makeResponderProvider('ok');
+    setProvider(provider);
     const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
-    await expect(adapter.render({
-      decisions: [{ kind: 'announce_all_complete' }],
-      recentMessages: [],
-      snapshot: emptySnapshot,
-      llmContext: ctx,
-      execution: { model: { ...provider.resolve('responder'), provider: 'openrouter' }, behavior: frozen },
-    })).rejects.toThrow(/Unsupported frozen responder adapter behavior/);
-    expect(provider.create).not.toHaveBeenCalled();
+    await adapter.render({
+      decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
+      promptVersions: { responder: 'responder.chat-step1.v0' },
+    });
+    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v6');
   });
 });

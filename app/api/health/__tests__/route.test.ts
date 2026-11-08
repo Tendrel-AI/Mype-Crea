@@ -46,6 +46,22 @@ describe('GET /api/health (liveness)', () => {
 });
 
 describe('GET /api/health/ready (readiness)', () => {
+  it('returns 503 when an active prompt version is missing, without naming it in the body (D22)', async () => {
+    mocks.pingDatabase.mockResolvedValue(undefined);
+    mocks.probeRedis.mockResolvedValue('ok');
+    vi.stubEnv('PROMPT_EXTRACTOR', 'extractor.v99');
+    try {
+      const response = await readiness.GET();
+      expect(response.status).toBe(503);
+      const body = await response.text();
+      expect(JSON.parse(body)).toEqual({ status: 'fail', checks: { database: 'ok', redis: 'ok', prompts: 'fail' } });
+      expect(body).not.toContain('extractor.v99');
+      expect(mocks.logError).toHaveBeenCalledWith(expect.objectContaining({ dependency: 'prompts' }), expect.any(String));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('returns 200 when the database and Redis are ok', async () => {
     mocks.pingDatabase.mockResolvedValue(undefined);
     mocks.probeRedis.mockResolvedValue('ok');
@@ -54,7 +70,7 @@ describe('GET /api/health/ready (readiness)', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-store');
-    expect(await response.json()).toEqual({ status: 'ok', checks: { database: 'ok', redis: 'ok' } });
+    expect(await response.json()).toEqual({ status: 'ok', checks: { database: 'ok', redis: 'ok', prompts: 'ok' } });
     expect(mocks.pingDatabase).toHaveBeenCalledWith(expect.any(Number));
     expect(mocks.probeRedis).toHaveBeenCalledWith(expect.any(Number));
   });
@@ -66,7 +82,7 @@ describe('GET /api/health/ready (readiness)', () => {
     const response = await readiness.GET();
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ status: 'fail', checks: { database: 'fail', redis: 'ok' } });
+    expect(await response.json()).toEqual({ status: 'fail', checks: { database: 'fail', redis: 'ok', prompts: 'ok' } });
   });
 
   it('returns 503 when Redis is configured and fails', async () => {
@@ -76,7 +92,7 @@ describe('GET /api/health/ready (readiness)', () => {
     const response = await readiness.GET();
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ status: 'fail', checks: { database: 'ok', redis: 'fail' } });
+    expect(await response.json()).toEqual({ status: 'fail', checks: { database: 'ok', redis: 'fail', prompts: 'ok' } });
   });
 
   it('returns 200 and skips Redis when REDIS_URL is not configured', async () => {
@@ -86,7 +102,7 @@ describe('GET /api/health/ready (readiness)', () => {
     const response = await readiness.GET();
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: 'ok', checks: { database: 'ok', redis: 'skipped' } });
+    expect(await response.json()).toEqual({ status: 'ok', checks: { database: 'ok', redis: 'skipped', prompts: 'ok' } });
   });
 
   it('still returns 503 when the database fails and Redis is not configured', async () => {
@@ -96,7 +112,7 @@ describe('GET /api/health/ready (readiness)', () => {
     const response = await readiness.GET();
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ status: 'fail', checks: { database: 'fail', redis: 'skipped' } });
+    expect(await response.json()).toEqual({ status: 'fail', checks: { database: 'fail', redis: 'skipped', prompts: 'ok' } });
   });
 
   it('never puts error details in the body, but logs them server-side', async () => {
@@ -107,7 +123,7 @@ describe('GET /api/health/ready (readiness)', () => {
     const body = await response.text();
 
     expect(response.status).toBe(503);
-    expect(JSON.parse(body)).toEqual({ status: 'fail', checks: { database: 'fail', redis: 'fail' } });
+    expect(JSON.parse(body)).toEqual({ status: 'fail', checks: { database: 'fail', redis: 'fail', prompts: 'ok' } });
     for (const leak of [
       'ECONNREFUSED', 'ENOTFOUND', '10.0.0.12', '5432', '6379', 'postgres://', 'redis://',
       'app_user', 's3cret', 'hunter2', 'railway', 'internal', 'Error', 'stack', ' at ',
@@ -116,7 +132,7 @@ describe('GET /api/health/ready (readiness)', () => {
     }
     // The only values allowed anywhere in the body.
     const values = JSON.stringify(JSON.parse(body)).match(/"[^"]*"/g) ?? [];
-    expect(new Set(values)).toEqual(new Set(['"status"', '"fail"', '"checks"', '"database"', '"redis"']));
+    expect(new Set(values)).toEqual(new Set(['"status"', '"fail"', '"checks"', '"database"', '"redis"', '"prompts"', '"ok"']));
 
     const logged = JSON.stringify(mocks.logError.mock.calls);
     expect(logged).toContain('ECONNREFUSED');

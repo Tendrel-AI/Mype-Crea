@@ -12,7 +12,7 @@ import type { ChatCompletion, ChatRequest, ILLMProvider, ResolvedModel } from '.
 import { ProviderCallError, type ProviderFailureCategory } from '../../llm/provider-error';
 import { withLlmLogging } from '../../llm-logger';
 import { createCurrentAdapterBehaviorSnapshot } from '../adapter-behavior';
-import { AiConfigRuntime, type AttemptWriter, type RuntimeRepositories } from '../execution';
+import { AiConfigRuntime, assertExecutable, type AttemptWriter, type RuntimeRepositories } from '../execution';
 import { freezeManifest } from '../manifest';
 import { ProviderRegistry } from '../provider-registry';
 import type { UsageLedger } from '../../usage/gateway';
@@ -138,6 +138,18 @@ async function callExtractor(execution: Parameters<Parameters<AiConfigRuntime['r
   };
   return execution.model.client.chat.completions.create(request);
 }
+
+describe('assertExecutable (D22)', () => {
+  const manifest = () => frozenManifest().content;
+
+  it('does not gate on the code or dependency fingerprints: an earlier release stays usable after a deploy', () => {
+    expect(() => assertExecutable(manifest(), { runtimeVersion: '1.0.0', codeFingerprint: 'c'.repeat(64), dependencyFingerprint: 'd'.repeat(64) })).not.toThrow();
+  });
+
+  it('still enforces the runtime version range', () => {
+    expect(() => assertExecutable(manifest(), { runtimeVersion: '99.0.0', codeFingerprint: 'a'.repeat(64), dependencyFingerprint: 'b'.repeat(64) })).toThrow(/compatibility range/);
+  });
+});
 
 describe('AiConfigRuntime', () => {
   it('uses the pinned profile regardless of the deployment default and keeps retired pins executable', async () => {

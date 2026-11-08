@@ -10,6 +10,7 @@ import { agentTasksRepo, type AgentTasksRepo } from './agent-tasks';
 import { approvalsRepo, type ApprovalsRepo } from './approvals';
 import { refinementsRepo, type RefinementsRepo } from './refinements';
 import { conversationsRepo, type ConversationsRepo } from './conversations';
+import { conversationPromptsRepo, type ConversationPromptsRepo } from './conversation-prompts';
 import { conversationTraceRepo, type ConversationTraceRepo } from './conversation-trace';
 import { deliverablesRepo, type DeliverablesRepo } from './deliverables';
 import { deliverableFeedbackRepo, type DeliverableFeedbackRepo } from './deliverable-feedback';
@@ -26,6 +27,7 @@ import type { Tenant, User } from '../db/with-transaction';
 
 export interface Repos {
   readonly conversations: ConversationsRepo;
+  readonly conversationPrompts: ConversationPromptsRepo;
   readonly messages: MessagesRepo;
   readonly agentTasks: AgentTasksRepo;
   readonly deliverables: DeliverablesRepo;
@@ -45,6 +47,7 @@ export interface Repos {
 export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repos {
   return {
     conversations: conversationsRepo(tenant, user),
+    conversationPrompts: conversationPromptsRepo(tenant, user),
     messages: messagesRepo(tenant, user),
     agentTasks: agentTasksRepo(tenant),
     deliverables: deliverablesRepo(tenant, user),
