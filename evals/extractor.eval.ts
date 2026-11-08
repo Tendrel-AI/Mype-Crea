@@ -11,7 +11,7 @@ import { expect } from 'vitest';
 import { ChatInputAdapter } from '../src/adapters/chat-input-adapter';
 import { buildDefaultRegistry } from '../src/core/orchestrator/bootstrap-registry';
 import { buildFakeCore } from '../src/core/__tests__/_fixtures/core';
-import { createCurrentAdapterBehaviorSnapshot } from '../src/services/ai-config/adapter-behavior';
+import { activePromptVersion } from '../src/services/prompts';
 import { getProvider } from '../src/services/llm';
 import { evalModelProfile } from '../src/services/llm/eval-model-profile';
 import { EVAL_CONVERSATION_ID, evalLlmContext } from './_support/context';
@@ -21,7 +21,7 @@ import { flattenDeltaFields, scoreExtraction, type Feedback } from './evaluators
 
 const adapter = new ChatInputAdapter(buildFakeCore(), buildDefaultRegistry());
 
-const extractorVersion = createCurrentAdapterBehaviorSnapshot().extractor.promptVersion;
+const extractorVersion = activePromptVersion('extractor');
 
 ls.describe(
   'mypes-extractor',

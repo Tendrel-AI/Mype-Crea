@@ -26,6 +26,7 @@ import { TaskError, taskErrorFromThrown } from '../../src/core/task-errors';
 import { getAgentLlm } from '../../src/services/llm/agent-completion';
 import type { ChatMessage } from '../../src/services/llm/types';
 import { loggerFor } from '../../src/services/logger';
+import { agentPrompt } from '../../src/services/prompts';
 
 const log = loggerFor('agent.tagline-agent');
 
@@ -104,6 +105,7 @@ export function buildTaglineMessages(
   businessName: string,
   requirements: Readonly<Record<string, unknown>>,
   refinement?: { readonly observations?: ReadonlyArray<string> },
+  systemPrompt: string = TAGLINE_SYSTEM_PROMPT,
 ): ChatMessage[] {
   const lines = ['Datos de la marca:', `- Nombre comercial aprobado: "${flatten(businessName)}"`];
   for (const [, label, value] of filledInputs(requirements)) lines.push(`- ${label}: "${flatten(value)}"`);
@@ -112,7 +114,7 @@ export function buildTaglineMessages(
     lines.push(`Ajustes pedidos sobre la propuesta anterior: ${notes.map((note) => `"${note}"`).join('; ')}.`);
   }
   return [
-    { role: 'system', content: TAGLINE_SYSTEM_PROMPT },
+    { role: 'system', content: systemPrompt },
     { role: 'user', content: lines.join('\n') },
   ];
 }
@@ -166,13 +168,17 @@ export const handler: AgentHandler<undefined> = async (message: A2AMessage) => {
     };
     child.info({ inputFields: Object.keys(inputs), iteration: Boolean(message.iteration) }, 'agent.tagline.start');
 
+    const prompt = agentPrompt(message.prompt, 'tagline-agent');
+    const tool = prompt.schema as typeof TAGLINE_TOOL;
+    // The tool name is what this handler parses: a frozen version that renames it cannot run here.
+    if (tool?.function?.name !== TOOL_NAME) throw new Error('Frozen prompt tool does not match this handler.');
     const { completion, provider, model } = await getAgentLlm().complete({
       purpose: 'naming',
-      promptVersion: TAGLINE_PROMPT_VERSION,
+      promptVersion: prompt.version,
       request: {
-        messages: buildTaglineMessages(name.value, message.requirements, message.iteration),
+        messages: buildTaglineMessages(name.value, message.requirements, message.iteration, prompt.text),
         max_tokens: 1024,
-        tools: [TAGLINE_TOOL],
+        tools: [tool],
         tool_choice: { type: 'function', function: { name: TOOL_NAME } },
       },
       usage: { tenantId: message.tenantId, agentTaskId: message.taskId },
@@ -190,7 +196,7 @@ export const handler: AgentHandler<undefined> = async (message: A2AMessage) => {
         candidateCount: TAGLINE_CANDIDATE_COUNT,
         inputs,
         agentCardVersion: message.agentCardVersion,
-        promptVersion: TAGLINE_PROMPT_VERSION,
+        promptVersion: prompt.version,
         provider,
         model,
         generatedAt: completedAt,

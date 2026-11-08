@@ -8,6 +8,7 @@
 import { healthRepo } from '../../repos/health';
 import { probeRedis } from '../redis';
 import { loggerFor } from '../logger';
+import { checkActivePrompts } from '../prompts';
 
 const log = loggerFor('services.health');
 
@@ -22,14 +23,24 @@ export interface ReadinessReport {
     readonly database: DependencyStatus;
     /** `skipped` when `REDIS_URL` is not set: Redis is optional for this app. */
     readonly redis: DependencyStatus | 'skipped';
+    /** D22: every active prompt version (`PROMPT_<KEY>` or latest) exists and matches its lock hash. */
+    readonly prompts: DependencyStatus;
   };
 }
 
 export async function checkReadiness(): Promise<ReadinessReport> {
   const [database, redis] = await Promise.all([checkDatabase(), checkRedis()]);
-  const status: DependencyStatus = database === 'ok' && redis !== 'fail' ? 'ok' : 'fail';
-  if (status === 'fail') log.warn({ database, redis }, 'health.ready.not_ready');
-  return { status, checks: { database, redis } };
+  const prompts = checkPrompts();
+  const status: DependencyStatus = database === 'ok' && redis !== 'fail' && prompts === 'ok' ? 'ok' : 'fail';
+  if (status === 'fail') log.warn({ database, redis, prompts }, 'health.ready.not_ready');
+  return { status, checks: { database, redis, prompts } };
+}
+
+function checkPrompts(): DependencyStatus {
+  const problems = checkActivePrompts();
+  if (problems.length === 0) return 'ok';
+  log.error({ dependency: 'prompts', problems }, 'health.ready.dependency_failed');
+  return 'fail';
 }
 
 async function checkDatabase(): Promise<DependencyStatus> {

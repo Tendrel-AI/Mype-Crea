@@ -191,12 +191,19 @@ export async function startAgentWorker(
     // `refinement` key; it goes to `iteration`, never into `requirements`.
     // KAN-32: approved upstream values (e.g. the approved name) go to `upstream`.
     const { requirements, refinement, upstream } = splitRequirementsSnapshot(claimed.requirementsSnapshot);
+    let prompt: A2AMessage['prompt'];
+    try {
+      prompt = await deps.pinnedPromptFor?.(tenantId as UUID, claimed.conversationId, AGENT_ID);
+    } catch (err) {
+      child.error({ err }, `${logScope}.pinned_prompt_failed`); // the handler falls back to the active version
+    }
     const a2a: A2AMessage = {
       taskId: claimed.id,
       tenantId: tenantId as UUID,
       agentId: AGENT_ID,
       agentCardVersion: claimed.agentCardVersion,
       requirements,
+      ...(prompt ? { prompt } : {}),
       ...(Object.keys(upstream).length > 0 ? { upstream } : {}),
       ...(claimed.parentTaskId
         ? {

@@ -68,11 +68,11 @@ import type { AgentRegistry } from '../core/orchestrator/agent-registry';
 import { getProvider } from '../services/llm';
 import {
   assertResolvedModelPurpose,
-  assertSupportedAdapterBehavior,
-  createCurrentAdapterBehaviorSnapshot,
   type AdapterExecution,
   type AdapterFieldBehavior,
 } from '../services/ai-config/adapter-behavior';
+import { resolveAdapterBehavior } from '../services/prompts/adapter-behavior';
+import type { PromptVersions } from '../services/prompts';
 import { withLlmLogging, type LlmLoggingContext } from '../services/llm-logger';
 import { loggerFor } from '../services/logger';
 
@@ -168,6 +168,8 @@ export interface ExtractInput {
   readonly llmContext: LlmLoggingContext;
   /** Explicit frozen execution for product turns; omitted by legacy/eval callers. */
   readonly execution?: AdapterExecution;
+  /** The conversation's pinned prompt versions (D22); omitted = the active versions. */
+  readonly promptVersions?: PromptVersions;
   /**
    * KAN-44: told about every field the model returned that this turn did not
    * ask for (outside the catalog, e.g. `tenant_id`, or not in the frozen
@@ -307,7 +309,7 @@ export class ChatInputAdapter implements InputAdapter {
    * await dispatch settlement before reading the next decision).
    */
   async extract(input: ExtractInput): Promise<FieldDelta> {
-    const { conversationId, userMessage, priorDecision, llmContext, execution } = input;
+    const { conversationId, userMessage, priorDecision, llmContext, execution, promptVersions } = input;
     const child = log.child({
       op: 'extract',
       conversationId,
@@ -316,8 +318,8 @@ export class ChatInputAdapter implements InputAdapter {
 
     const ownership = buildFieldOwnership(this.registry);
     const currentFields = adapterFieldsFromOwnership(ownership);
-    const behavior = execution?.behavior ?? createCurrentAdapterBehaviorSnapshot(currentFields);
-    assertSupportedAdapterBehavior(behavior, 'extractor');
+    // D22: the prompt comes from the frozen file (pinned version, else active); the support gate runs inside.
+    const behavior = resolveAdapterBehavior('extractor', promptVersions, currentFields, execution);
     if (execution) assertResolvedModelPurpose(execution.model, 'extractor');
     if (execution && !frozenFieldsInRegistry(behavior.extractor.fields, currentFields)) {
       throw new Error('Frozen extractor field schema does not match the runtime agent registry.');

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { hashPromptContent } from '../../../lib/prompt-ledger';
 import { currentPrompts } from '../current-prompts';
+import { renderIndex } from '../freeze';
 
 const dir = join(__dirname, '../../../../prompts');
 const lock: Record<string, Record<string, string>> = existsSync(join(dir, 'lock.json')) ? JSON.parse(readFileSync(join(dir, 'lock.json'), 'utf8')) : {};
@@ -28,6 +29,10 @@ describe('frozen prompts', () => {
     for (const [key, versions] of Object.entries(lock)) {
       for (const version of Object.keys(versions)) expect(ids, `lock entry ${key}@${version} has no file`).toContain(`${key}@${version}`);
     }
+  });
+
+  it('prompts/index.ts (the runtime loader input) lists exactly the files of lock.json', () => {
+    expect(readFileSync(join(dir, 'index.ts'), 'utf8'), 'run `npm run prompt:freeze` to regenerate prompts/index.ts').toBe(renderIndex(lock));
   });
 
   it.each(currentPrompts().map((p) => [`${p.key}@${p.version}`, p] as const))('working prompt %s is frozen with identical content', (id, p) => {

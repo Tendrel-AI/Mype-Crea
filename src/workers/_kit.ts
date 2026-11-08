@@ -11,12 +11,13 @@
  */
 import type { Redis as RedisClient } from 'ioredis';
 import type {
+  AgentId,
   ConversationId,
   DeliverableId,
   TaskId,
   UUID,
 } from '../core/contracts';
-import type { TaskState } from '../core/agent-types';
+import type { A2AMessage, TaskState } from '../core/agent-types';
 import type { AgentRegistry } from '../core/orchestrator/agent-registry';
 import type { IAgentLifecycleNotifier } from '../core/orchestrator/agent-lifecycle-notifier';
 import type { TaskSettlementContext } from '../core/orchestrator/runtime-config';
@@ -58,6 +59,11 @@ export interface WorkerContext {
     tenantId: UUID,
     userId: UUID,
   ) => DeliverablesRepoLike;
+  /**
+   * The frozen prompt of the conversation's pinned version for an agent (D22). Optional: when
+   * omitted or failing, the handler uses the active frozen version.
+   */
+  readonly pinnedPromptFor?: (tenantId: UUID, conversationId: ConversationId, agentId: AgentId) => Promise<A2AMessage['prompt']>;
   /**
    * Copy generated images into private object storage before settlement
    * (KAN-52). Defaults to `storeArtifactImages` over the configured bucket

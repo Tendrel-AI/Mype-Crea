@@ -8,7 +8,8 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { LOGO_PROMPT_VERSION, buildLogoPrompt, handler } from '../handler';
+import { LOGO_PROMPT_VERSION, buildLogoPrompt, handler, renderLogoPrompt } from '../handler';
+import { getFrozenPrompt } from '../../../src/services/prompts';
 import { resetImageGenerator, setImageGenerator } from '../../../src/services/image';
 import type { ImageRequest, ImageResult } from '../../../src/services/image';
 import type { A2AMessage } from '../../../src/core/agent-types';
@@ -160,3 +161,33 @@ describe('logo-agent handler', () => {
     });
   });
 });
+
+describe('frozen logo template (D22)', () => {
+  const frozen = getFrozenPrompt('logo-agent', LOGO_PROMPT_VERSION)!;
+  const full = { business_name: 'Café "Andino". Sur', style_keywords: 'minimalista, andino', color_palette: 'tierra y verde' };
+  const noPalette = { business_name: 'X', style_keywords: 'y' };
+  const iteration = { observations: ['más  grande', 'sin "sombras"', '  '] };
+
+  it.each([
+    ['all fields', full, undefined],
+    ['without palette', noPalette, undefined],
+    ['with iteration notes', full, iteration],
+    ['without palette and with iteration notes', noPalette, iteration],
+  ])('renders exactly what buildLogoPrompt builds: %s', (_label, reqs, refinement) => {
+    expect(renderLogoPrompt(frozen.text, reqs, refinement)).toBe(buildLogoPrompt(reqs, refinement));
+  });
+
+  it('uses the prompt attached to the message and records its version', async () => {
+    const captured: ImageRequest[] = [];
+    setImageGenerator(fakeGenerator(captured));
+    try {
+      const message = { ...makeMessage(full), prompt: { version: 'logo-agent.v0', text: 'Logo para "{{business_name}}". Cierre.' } };
+      const result = await handler(message, undefined);
+      expect(captured[0].prompt).toBe('Logo para "Café "Andino". Sur". Cierre.');
+      expect(result.status === 'completed' && result.artifacts[0].metadata?.promptVersion).toBe('logo-agent.v0');
+    } finally {
+      resetImageGenerator();
+    }
+  });
+});
+

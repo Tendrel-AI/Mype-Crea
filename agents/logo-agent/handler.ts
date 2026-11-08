@@ -37,6 +37,7 @@ import { inputVersion } from '../../src/core/deliverable-inputs';
 import { taskErrorFromThrown } from '../../src/core/task-errors';
 import { getImageGenerator } from '../../src/services/image';
 import { loggerFor } from '../../src/services/logger';
+import { agentPrompt } from '../../src/services/prompts';
 
 const log = loggerFor('agent.logo-agent');
 
@@ -76,6 +77,28 @@ export function buildLogoPrompt(
   return parts.join(' ');
 }
 
+/**
+ * Render a frozen logo template (D22). Sentences are split on the template, before substitution:
+ * a sentence whose `{{field}}` is empty is dropped (optional palette), and the «Iterar» note goes
+ * before the closing sentence. Equals `buildLogoPrompt` for the current template (tested).
+ * shortcut: the note position is "before the last sentence", so a template that closes differently needs a slot.
+ */
+export function renderLogoPrompt(
+  template: string,
+  reqs: LogoRequirements,
+  refinement?: { readonly observations?: ReadonlyArray<string> },
+): string {
+  const values: Record<string, string | undefined> = { ...reqs };
+  const sentences = template.split(/(?<=\.) /).filter((sentence) =>
+    [...sentence.matchAll(/\{\{(\w+)\}\}/g)].every(([, name]) => values[name]),
+  ).map((sentence) => sentence.replace(/\{\{(\w+)\}\}/g, (_, name: string) => values[name] ?? ''));
+  const notes = (refinement?.observations ?? []).map(flattenObservation).filter((note) => note.length > 0);
+  if (notes.length > 0) {
+    sentences.splice(-1, 0, `Ajustes pedidos sobre la versión anterior: ${notes.map((note) => `"${note}"`).join('; ')}.`);
+  }
+  return sentences.join(' ');
+}
+
 /** One line, no double quotes, so a note cannot break out of its quotes. */
 function flattenObservation(observation: string): string {
   return observation.replace(/["“”]/g, "'").replace(/\s+/g, ' ').trim();
@@ -111,7 +134,8 @@ export const handler: AgentHandler<undefined> = async (message) => {
     'agent.logo.start',
   );
 
-  const prompt = buildLogoPrompt(reqs, message.iteration);
+  const frozen = agentPrompt(message.prompt, 'logo-agent');
+  const prompt = renderLogoPrompt(frozen.text, reqs, message.iteration);
   child.info({ promptLength: prompt.length }, 'agent.logo.prompt_built');
 
   const startedAt = Date.now();
@@ -167,7 +191,7 @@ export const handler: AgentHandler<undefined> = async (message) => {
           prompt,
           purpose: 'logo',
           inputs: usedInputs(message.requirements),
-          promptVersion: LOGO_PROMPT_VERSION,
+          promptVersion: frozen.version,
           agentCardVersion: message.agentCardVersion,
           safety,
         },

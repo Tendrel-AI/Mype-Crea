@@ -15,7 +15,7 @@ import { expect } from 'vitest';
 import { ChatOutputAdapter } from '../src/adapters/chat-output-adapter';
 import { buildDefaultRegistry } from '../src/core/orchestrator/bootstrap-registry';
 import { buildSnapshot } from '../src/core/__tests__/_fixtures/snapshot';
-import { createCurrentAdapterBehaviorSnapshot } from '../src/services/ai-config/adapter-behavior';
+import { activePromptVersion } from '../src/services/prompts';
 import { getProvider } from '../src/services/llm';
 import { evalModelProfile } from '../src/services/llm/eval-model-profile';
 import { evalLlmContext } from './_support/context';
@@ -27,7 +27,7 @@ import { scoreReply } from './evaluators/responder';
 
 const adapter = new ChatOutputAdapter(buildDefaultRegistry());
 
-const responderVersion = createCurrentAdapterBehaviorSnapshot().responder.promptVersion;
+const responderVersion = activePromptVersion('responder');
 
 ls.describe(
   'mypes-responder',

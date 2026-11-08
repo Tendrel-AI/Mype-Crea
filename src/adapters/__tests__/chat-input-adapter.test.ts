@@ -305,7 +305,7 @@ describe('ChatInputAdapter', () => {
     expect(delta.fields).toEqual({});
   });
 
-  it('uses an explicitly supplied frozen template and model after validating the registry schema', async () => {
+  it('takes the prompt from the frozen file and the model/settings/fields from the execution (D22)', async () => {
     const provider = makeExtractorProvider(JSON.stringify({ fields: { business_name: null, business_profile: null, tone: null } }));
     const { registry } = buildSingleAgentFixtureRegistry();
     const fields = registry.getFieldSchemas().flatMap((schema) => [
@@ -327,7 +327,7 @@ describe('ChatInputAdapter', () => {
       ...behavior,
       extractor: {
         ...behavior.extractor,
-        promptTemplate: `${behavior.extractor.promptTemplate}\nFrozen template marker.`,
+        promptTemplate: 'ignored: the manifest no longer supplies the prompt',
       },
     };
     const adapter = new ChatInputAdapter(buildFakeCore(), registry);
@@ -340,7 +340,8 @@ describe('ChatInputAdapter', () => {
     });
 
     expect(provider.create).toHaveBeenCalledTimes(1);
-    expect(provider.captured[0].systemPrompt).toContain('Frozen template marker.');
+    expect(provider.captured[0].systemPrompt).not.toContain('ignored');
+    expect(provider.captured[0].systemPrompt).toContain('submit_extracted_fields');
     expect((provider.create.mock.calls[0][0] as any).temperature).toBe(0);
     // KAN-69 A6: the llm_calls row carries the execution's effective provenance.
     expect(recordSpy).toHaveBeenCalledTimes(1);

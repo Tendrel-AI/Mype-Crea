@@ -54,6 +54,7 @@ import {
   defaultLifecycleNotifier,
 } from './notifiers';
 import { loggerFor } from '../../services/logger';
+import { activePromptVersions, resolvePinnedPrompt, type PromptKey } from '../../services/prompts';
 import { buildRuntime, type OnTaskSettled, type Runtime } from './runtime-config';
 import { republishPendingDispatches, startPeriodicRecovery } from './periodic-recovery';
 import type { ChatInputAdapter } from '../../adapters/chat-input-adapter';
@@ -132,6 +133,13 @@ export function buildTransport(
     systemReposFor: systemRepos,
     resolveConversationOwner: (tenantId: UUID, conversationId: ConversationId) =>
       getConversationOwnerUserId({ id: tenantId }, conversationId),
+    // D22: first read pins the active versions of a conversation that predates the pin.
+    pinnedPromptFor: async (tenantId: UUID, conversationId: ConversationId, agentId: AgentId) => {
+      const userId = await getConversationOwnerUserId({ id: tenantId }, conversationId);
+      if (!userId) return undefined;
+      const pinned = await repos({ id: tenantId }, { id: userId }).conversationPrompts.pin(conversationId, activePromptVersions());
+      return resolvePinnedPrompt(agentId as PromptKey, pinned);
+    },
     deliverablesFor: (tenantId: UUID, userId: UUID) =>
       repos({ id: tenantId }, { id: userId }).deliverables,
     settleTaskFor: (tenantId: UUID, userId: UUID) =>

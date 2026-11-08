@@ -62,6 +62,12 @@ export interface A2AMessage {
     readonly anchorDeliverableId?: string | null;
   };
 
+  /**
+   * The frozen prompt of the conversation's pinned version for this agent (D22), filled by the
+   * worker. Absent: the handler uses the active frozen version.
+   */
+  readonly prompt?: { readonly version: string; readonly text: string; readonly schema?: unknown };
+
   readonly createdAt: ISOTimestamp;
 }
 

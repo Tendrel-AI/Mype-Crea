@@ -31,11 +31,11 @@ import type { MessageRow } from '../repos/models';
 import { getProvider } from '../services/llm';
 import {
   assertResolvedModelPurpose,
-  assertSupportedAdapterBehavior,
-  createCurrentAdapterBehaviorSnapshot,
   RESPONDER_FRAGMENT_FALLBACKS,
   type AdapterExecution,
 } from '../services/ai-config/adapter-behavior';
+import { resolveAdapterBehavior } from '../services/prompts/adapter-behavior';
+import type { PromptVersions } from '../services/prompts';
 import { withLlmLogging, type LlmLoggingContext } from '../services/llm-logger';
 import { loggerFor } from '../services/logger';
 
@@ -48,15 +48,16 @@ export interface RenderInput {
   readonly llmContext: LlmLoggingContext;
   /** Explicit frozen execution for product turns; omitted by legacy/eval callers. */
   readonly execution?: AdapterExecution;
+  /** The conversation's pinned prompt versions (D22); omitted = the active versions. */
+  readonly promptVersions?: PromptVersions;
 }
 
 export class ChatOutputAdapter {
   constructor(private readonly registry: AgentRegistry) {}
 
   async render(input: RenderInput): Promise<{ content: string }> {
-    const { decisions, recentMessages, snapshot, llmContext, execution } = input;
-    const behavior = execution?.behavior ?? createCurrentAdapterBehaviorSnapshot();
-    assertSupportedAdapterBehavior(behavior, 'responder');
+    const { decisions, recentMessages, snapshot, llmContext, execution, promptVersions } = input;
+    const behavior = resolveAdapterBehavior('responder', promptVersions, [], execution);
     if (execution) assertResolvedModelPurpose(execution.model, 'responder');
     const child = log.child({
       op: 'render',

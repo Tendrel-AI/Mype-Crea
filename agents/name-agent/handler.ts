@@ -23,6 +23,7 @@ import { TaskError, taskErrorFromThrown } from '../../src/core/task-errors';
 import { getAgentLlm } from '../../src/services/llm/agent-completion';
 import type { ChatMessage } from '../../src/services/llm/types';
 import { loggerFor } from '../../src/services/logger';
+import { agentPrompt } from '../../src/services/prompts';
 
 const log = loggerFor('agent.name-agent');
 
@@ -101,6 +102,7 @@ function filledInputs(requirements: Record<string, unknown>): Array<readonly [st
 export function buildNameMessages(
   requirements: Record<string, unknown>,
   refinement?: { readonly observations?: ReadonlyArray<string> },
+  systemPrompt: string = NAME_SYSTEM_PROMPT,
 ): ChatMessage[] {
   const lines = ['Datos del negocio:'];
   for (const [, label, value] of filledInputs(requirements)) lines.push(`- ${label}: "${flatten(value)}"`);
@@ -109,7 +111,7 @@ export function buildNameMessages(
     lines.push(`Ajustes pedidos sobre la propuesta anterior: ${notes.map((note) => `"${note}"`).join('; ')}.`);
   }
   return [
-    { role: 'system', content: NAME_SYSTEM_PROMPT },
+    { role: 'system', content: systemPrompt },
     { role: 'user', content: lines.join('\n') },
   ];
 }
@@ -160,13 +162,17 @@ export const handler: AgentHandler<undefined> = async (message: A2AMessage) => {
   child.info({ inputFields: Object.keys(inputs), iteration: Boolean(message.iteration) }, 'agent.name.start');
 
   try {
+    const prompt = agentPrompt(message.prompt, 'name-agent');
+    const tool = prompt.schema as typeof NAME_TOOL;
+    // The tool name is what this handler parses: a frozen version that renames it cannot run here.
+    if (tool?.function?.name !== TOOL_NAME) throw new Error('Frozen prompt tool does not match this handler.');
     const { completion, provider, model } = await getAgentLlm().complete({
       purpose: 'naming',
-      promptVersion: NAME_PROMPT_VERSION,
+      promptVersion: prompt.version,
       request: {
-        messages: buildNameMessages(message.requirements, message.iteration),
+        messages: buildNameMessages(message.requirements, message.iteration, prompt.text),
         max_tokens: 1024,
-        tools: [NAME_TOOL],
+        tools: [tool],
         tool_choice: { type: 'function', function: { name: TOOL_NAME } },
       },
       usage: { tenantId: message.tenantId, agentTaskId: message.taskId },
@@ -184,7 +190,7 @@ export const handler: AgentHandler<undefined> = async (message: A2AMessage) => {
         candidateCount: NAME_CANDIDATE_COUNT,
         inputs,
         agentCardVersion: message.agentCardVersion,
-        promptVersion: NAME_PROMPT_VERSION,
+        promptVersion: prompt.version,
         provider,
         model,
         generatedAt: completedAt,

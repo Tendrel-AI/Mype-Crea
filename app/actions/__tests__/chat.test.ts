@@ -30,8 +30,9 @@ const mocks = vi.hoisted(() => {
   const acceptedVersions = new Set<string>(['terminos-v1']);
   const hasAccepted = vi.fn(async (version: string) => acceptedVersions.has(version));
   const preflight = vi.fn<(request: unknown) => Promise<any>>(async () => ({ allowed: true, reservationId: null }));
+  const pin = vi.fn(async (_id: string, versions: Record<string, string>) => versions);
   const repository = {
-    conversations: { ensurePinnedConversation }, aiTurns, messages, usage: { preflight },
+    conversations: { ensurePinnedConversation }, conversationPrompts: { pin }, aiTurns, messages, usage: { preflight },
     termsAcceptances: { hasAccepted },
     aiConfig: { getPinnedRelease: vi.fn(async () => undefined), getProviderAvailability: vi.fn(async () => ({ enabled: true, version: 0 })) },
   };
@@ -50,7 +51,7 @@ const mocks = vi.hoisted(() => {
   });
   const childInfo = vi.fn();
   return {
-    calls, identity, turn, snapshot, delta, decision, ensurePinnedConversation, claimTurn,
+    calls, pin, identity, turn, snapshot, delta, decision, ensurePinnedConversation, claimTurn,
     ensureUserMessage, checkpointTurn, failTurn, completeTurn, listNotices, listTurns,
     repository, repos, startConversation, applyDelta, peekNextDecision, acknowledgeDecisions,
     getSnapshot, extract, render, runPurpose, childInfo, acceptedVersions, hasAccepted, preflight,
@@ -124,6 +125,21 @@ describe('chatAction durable turn boundary', () => {
     expect(mocks.ensureUserMessage).toHaveBeenCalledWith(expect.objectContaining({ content: 'Quiero un logo' }));
     expect(mocks.checkpointTurn.mock.calls.map(([value]) => value.stage)).toEqual(['extracted', 'effects_started', 'effects_committed']);
     expect(mocks.completeTurn).toHaveBeenCalledWith(expect.objectContaining({ responseContent: '¡Listo!' }));
+  });
+
+  it('pins the active prompt versions after authorizing and hands the stored map to both adapters (D22)', async () => {
+    const stored = { extractor: 'extractor.v4', responder: 'responder.chat-step1.v5' };
+    mocks.pin.mockResolvedValueOnce(stored);
+    await chatAction(input);
+    expect(mocks.pin).toHaveBeenCalledTimes(1);
+    expect(mocks.pin).toHaveBeenCalledWith(input.conversationId, expect.objectContaining({
+      extractor: expect.any(String), responder: expect.any(String), 'name-agent': expect.any(String),
+      'tagline-agent': expect.any(String), 'logo-agent': expect.any(String),
+    }));
+    expect(mocks.ensurePinnedConversation.mock.invocationCallOrder[0]).toBeLessThan(mocks.pin.mock.invocationCallOrder[0]);
+    expect(mocks.pin.mock.invocationCallOrder[0]).toBeLessThan(mocks.extract.mock.invocationCallOrder[0]);
+    expect(mocks.extract).toHaveBeenCalledWith(expect.objectContaining({ promptVersions: stored }));
+    expect(mocks.render).toHaveBeenCalledWith(expect.objectContaining({ promptVersions: stored }));
   });
 
   describe('KAN-43 usage preflight', () => {

@@ -80,6 +80,30 @@ describe('logo-agent worker', () => {
     );
   });
 
+  it.each([
+    ['hands the conversation\'s pinned prompt to the handler (D22)', async () => ({ version: 'logo-agent.v0', text: 'pinned' }), { version: 'logo-agent.v0', text: 'pinned' }],
+    ['runs the handler without a prompt (active version) when the lookup fails', async () => { throw new Error('db down'); }, undefined],
+  ])('%s', async (_label, pinnedPromptFor, expected) => {
+    const subscriber = new FakeSubscriber();
+    const registry = new AgentRegistry();
+    const fakeHandler: AgentHandler<undefined> = vi.fn(async (message: A2AMessage) => ({
+      status: 'completed' as const, taskId: message.taskId, artifacts: [], completedAt: '2026-05-04T00:00:01Z',
+    }));
+    registry.register(logoCard as AgentCard, fakeHandler, undefined);
+    const row = buildAgentTaskRow();
+    const lookup = vi.fn(pinnedPromptFor);
+    await startLogoAgentWorker(buildWorkerTestContext({
+      subscriber, registry, pinnedPromptFor: lookup,
+      systemReposFor: () => ({ agentTasks: { findById: vi.fn(async () => ({ ...row, status: 'pending' as const })), claimById: vi.fn(async () => row) } as never, llmCalls: {} as never }),
+    }));
+    subscriber.emitMessage(channelForAgent('logo-agent' as AgentId), wakeUp({ taskId: row.id, tenantId: '66666666-6666-6666-6666-666666666666', agentId: 'logo-agent' }));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(lookup).toHaveBeenCalledWith('66666666-6666-6666-6666-666666666666', row.conversationId, 'logo-agent');
+    expect((fakeHandler as ReturnType<typeof vi.fn>).mock.calls[0][0].prompt).toEqual(expected);
+  });
+
   it('claims the row, runs the handler, and forwards the completed state to onTaskSettled', async () => {
     const subscriber = new FakeSubscriber();
     const registry = new AgentRegistry();
