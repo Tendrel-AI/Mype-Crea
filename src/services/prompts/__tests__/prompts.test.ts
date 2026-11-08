@@ -92,12 +92,12 @@ describe('resolveAdapterBehavior', () => {
     expect(mocks.warn).toHaveBeenCalledWith({ key: 'extractor', pinned, used: 'extractor.v10' }, 'prompt.pin.fallback');
   });
 
-  it('keeps profile settings and the field list of an execution', () => {
+  it('keeps profile settings of an execution but takes the field list from the registry', () => {
     const execution = {
       model: {} as never,
-      behavior: { extractor: { temperature: 0.3, maxTokens: 99, fields: [] }, responder: {} } as never,
+      behavior: { extractor: { temperature: 0.3, maxTokens: 99, fields: [{ name: 'stale' }] }, responder: {} } as never,
     };
     const { extractor } = resolveAdapterBehavior('extractor', undefined, fields, execution);
-    expect(extractor).toMatchObject({ temperature: 0.3, maxTokens: 99, fields: [], promptVersion: 'extractor.v10' });
+    expect(extractor).toMatchObject({ temperature: 0.3, maxTokens: 99, fields, promptVersion: 'extractor.v10' });
   });
 });

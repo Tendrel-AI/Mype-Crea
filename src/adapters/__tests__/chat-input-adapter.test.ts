@@ -354,22 +354,23 @@ describe('ChatInputAdapter', () => {
     });
   });
 
-  it.each([
-    ['a frozen field the registry lacks', { name: 'ghost_field', required: false, promptHint: '¿Fantasma?', agents: ['test-fixture-agent'] }],
-    ['a frozen field whose hint changed', { name: 'business_name', required: true, promptHint: 'Otra pregunta', agents: ['test-fixture-agent'] }],
-  ])('rejects %s before provider invocation', async (_name, field) => {
+  it('ignores the release-frozen extractor fields and uses the registry ones (D22)', async () => {
     const provider = makeExtractorProvider('{}');
     const { registry } = buildSingleAgentFixtureRegistry();
-    const behavior = createCurrentAdapterBehaviorSnapshot([field]);
+    const stale = { name: 'ghost_field', required: false, promptHint: '¿Fantasma?', agents: ['test-fixture-agent'] };
+    const behavior = createCurrentAdapterBehaviorSnapshot([stale]);
     const adapter = new ChatInputAdapter(buildFakeCore(), registry);
 
-    await expect(adapter.extract({
+    await adapter.extract({
       conversationId,
       userMessage: 'hola',
       llmContext: ctx,
       execution: { model: { ...provider.resolve('extractor'), provider: 'openrouter' }, behavior },
-    })).rejects.toThrow(/does not match the runtime agent registry/);
-    expect(provider.create).not.toHaveBeenCalled();
+    });
+
+    expect(provider.create).toHaveBeenCalledTimes(1);
+    expect(provider.captured[0].systemPrompt).not.toContain('ghost_field');
+    expect(provider.captured[0].systemPrompt).toContain('business_name');
   });
 
   it('accepts a frozen field whose owners or required flag changed (a new card shares it)', async () => {
