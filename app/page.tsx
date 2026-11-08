@@ -56,6 +56,7 @@ export default async function Home({
           initialBrief={result.history.brief}
           initialStates={result.history.states}
           initialConversations={result.conversations}
+          initialBrands={result.brands}
         />
       );
     case 'not_found':
@@ -66,6 +67,7 @@ export default async function Home({
           userName={userName}
           initialConversationId=""
           initialConversations={result.conversations}
+          initialBrands={result.brands}
           conversationNotFound
         />
       );

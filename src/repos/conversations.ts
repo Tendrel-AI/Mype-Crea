@@ -192,6 +192,71 @@ export class ConversationUnavailableError extends Error {
   }
 }
 
+/**
+ * Pin `input.conversationId` to the current release inside an open transaction, creating the row
+ * (optionally under `brandId`) when it does not exist. Shared by `ensurePinnedConversation` and the
+ * brand repo, so a brand and its first conversation commit or roll back together.
+ */
+export async function pinConversationInTx(
+  tx: TxClient,
+  tenant: Tenant,
+  user: User,
+  input: { readonly conversationId: ConversationId; readonly schemas: ReadonlyArray<AgentFieldSchema> },
+  brandId: UUID | null = null,
+): Promise<AiConversationPin> {
+  let pinned = await tx.query<{
+    configuration_state: 'pinned' | 'legacy_unversioned';
+    ai_release_id: UUID | null;
+  }>(
+    `SELECT configuration_state, ai_release_id
+       FROM conversations
+      WHERE id = $1 AND tenant_id = $2 AND user_id = $3
+      LIMIT 1`,
+    [input.conversationId, tenant.id, user.id],
+  );
+  let resolvedReleaseId: string | undefined;
+  if (!pinned.rows[0]) {
+    resolvedReleaseId = await resolveNewConversationRelease(tx, tenant);
+    await tx.query(
+      `INSERT INTO conversations
+         (id, tenant_id, user_id, ai_release_id, configuration_state)
+       SELECT $1, $2, $3, $4, 'pinned'
+        WHERE $4::uuid IS NOT NULL
+       ON CONFLICT (id) DO NOTHING`,
+      [input.conversationId, tenant.id, user.id, resolvedReleaseId ?? null, brandId],
+    );
+    pinned = await tx.query<{
+      configuration_state: 'pinned' | 'legacy_unversioned';
+      ai_release_id: UUID | null;
+    }>(
+      `SELECT configuration_state, ai_release_id
+         FROM conversations
+        WHERE id = $1 AND tenant_id = $2 AND user_id = $3
+        LIMIT 1`,
+      [input.conversationId, tenant.id, user.id],
+    );
+  }
+  if (!pinned.rows[0]) {
+    // The insert had a release but hit an existing id: it belongs to another user or tenant (KAN-44).
+    if (resolvedReleaseId) throw new ConversationUnavailableError();
+    throw new Error('No hay una configuración activa para iniciar una conversación nueva.');
+  }
+
+  const snapshot = await loadSnapshot(tx, input.conversationId, input.schemas);
+  if (!snapshot) throw new Error(`Conversation row not visible: ${input.conversationId}`);
+  const state = pinned.rows[0].configuration_state;
+  const pinnedReleaseId = pinned.rows[0].ai_release_id;
+  if (state === 'pinned' && !pinnedReleaseId) {
+    throw new Error(`Pinned conversation has no release: ${input.conversationId}`);
+  }
+  return {
+    conversationId: input.conversationId,
+    state,
+    releaseId: pinnedReleaseId,
+    snapshot,
+  };
+}
+
 export function conversationsRepo(tenant: Tenant, user: User) {
   return {
     /**
@@ -202,59 +267,7 @@ export function conversationsRepo(tenant: Tenant, user: User) {
       readonly conversationId: ConversationId;
       readonly schemas: ReadonlyArray<AgentFieldSchema>;
     }): Promise<AiConversationPin> {
-      return withTenantTransaction(tenant, user, async (tx) => {
-        let pinned = await tx.query<{
-          configuration_state: 'pinned' | 'legacy_unversioned';
-          ai_release_id: UUID | null;
-        }>(
-          `SELECT configuration_state, ai_release_id
-             FROM conversations
-            WHERE id = $1 AND tenant_id = $2 AND user_id = $3
-            LIMIT 1`,
-          [input.conversationId, tenant.id, user.id],
-        );
-        let resolvedReleaseId: string | undefined;
-        if (!pinned.rows[0]) {
-          resolvedReleaseId = await resolveNewConversationRelease(tx, tenant);
-          await tx.query(
-            `INSERT INTO conversations
-               (id, tenant_id, user_id, ai_release_id, configuration_state)
-             SELECT $1, $2, $3, $4, 'pinned'
-              WHERE $4::uuid IS NOT NULL
-             ON CONFLICT (id) DO NOTHING`,
-            [input.conversationId, tenant.id, user.id, resolvedReleaseId ?? null],
-          );
-          pinned = await tx.query<{
-            configuration_state: 'pinned' | 'legacy_unversioned';
-            ai_release_id: UUID | null;
-          }>(
-            `SELECT configuration_state, ai_release_id
-               FROM conversations
-              WHERE id = $1 AND tenant_id = $2 AND user_id = $3
-              LIMIT 1`,
-            [input.conversationId, tenant.id, user.id],
-          );
-        }
-        if (!pinned.rows[0]) {
-          // The insert had a release but hit an existing id: it belongs to another user or tenant (KAN-44).
-          if (resolvedReleaseId) throw new ConversationUnavailableError();
-          throw new Error('No hay una configuración activa para iniciar una conversación nueva.');
-        }
-
-        const snapshot = await loadSnapshot(tx, input.conversationId, input.schemas);
-        if (!snapshot) throw new Error(`Conversation row not visible: ${input.conversationId}`);
-        const state = pinned.rows[0].configuration_state;
-        const pinnedReleaseId = pinned.rows[0].ai_release_id;
-        if (state === 'pinned' && !pinnedReleaseId) {
-          throw new Error(`Pinned conversation has no release: ${input.conversationId}`);
-        }
-        return {
-          conversationId: input.conversationId,
-          state,
-          releaseId: pinnedReleaseId,
-          snapshot,
-        };
-      });
+      return withTenantTransaction(tenant, user, (tx) => pinConversationInTx(tx, tenant, user, input));
     },
 
     /**
@@ -291,7 +304,7 @@ export function conversationsRepo(tenant: Tenant, user: User) {
     },
 
     /**
-     * The caller's own pinned conversations, newest activity first (KAN-25).
+     * The caller's own pinned conversations, newest activity first (KAN-25). Conversations of archived brands are left out (KAN-85).
      * Last activity = newest message `created_at`, else `started_at`. Legacy
      * unversioned rows are never returned. Ties break on id so the order is stable.
      * The explicit tenant + owner predicate duplicates RLS on purpose.
@@ -304,8 +317,9 @@ export function conversationsRepo(tenant: Tenant, user: User) {
           started_at: Date;
           last_activity_at: Date;
           agent_states: unknown;
+          brand_id: UUID | null;
         }>(
-          `SELECT c.id, c.started_at, c.agent_states,
+          `SELECT c.id, c.started_at, c.agent_states, c.brand_id,
                   COALESCE(last_message.created_at, c.started_at) AS last_activity_at
              FROM conversations c
              LEFT JOIN LATERAL (
@@ -315,9 +329,11 @@ export function conversationsRepo(tenant: Tenant, user: User) {
                 ORDER BY m.created_at DESC
                 LIMIT 1
              ) last_message ON true
+             LEFT JOIN brands b ON b.tenant_id = c.tenant_id AND b.id = c.brand_id
             WHERE c.tenant_id = $1
               AND c.user_id = $2
               AND c.configuration_state = 'pinned'
+              AND (c.brand_id IS NULL OR b.status = 'active')
             ORDER BY last_activity_at DESC, c.id DESC
             LIMIT $3`,
           [tenant.id, user.id, bounded],
@@ -327,6 +343,7 @@ export function conversationsRepo(tenant: Tenant, user: User) {
           startedAt: row.started_at.toISOString(),
           lastActivityAt: row.last_activity_at.toISOString(),
           businessName: businessNameFromAgentStates(row.agent_states),
+          brandId: row.brand_id,
         }));
       });
     },

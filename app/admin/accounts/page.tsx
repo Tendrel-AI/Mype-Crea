@@ -1,10 +1,11 @@
 import { getTenantAccounts } from '../../actions/tenant-accounts';
+import { getBrandLimitsAction } from '../../actions/brands';
 import TenantAccountsAdmin from '../../../components/TenantAccountsAdmin';
 
 export const dynamic = 'force-dynamic';
 
 export default async function TenantAccountsPage() {
-  const view = await getTenantAccounts();
+  const [view, limits] = await Promise.all([getTenantAccounts(), getBrandLimitsAction()]);
   if (!view.ok || !view.members || !view.audit || !view.currentUserId) {
     return (
       <main className="mx-auto max-w-4xl p-8">
@@ -13,5 +14,5 @@ export default async function TenantAccountsPage() {
       </main>
     );
   }
-  return <TenantAccountsAdmin members={view.members} audit={view.audit} currentUserId={view.currentUserId} />;
+  return <TenantAccountsAdmin members={view.members} audit={view.audit} currentUserId={view.currentUserId} limits={limits.ok ? { maxBrandsPerUser: limits.maxBrandsPerUser, maxConversationsPerBrand: limits.maxConversationsPerBrand } : undefined} />;
 }

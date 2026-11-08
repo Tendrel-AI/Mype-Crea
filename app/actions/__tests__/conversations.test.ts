@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => {
   const identity = { tenant: { id: 'tenant-1' }, user: { id: 'user-1' } };
   const pinned = { state: 'pinned', snapshot: { conversationId: 'new-id', agentStates: {} }, releaseId: 'release-1' };
-  const ensurePinnedConversation = vi.fn(async () => pinned);
+  const ensurePinnedConversation = vi.fn(async (_input?: unknown) => pinned);
   const readPinnedConversation = vi.fn(async (): Promise<typeof pinned | undefined> => pinned);
   const listTurns = vi.fn(async (): Promise<Array<{
     id: string;
@@ -32,13 +32,18 @@ const mocks = vi.hoisted(() => {
   const getPinnedRelease = vi.fn(async () => ({ id: 'release-1', contentHash: 'hash-1' }));
   const startConversation = vi.fn(async () => undefined);
   const listRecent = vi.fn(async (): Promise<Array<{
-    conversationId: string; startedAt: string; lastActivityAt: string; businessName: string | null;
+    conversationId: string; startedAt: string; lastActivityAt: string; businessName: string | null; brandId: string | null;
   }>> => []);
   const timeline = vi.fn(async (): Promise<Record<string, unknown> | undefined> => ({
     conversationId: '11111111-1111-4111-8111-111111111111', access: 'owner', generatedAt: '2026-11-02T15:00:00.000Z',
     events: [{ seq: 1, kind: 'conversation', refId: '11111111-1111-4111-8111-111111111111', meta: {}, content: null }],
   }));
+  const brandsCreateConversation = vi.fn(async (input: unknown) => (
+    { ok: true as const, pin: await ensurePinnedConversation(input as never) }
+  ));
+  const listActive = vi.fn(async () => []);
   const repos = vi.fn((..._args: unknown[]) => ({
+    brands: { createConversation: brandsCreateConversation, listActive },
     trace: { timeline },
     conversations: { ensurePinnedConversation, readPinnedConversation, listRecent },
     messages: { listByConversation: listMessages },
@@ -52,7 +57,7 @@ const mocks = vi.hoisted(() => {
   const getOrchestrator = vi.fn(() => ({ startConversation, getDeliverableStates, executeCommand, applyDelta }));
   const getFieldSchemas = vi.fn(() => []);
   return {
-    identity, pinned, ensurePinnedConversation, readPinnedConversation,
+    identity, pinned, ensurePinnedConversation, brandsCreateConversation, readPinnedConversation,
     listTurns, listNotices, listAttempts, listByConversation, listMessages, getPinnedRelease,
     startConversation, repos, getOrchestrator, getFieldSchemas, listRecent, timeline,
     getDeliverableStates, executeCommand, applyDelta,
@@ -77,6 +82,7 @@ import {
 } from '../conversations';
 
 const CONVERSATION_ID = '11111111-1111-4111-8111-111111111111';
+const BRAND_ID = '99999999-9999-4999-8999-999999999999';
 
 describe('conversation actions', () => {
   beforeEach(() => {
@@ -86,7 +92,7 @@ describe('conversation actions', () => {
   });
 
   it('pins the new owner-scoped conversation before registering it with core', async () => {
-    const result = await createConversationAction();
+    const result = await createConversationAction({ brandId: BRAND_ID });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(mocks.ensurePinnedConversation).toHaveBeenCalledWith(expect.objectContaining({
@@ -101,7 +107,7 @@ describe('conversation actions', () => {
 
   it('does not register a legacy conversation with core', async () => {
     mocks.ensurePinnedConversation.mockResolvedValue({ ...mocks.pinned, state: 'legacy_unversioned' });
-    const result = await createConversationAction();
+    const result = await createConversationAction({ brandId: BRAND_ID });
     expect(result).toMatchObject({ ok: false, code: 'configuration_unavailable' });
     expect(mocks.startConversation).not.toHaveBeenCalled();
   });
@@ -201,15 +207,16 @@ describe('conversation actions', () => {
   });
   it('lists the caller’s recent conversations with server-side labels (KAN-25)', async () => {
     mocks.listRecent.mockResolvedValueOnce([
-      { conversationId: CONVERSATION_ID, startedAt: '2026-10-20T15:00:00.000Z', lastActivityAt: '2026-10-24T15:00:00.000Z', businessName: 'Café Andino' },
-      { conversationId: '22222222-2222-4222-8222-222222222222', startedAt: '2026-10-01T15:00:00.000Z', lastActivityAt: '2026-10-01T15:00:00.000Z', businessName: null },
+      { conversationId: CONVERSATION_ID, startedAt: '2026-10-20T15:00:00.000Z', lastActivityAt: '2026-10-24T15:00:00.000Z', businessName: 'Café Andino', brandId: BRAND_ID },
+      { conversationId: '22222222-2222-4222-8222-222222222222', startedAt: '2026-10-01T15:00:00.000Z', lastActivityAt: '2026-10-01T15:00:00.000Z', businessName: null, brandId: null },
     ]);
     const result = await listConversationsAction();
     expect(result).toEqual({
       ok: true,
+      brands: [],
       conversations: [
-        { conversationId: CONVERSATION_ID, label: 'Café Andino · 24 oct', lastActivityAt: '2026-10-24T15:00:00.000Z' },
-        { conversationId: '22222222-2222-4222-8222-222222222222', label: 'Nueva conversación · 1 oct', lastActivityAt: '2026-10-01T15:00:00.000Z' },
+        { conversationId: CONVERSATION_ID, brandId: BRAND_ID, label: 'Café Andino · 24 oct', lastActivityAt: '2026-10-24T15:00:00.000Z' },
+        { conversationId: '22222222-2222-4222-8222-222222222222', brandId: null, label: 'Nueva conversación · 1 oct', lastActivityAt: '2026-10-01T15:00:00.000Z' },
       ],
     });
     expect(mocks.repos).toHaveBeenCalledWith(mocks.identity.tenant, mocks.identity.user);
@@ -235,10 +242,28 @@ describe('conversation actions', () => {
   });
 
   it('creating a conversation never touches the caller’s other conversations (KAN-25)', async () => {
-    const result = await createConversationAction();
+    const result = await createConversationAction({ brandId: BRAND_ID });
     expect(result.ok).toBe(true);
     expect(mocks.ensurePinnedConversation).toHaveBeenCalledTimes(1);
     expect(mocks.listRecent).not.toHaveBeenCalled();
     expect(mocks.readPinnedConversation).not.toHaveBeenCalled();
+  });
+
+  it('passes the brand to the repo and reports the per-brand limit with its message', async () => {
+    mocks.brandsCreateConversation.mockResolvedValueOnce({ ok: false, code: 'conversation_limit_reached', limit: 5 } as never);
+    const result = await createConversationAction({ brandId: BRAND_ID });
+    expect(result).toEqual({
+      ok: false, code: 'conversation_limit_reached', limit: 5, message: 'Esta marca llegó al límite de 5 conversaciones.',
+    });
+    expect(mocks.startConversation).not.toHaveBeenCalled();
+  });
+
+  it('answers a foreign, missing or malformed brand with the same not-found result', async () => {
+    mocks.brandsCreateConversation.mockResolvedValueOnce({ ok: false, code: 'brand_not_found' } as never);
+    const foreign = await createConversationAction({ brandId: BRAND_ID });
+    const malformed = await createConversationAction({ brandId: 'nope' });
+    expect(foreign).toEqual(malformed);
+    expect(foreign).toMatchObject({ ok: false, code: 'brand_not_found' });
+    expect(mocks.brandsCreateConversation).toHaveBeenCalledTimes(1);
   });
 });

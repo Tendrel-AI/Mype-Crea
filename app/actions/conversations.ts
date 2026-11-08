@@ -2,48 +2,53 @@
 
 import { repositoryActor, resolveIdentity } from '../../src/auth/resolve-identity';
 import { repos } from '../../src/repos';
-import type { ConversationId } from '../../src/core/contracts';
+import type { ConversationId, UUID } from '../../src/core/contracts';
 import {
+  BRAND_NOT_FOUND_MESSAGE,
   CONVERSATION_NOT_FOUND_MESSAGE,
   CONVERSATIONS_UNAVAILABLE_MESSAGE,
   NEW_CONVERSATION_FAILED_MESSAGE,
   createOwnedConversation,
   isConversationId,
+  listOwnedBrands,
   listOwnedConversations,
   loadOwnedConversation,
   type ConversationHistory,
+  type BrandListEntry,
   type ConversationListEntry,
+  type NewOwnedConversation,
 } from '../../src/conversations/selection';
 
-export type NewConversationResult =
-  | { readonly ok: true; readonly conversationId: ConversationId }
-  | { readonly ok: false; readonly code: 'configuration_unavailable'; readonly message: string };
+export type NewConversationResult = NewOwnedConversation;
 
 /**
- * Create and durably pin a new conversation before the UI opens SSE. The
- * caller's previous conversations are left untouched and stay listed (KAN-25).
+ * Create and durably pin a new conversation under one of the caller's active brands before the UI
+ * opens SSE. The caller's previous conversations are left untouched and stay listed (KAN-25).
+ * A foreign, missing or archived brand gets the same not-found answer; the per-brand limit
+ * (KAN-85) comes back as `conversation_limit_reached`.
  */
-export async function createConversationAction(): Promise<NewConversationResult> {
+export async function createConversationAction(input: { readonly brandId: string }): Promise<NewConversationResult> {
+  if (!isConversationId(input?.brandId)) {
+    return { ok: false, code: 'brand_not_found', message: BRAND_NOT_FOUND_MESSAGE };
+  }
   try {
     const identity = await resolveIdentity();
-    const created = await createOwnedConversation(identity);
-    return created.ok
-      ? { ok: true, conversationId: created.conversationId }
-      : { ok: false, code: 'configuration_unavailable', message: created.message };
+    return await createOwnedConversation(identity, input.brandId as UUID);
   } catch {
     return { ok: false, code: 'configuration_unavailable', message: NEW_CONVERSATION_FAILED_MESSAGE };
   }
 }
 
 export type ConversationListResult =
-  | { readonly ok: true; readonly conversations: ReadonlyArray<ConversationListEntry> }
+  | { readonly ok: true; readonly conversations: ReadonlyArray<ConversationListEntry>; readonly brands: ReadonlyArray<BrandListEntry> }
   | { readonly ok: false; readonly code: 'conversations_unavailable'; readonly message: string };
 
 /** KAN-25 «Mis conversaciones»: the caller's 20 most recent pinned conversations. */
 export async function listConversationsAction(): Promise<ConversationListResult> {
   try {
     const identity = await resolveIdentity();
-    return { ok: true, conversations: await listOwnedConversations(identity) };
+    const [conversations, brands] = await Promise.all([listOwnedConversations(identity), listOwnedBrands(identity)]);
+    return { ok: true, conversations, brands };
   } catch {
     return { ok: false, code: 'conversations_unavailable', message: CONVERSATIONS_UNAVAILABLE_MESSAGE };
   }

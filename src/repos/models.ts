@@ -84,6 +84,8 @@ export interface RecentConversationRow {
   readonly lastActivityAt: string;
   /** The filled `business_name` slot of the persisted brief, else null. */
   readonly businessName: string | null;
+  /** KAN-85: the brand the conversation belongs to; null for legacy conversations. */
+  readonly brandId: UUID | null;
 }
 
 /** KAN-27: one user's explicit acceptance of one terms version (server-timestamped). */

@@ -22,6 +22,8 @@ import { messagesRepo, type MessagesRepo } from './messages';
 import { termsAcceptancesRepo, type TermsAcceptancesRepo } from './terms-acceptances';
 import { usageRepo, type UsageRepo } from './usage';
 import { writeRejectionsRepo, type WriteRejectionsRepo } from './write-rejections';
+import { brandsRepo, type BrandsRepo } from './brands';
+import { productsRepo, type ProductsRepo } from './products';
 import { tenantAccountsRepo, type TenantAccountsRepo } from './tenant-accounts';
 import type { Tenant, User } from '../db/with-transaction';
 
@@ -41,6 +43,8 @@ export interface Repos {
   readonly usage: UsageRepo;
   readonly writeRejections: WriteRejectionsRepo;
   readonly tenantAccounts: TenantAccountsRepo;
+  readonly brands: BrandsRepo;
+  readonly products: ProductsRepo;
   readonly trace: ConversationTraceRepo;
 }
 
@@ -61,6 +65,8 @@ export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repo
     usage: usageRepo(tenant, user),
     writeRejections: writeRejectionsRepo(tenant, user),
     tenantAccounts: tenantAccountsRepo(tenant, user),
+    brands: brandsRepo(tenant, user),
+    products: productsRepo(tenant, user),
     trace: conversationTraceRepo(tenant, user, actor),
   };
 }

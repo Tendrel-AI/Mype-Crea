@@ -192,11 +192,11 @@ describe('restart modal (KAN-74)', () => {
   it('renders the confirmation copy only when open', () => {
     expect(renderToStaticMarkup(<RestartModal showRestartModal={false} setShowRestartModal={noop} handleRestart={noop} />)).toBe('');
     const open = renderToStaticMarkup(<RestartModal showRestartModal setShowRestartModal={noop} handleRestart={noop} />);
-    expect(open).toContain('¿Crear nuevo producto?');
+    expect(open).toContain('¿Crear una marca nueva?');
     // KAN-25: the current conversation is kept, never discarded.
-    expect(open).toContain('Esto iniciará un nuevo proceso de creación. Tu conversación actual seguirá disponible en «Mis conversaciones».');
+    expect(open).toContain('Esto creará una marca nueva con su primera conversación. Tu conversación actual seguirá disponible en «Mis conversaciones».');
     expect(open).not.toContain('descartará');
     expect(open).toContain('Cancelar');
-    expect(open).toContain('Sí, crear nuevo');
+    expect(open).toContain('Sí, crear marca');
   });
 });
