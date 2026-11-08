@@ -628,6 +628,7 @@ describe('executeDeliverableCommand — Aprobar', () => {
       deliverableId: logo1.deliverableId,
       expectedApprovedId: null,
       dependentKinds: ['label', 'social_pack'],
+      brandLevel: false,
     });
 
     const label = await h.reviewed('label-agent', 'label');

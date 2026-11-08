@@ -15,6 +15,7 @@ import { MAX_ASSETS } from '../../../src/repos/brand-files';
 import { brandFileStorage, MAX_UPLOAD_BYTES, safeOriginalName, sniffImage } from '../../../src/services/storage/brand-upload';
 import { loggerFor } from '../../../src/services/logger';
 import { isConversationId } from '../../../src/conversations/selection';
+import { adoptImportedLogo } from '../../../src/conversations/imported-identity';
 import type { UUID } from '../../../src/core/contracts';
 
 const log = loggerFor('controller.brand-files');
@@ -56,7 +57,8 @@ export async function POST(request: NextRequest): Promise<Response> {
   const child = log.child({ tenantId: identity.tenant.id, userId: identity.user.id, brandId });
   const owned = repos(identity.tenant, identity.user);
   try {
-    if (!(await owned.brands.get(brandId as UUID))) return NOT_FOUND();
+    const brand = await owned.brands.get(brandId as UUID);
+    if (!brand) return NOT_FOUND();
     if (productId) {
       const product = await owned.products.get(productId as UUID);
       if (!product || product.brandId !== brandId) return NOT_FOUND();
@@ -85,6 +87,8 @@ export async function POST(request: NextRequest): Promise<Response> {
         await storage.deleteObject(added.replacedStorageKey).catch((err) => child.error({ err }, 'brand_files.replaced_cleanup_failed'));
       }
       child.debug({ fileId, kind }, 'brand_files.stored');
+      // KAN-89: an imported brand's uploaded logo is its approved logo (never fails the upload).
+      if (kind === 'logo') await adoptImportedLogo(identity, brand);
       return Response.json({ ok: true, id: fileId, kind, originalName: added.file.originalName, url: `/api/brand-files/${fileId}` }, { status: 201, headers: NO_STORE });
     } catch (err) {
       await storage.deleteObject(storageKey).catch((cleanupErr) => child.error({ err: cleanupErr }, 'brand_files.orphan_cleanup_failed'));

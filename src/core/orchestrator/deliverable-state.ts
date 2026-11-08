@@ -8,6 +8,9 @@
  * no agent- or field-specific branching: dependencies come from the
  * declarative map in the Agent Cards (`mypes:deliverable.dependsOn`).
  *
+ * KAN-89: Agent Cards also declare `level` (brand | product) and `ownSource`. A brand-level kind in a
+ * product conversation is read-only (no commands); `use_own` is offered where `ownSource` is declared.
+ *
  * KAN-64 transition table (identifiers in English, see contracts/deliverables.ts):
  *
  *   blocked    required brief fields not filled, or an upstream kind is not
@@ -54,7 +57,7 @@ import {
   type DeliverableStateView,
   type FieldSlot,
 } from '../contracts';
-import { changedFields } from '../deliverable-inputs';
+import { changedFields, isUserOrigin } from '../deliverable-inputs';
 import type { TaskErrorCategory } from '../task-errors';
 import type { DeliverableSpec } from './agent-registry';
 import type { WorkflowCandidate, WorkflowTask } from './deliverable-workflow';
@@ -193,10 +196,12 @@ export function deriveStaleCandidateIds(
   const isStale = (kind: string, deliverableId: string): boolean => {
     const spec = specs.find((s) => s.deliverableKind === kind);
     const candidate = facts.candidates.find((c) => c.deliverableId === deliverableId);
+    // A version the user brought was not made from anything that can change (KAN-89).
+    if (candidate && isUserOrigin(candidate.metadata)) return false;
     if (spec && candidate?.inputVersions) {
       if (changedFields(candidate.inputVersions, requirementsFromSnapshot(snapshot, spec.agentId)).length > 0) return true;
     }
-    const upstream = candidate ? facts.tasks.find((t) => t.id === candidate.agentTaskId)?.upstreamApprovals : null;
+    const upstream = candidate ? upstreamOf(candidate, facts.tasks) : null;
     if (!spec || !upstream) return approvalOf(kind) === deliverableId && marked.has(kind);
     return spec.dependsOn.some((upKind) => (upstream[upKind] ?? null) !== approvalOf(upKind));
   };
@@ -230,7 +235,7 @@ export function candidateProvenance(
     const { value, deliverableId } = (entry ?? {}) as { value?: unknown; deliverableId?: unknown };
     return typeof value === 'string' && deliverableId === undefined ? [{ field, value }] : [];
   });
-  const approvals = facts.tasks.find((t) => t.id === candidate.agentTaskId)?.upstreamApprovals ?? {};
+  const approvals = upstreamOf(candidate, facts.tasks) ?? {};
   const upstream = Object.entries(approvals)
     .sort(([a], [b]) => compare(a, b))
     .map(([kind, deliverableId]) => {
@@ -243,8 +248,17 @@ export function candidateProvenance(
     provider: text('provider'),
     model: text('model'),
     inputs,
+    origin: isUserOrigin(metadata) ? 'user' : 'generated',
     upstream,
   };
+}
+
+/** The upstream approvals a candidate was made under: its own task's, else the ones carried with it (KAN-89). */
+function upstreamOf(
+  candidate: WorkflowCandidate,
+  tasks: ReadonlyArray<WorkflowTask>,
+): Readonly<Record<string, string>> | null | undefined {
+  return tasks.find((t) => t.id === candidate.agentTaskId)?.upstreamApprovals ?? candidate.upstreamApprovals;
 }
 
 export interface DeriveDeliverableStateInput {
@@ -337,6 +351,17 @@ export function deriveDeliverableState(
     state = 'blocked';
   }
 
+  // KAN-89: a brand-level deliverable in a product conversation is read-only, and without the brand's
+  // approval it waits for the brand chat (never «enabled», so the planner never offers Generar).
+  // «Usar mi …» needs the upstream approvals (F3) but not the brief fields: nothing is generated.
+  const inheritedFromBrand = spec.level === 'brand' && snapshot.links?.hasProduct === true;
+  if (inheritedFromBrand) {
+    allowed.clear();
+    if (state === 'enabled') state = 'blocked';
+  } else if (spec.ownSource && state !== 'generating' && missingUpstream.length === 0) {
+    allowed.add('use_own');
+  }
+
   const stale = (state === 'approved' || state === 'in_review') && currentStale;
   const allowedCommands = DELIVERABLE_COMMAND_ORDER.filter((kind) => allowed.has(kind));
   const activeTask =
@@ -370,6 +395,8 @@ export function deriveDeliverableState(
   return {
     agentId: spec.agentId,
     deliverableKind: spec.deliverableKind,
+    level: spec.level ?? 'product',
+    inheritedFromBrand,
     state,
     stale,
     allowedCommands,

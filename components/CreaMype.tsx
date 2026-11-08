@@ -377,6 +377,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
           ? { ...base, kind: 'iterate', deliverableId: request.deliverableId, observation: request.observation }
           : request.kind === 'approve'
             ? { ...base, kind: 'approve', deliverableId: request.deliverableId, expectedApprovedId: view.approvedDeliverableId }
+            : request.kind === 'use_own'
+              ? { ...base, kind: 'use_own', ...(request.value !== undefined ? { value: request.value } : {}) }
             : request.kind === 'retry'
               ? { ...base, kind: 'retry', failedTaskId: view.lastFailure?.taskId }
               : request.kind === 'cancel'

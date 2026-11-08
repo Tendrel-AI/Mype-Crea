@@ -24,6 +24,7 @@ import { usageRepo, type UsageRepo } from './usage';
 import { writeRejectionsRepo, type WriteRejectionsRepo } from './write-rejections';
 import { brandsRepo, type BrandsRepo } from './brands';
 import { brandFilesRepo, type BrandFilesRepo } from './brand-files';
+import { ownCandidatesRepo, type OwnCandidatesRepo } from './own-candidates';
 import { productsRepo, type ProductsRepo } from './products';
 import { tenantAccountsRepo, type TenantAccountsRepo } from './tenant-accounts';
 import type { Tenant, User } from '../db/with-transaction';
@@ -47,6 +48,7 @@ export interface Repos {
   readonly brands: BrandsRepo;
   readonly products: ProductsRepo;
   readonly brandFiles: BrandFilesRepo;
+  readonly ownCandidates: OwnCandidatesRepo;
   readonly trace: ConversationTraceRepo;
 }
 
@@ -70,6 +72,7 @@ export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repo
     brands: brandsRepo(tenant, user),
     products: productsRepo(tenant, user),
     brandFiles: brandFilesRepo(tenant, user),
+    ownCandidates: ownCandidatesRepo(tenant, user),
     trace: conversationTraceRepo(tenant, user, actor),
   };
 }

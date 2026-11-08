@@ -281,6 +281,8 @@ export interface AgentTaskRootInsert {
   readonly idempotencyKey: UUID;
   readonly requirementsSnapshot: Record<string, unknown>;
   readonly scheduledFor?: string;
+  /** The conversation owner: binds `app.user_id` so the JSONB tenant-safety check sees owner-scoped rows (same as `insertCommandTask`). */
+  readonly owner?: { readonly id: UUID };
 }
 
 export interface AgentTaskRow {

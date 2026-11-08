@@ -26,6 +26,14 @@
 
 import { createHash } from 'node:crypto';
 
+/** `metadata.origin` of a version the user brought instead of generating it (KAN-89, F12). */
+export const USER_ORIGIN = 'user';
+
+/** True when the artifact metadata says the user supplied this version. */
+export function isUserOrigin(metadata: unknown): boolean {
+  return (metadata as { origin?: unknown } | null | undefined)?.origin === USER_ORIGIN;
+}
+
 /** Reserved `requirements_snapshot` key: `{ <upstream kind>: <approved deliverable id> }`. */
 export const UPSTREAM_SNAPSHOT_KEY = 'upstream_approvals';
 

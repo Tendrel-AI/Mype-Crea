@@ -32,7 +32,9 @@
   },
   "mypes:deliverable": {
     "kind": "business_name",
-    "dependsOn": []
+    "dependsOn": [],
+    "level": "brand",
+    "ownSource": "text"
   },
   "supportedInterfaces": [
     { "protocol": "local", "module": "agents/name-agent/handler.ts" }

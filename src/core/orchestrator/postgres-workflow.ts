@@ -23,6 +23,7 @@
 import type { ConversationId, DeliverableId, TaskId, UUID } from '../contracts';
 import { repos, systemRepos, type Tenant, type User } from '../../repos';
 import type { AgentTaskRow, DeliverableRow } from '../../repos/models';
+import type { BrandApprovedRow } from '../../repos/deliverables';
 import { clientDeliverableUrl } from '../deliverable-url';
 import { isPresentable } from '../deliverable-safety';
 import { recordedFieldVersions, recordedUpstream } from '../deliverable-inputs';
@@ -87,8 +88,20 @@ export class PostgresDeliverableWorkflowStore implements IDeliverableWorkflowSto
   }
 
   async listCandidates(conversationId: ConversationId): Promise<ReadonlyArray<WorkflowCandidate>> {
-    const rows = await repos(this.tenant, this.user).deliverables.listByConversation(conversationId);
-    return rows.map(toCandidate);
+    const deliverables = repos(this.tenant, this.user).deliverables;
+    const [own, brandElsewhere] = await Promise.all([
+      deliverables.listByConversation(conversationId),
+      deliverables.listBrandApprovedElsewhere(conversationId),
+    ]);
+    // KAN-89: the brand's result approved in another conversation is a candidate here too (display,
+    // upstream values), carrying the upstream approvals of the task that made it.
+    return [
+      ...own.map(toCandidate),
+      ...brandElsewhere.map((row: BrandApprovedRow) => ({
+        ...toCandidate(row),
+        upstreamApprovals: recordedUpstream(row.requirementsSnapshot),
+      })),
+    ];
   }
 
   async findTaskByCommandId(conversationId: ConversationId, commandId: string): Promise<WorkflowTask | null> {

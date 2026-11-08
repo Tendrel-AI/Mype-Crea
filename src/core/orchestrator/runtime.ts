@@ -47,6 +47,7 @@ import { buildDefaultRegistry } from './bootstrap-registry';
 import { PostgresConversationStore } from './postgres-store';
 import { PostgresDeliverableWorkflowStore } from './postgres-workflow';
 import { createPostgresApprovalStore } from '../../repos/approval-store';
+import { createOwnApproval } from '../../services/own-approval';
 import type { IApprovalStore } from '../approvals';
 import {
   defaultArtifactNotifier,
@@ -208,7 +209,10 @@ async function reconcileConfiguredTenantEvents(publisher: RedisClient): Promise<
  * `loadWorkflowFacts` in ./deliverable-commands.ts).
  */
 function createApprovalStore(tenantId: UUID, userId: UUID): IApprovalStore {
-  return createPostgresApprovalStore({ id: tenantId }, { id: userId });
+  const tenant = { id: tenantId };
+  const user = { id: userId };
+  // KAN-89: «Usar mi nombre / logo / lema» stores a user-origin version, then approves it like any other.
+  return { ...createPostgresApprovalStore(tenant, user), approveOwn: createOwnApproval(tenant, user) };
 }
 
 function build(): Runtime {

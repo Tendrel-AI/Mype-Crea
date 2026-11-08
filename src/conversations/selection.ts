@@ -16,6 +16,7 @@ import type { ConversationId, DeliverableStateView, UUID } from '../core/contrac
 import { clientDeliverableUrl } from '../core/deliverable-url';
 import { IMPORTED_KEY, entityName, validateAttributes } from '../core/brand-catalog';
 import { loggerFor } from '../services/logger';
+import { adoptImportedBrand } from './imported-identity';
 import { conversationListLabel } from './label';
 import { briefPanelFields, type BriefPanelField } from './brief-panel';
 
@@ -288,7 +289,10 @@ export async function createOwnedBrand(
     return { ok: false, code: created.code, limit: created.limit, message: brandLimitMessage(created.limit) };
   }
   log.debug({ brandId: created.brandId, conversationId }, 'selection.brand_created');
-  return startedConversation(identity, conversationId, created.brandId, null, created.pin);
+  const started = await startedConversation(identity, conversationId, created.brandId, null, created.pin);
+  // KAN-89: an imported brand brings its name and tagline; its logo is adopted when it is uploaded.
+  if (started.ok && input.imported) await adoptImportedBrand(identity, conversationId, attributes);
+  return started;
 }
 
 /** KAN-87 «Nuevo producto»: validate, then create the product and its first conversation in one transaction. */

@@ -15,7 +15,7 @@
  */
 
 import React, { useState } from 'react';
-import { CheckCircle2, Loader2, RefreshCw, Sparkles, Wand2, XCircle, ArrowRight, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { CheckCircle2, Loader2, RefreshCw, Sparkles, Wand2, XCircle, ArrowRight, ThumbsUp, ThumbsDown, UserCheck } from 'lucide-react';
 import type { DeliverableCommandKind, DeliverableStateKind, DeliverableStateView } from '../../src/core/contracts';
 import { failedCardMessage } from './failure-copy';
 import { briefFieldSpec } from '../../src/core/brief';
@@ -24,6 +24,9 @@ import type { FeedbackValue } from '../../src/repos/deliverable-feedback';
 /** Owner decision 2026-11-02 (KAN-31): shown on every set of name candidates. No availability claims. */
 export const NAME_AVAILABILITY_NOTE = 'Verifica la disponibilidad del nombre en INDECOPI antes de usarlo.';
 
+/** Mirrors OWN_TEXT_MAX_LENGTH (the server enforces it in code points). */
+export const OWN_TEXT_MAX_LENGTH = 120;
+
 /** Mirrors MAX_ITERATION_OBSERVATION_LENGTH; the server enforces it in code points. */
 export const OBSERVATION_MAX_LENGTH = 500;
 
@@ -31,6 +34,7 @@ export type DeliverableCommandRequest =
   | { readonly kind: 'generate' }
   | { readonly kind: 'iterate'; readonly deliverableId: string | null; readonly observation: string }
   | { readonly kind: 'approve'; readonly deliverableId: string }
+  | { readonly kind: 'use_own'; readonly value?: string }
   | { readonly kind: 'retry' }
   | { readonly kind: 'cancel' };
 
@@ -51,6 +55,20 @@ const STATE_STYLES: Readonly<Record<DeliverableStateKind, string>> = {
   approved: 'bg-emerald-50 text-emerald-700',
   failed: 'bg-red-50 text-red-700',
 };
+
+/** «Usar mi …» (F12 / KAN-89): the button of each brand-level kind; only the logo takes no text (it uses the uploaded one). */
+export const USE_OWN_LABELS: Readonly<Record<string, string>> = {
+  business_name: 'Usar mi nombre',
+  logo: 'Usar mi logo',
+  tagline: 'Usar mi lema',
+};
+
+/** KAN-89: shown on a brand-level deliverable inside a product conversation. */
+export function inheritedFromBrandNotice(label: string, approved: boolean): string {
+  return approved
+    ? `Este ${label} es el aprobado de tu marca. Para cambiarlo, hazlo en el chat de la marca.`
+    : `Tu ${label} se completa en el chat de tu marca. Cuando lo apruebes allí, aparecerá aquí.`;
+}
 
 /** RF-07 (KAN-35) overlay badge. */
 export const STALE_LABEL = 'Potencialmente desactualizado';
@@ -144,6 +162,7 @@ export function provenanceRows(deliverableKind: string, candidate: Pick<Candidat
   const inputs = provenance.inputs.map((input) => `${briefFieldSpec(input.field)?.label ?? input.field}: ${input.value}`).join('; ');
   return [
     ['Tipo', capitalize(KIND_LABELS[deliverableKind] ?? deliverableKind)],
+    ...(provenance.origin === 'user' ? [['Origen', 'Lo aportaste tú, sin generación'] as const] : []),
     ['Generado', formatGeneratedAt(candidate.createdAt)],
     ['Modelo', model || 'No registrado'],
     ['Versión del prompt', provenance.promptVersion ?? 'No registrada'],
@@ -185,6 +204,7 @@ export function DeliverableCommands({
 }) {
   const [iterating, setIterating] = useState(false);
   const [observation, setObservation] = useState('');
+  const [ownText, setOwnText] = useState<string | null>(null);
 
   if (!view) return null;
 
@@ -211,7 +231,12 @@ export function DeliverableCommands({
         )}
       </div>
 
-      {view.state === 'blocked' && (
+      {view.inheritedFromBrand && (
+        <p role="note" className="text-xs text-neutral-600">
+          {inheritedFromBrandNotice(label, view.approvedDeliverableId !== null)}
+        </p>
+      )}
+      {view.state === 'blocked' && !view.inheritedFromBrand && (
         <p className="text-xs text-neutral-500">
           {view.missingUpstream.length > 0
             ? missingUpstreamMessage(view.missingUpstream)
@@ -345,6 +370,16 @@ export function DeliverableCommands({
             <Wand2 size={14} /> Iterar
           </button>
         )}
+        {has(view, 'use_own') && ownText === null && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => (view.deliverableKind === 'logo' ? onCommand({ kind: 'use_own' }) : setOwnText(''))}
+            className={`${buttonBase} border border-emerald-300 text-emerald-700 hover:bg-emerald-50`}
+          >
+            <UserCheck size={14} /> {USE_OWN_LABELS[view.deliverableKind] ?? 'Usar el mío'}
+          </button>
+        )}
         {has(view, 'retry') && (
           <button
             type="button"
@@ -375,6 +410,37 @@ export function DeliverableCommands({
           </button>
         )}
       </div>
+
+      {ownText !== null && has(view, 'use_own') && (
+        <form
+          className="space-y-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!ownText.trim()) return;
+            onCommand({ kind: 'use_own', value: ownText });
+            setOwnText(null);
+          }}
+        >
+          <label className="block text-xs font-medium text-neutral-700" htmlFor={`own-${view.agentId}`}>
+            Escribe tu {label}
+          </label>
+          <input
+            id={`own-${view.agentId}`}
+            value={ownText}
+            maxLength={OWN_TEXT_MAX_LENGTH}
+            onChange={(event) => setOwnText(event.target.value)}
+            className="w-full rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-500/50"
+          />
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setOwnText(null)} className={`${buttonBase} text-neutral-600 hover:bg-neutral-100`}>
+              Descartar
+            </button>
+            <button type="submit" disabled={busy || !ownText.trim()} className={`${buttonBase} bg-emerald-600 text-white hover:bg-emerald-500`}>
+              Guardar y aprobar
+            </button>
+          </div>
+        </form>
+      )}
 
       {iterating && has(view, 'iterate') && (
         <form
