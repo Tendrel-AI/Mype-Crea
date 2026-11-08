@@ -279,3 +279,22 @@ describe('stale in_progress sweep and late settlement', () => {
     expect(calls().some((call) => /INSERT INTO (deliverables|ai_turn_events)|UPDATE agent_tasks/.test(call.sql))).toBe(false);
   });
 });
+
+describe('aiEventsRepo.reconcileSettledTasks sweep', () => {
+  beforeEach(() => {
+    mocked.query.mockReset();
+  });
+
+  it('selects only settled tasks that lack their durable notice, so the limit never stalls on repaired rows', async () => {
+    mocked.query.mockImplementation(async (sql: string) => ({ rows: String(sql).includes('DISTINCT') ? [{ userId: USER }] : [] }));
+
+    await aiEventsRepo({ id: TENANT } as never).reconcileSettledTasks({ limit: 1 });
+
+    const select = calls().find((call) => call.sql.includes('LEFT JOIN ai_turn_events e'))!;
+    expect(select.sql).toContain('e.id IS NULL');
+    expect(select.sql).toContain('c.user_id=$2');
+    expect(select.params).toEqual([TENANT, USER, 1, 'announce_completion', 'announce_failure']);
+    // events are only visible once the owner is bound (RLS), so the owner is set before the query
+    expect(calls().findIndex((call) => call.sql.includes("set_config('app.user_id'"))).toBeLessThan(calls().findIndex((call) => call.sql.includes('LEFT JOIN ai_turn_events e')));
+  });
+});

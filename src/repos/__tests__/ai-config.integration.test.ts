@@ -748,6 +748,23 @@ SUITE('AI configuration and durable turns (integration)', () => {
     )).rejects.toMatchObject({ code: '23514' });
   });
 
+  it('reconcile sweep repairs the newest settled task even when older ones already have notices and limit is 1', async () => {
+    const tenant = tenants[0];
+    const conversation = await newPinnedConversation(tenant, tenant.admin);
+    const scoped = repository(asIdentity(tenant, tenant.admin));
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const task = await scoped.agentTasks.insertRoot({ conversationId: conversation, agentId: 'logo-agent', agentCardVersion: '0.1.0', idempotencyKey: randomUUID() as UUID, requirementsSnapshot: { business_name: 'synthetic' } });
+      await scoped.agentTasks.claimById(task.id as TaskId);
+      await scoped.aiTurns.settleTaskAndEnqueue({ conversationId: conversation, taskId: task.id as TaskId, state: 'failed', deliverableKind: 'logo', artifacts: [], error: { kind: 'content_policy', message: 'synthetic' }, errorCategory: 'content_policy' });
+      ids.push(task.id);
+    }
+    const newest = `${ids[2]}:announce_failure`;
+    await owner.query(`DELETE FROM ai_turn_events WHERE tenant_id = $1 AND event_id = $2`, [tenant.id, newest]);
+    expect(await systemRepos({ id: tenant.id }).aiEvents!.reconcileSettledTasks({ limit: 1 })).toBe(1);
+    expect((await scoped.aiTurns.peekEvents({ conversationId: conversation })).some((event) => event.eventId === newest)).toBe(true);
+  });
+
   it('locks shared releases only through the narrow helper without widening tenant or platform privileges', async () => {
     const [tenantA, tenantB] = tenants;
     const lockSql = `SELECT app.lock_frozen_shared_release($1) AS frozen`;

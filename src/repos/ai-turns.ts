@@ -1257,38 +1257,42 @@ export function aiEventsRepo(tenant: Tenant) {
     },
     async reconcileSettledTasks(input: { limit?: number } = {}): Promise<number> {
       return withTenantAdminTransaction(tenant, async (tx) => {
-        const rows = await tx.query<ReconcileRow>(
-          `SELECT ${SETTLED_TASK_COLUMNS},
+        // ai_turn_events RLS needs an active app.user_id, so the "notice missing" anti-join is
+        // only correct when run per owner (the admin context alone sees no events).
+        const owners = await tx.query<{ userId: UUID }>(
+          `SELECT DISTINCT c.user_id AS "userId"
+        FROM agent_tasks t
+        JOIN conversations c ON c.tenant_id=t.tenant_id AND c.id=t.conversation_id
+        WHERE t.tenant_id=$1 AND t.status IN ('completed','failed')`,
+          [tenant.id],
+        );
+        let remaining = Math.min(Math.max(input.limit ?? 100, 1), 500);
+        let inserted = 0;
+
+        for (const owner of owners.rows) {
+          if (remaining <= 0) break;
+          await tx.query(`SELECT set_config('app.user_id', $1, true)`, [owner.userId]);
+          const rows = await tx.query<ReconcileRow>(
+            `SELECT ${SETTLED_TASK_COLUMNS},
         t.conversation_id AS "conversationId",
         c.user_id AS "userId"
         FROM agent_tasks t
         JOIN conversations c ON c.tenant_id=t.tenant_id AND c.id=t.conversation_id
         LEFT JOIN deliverables d ON d.tenant_id=t.tenant_id AND d.agent_task_id=t.id
-        WHERE t.tenant_id=$1 AND t.status IN ('completed','failed')
+        LEFT JOIN ai_turn_events e ON e.tenant_id=t.tenant_id AND e.event_id=t.id::text||':'||CASE WHEN t.status='completed' THEN $4 ELSE $5 END
+        WHERE t.tenant_id=$1 AND c.user_id=$2 AND t.status IN ('completed','failed') AND e.id IS NULL
         GROUP BY t.id, c.user_id
         ORDER BY t.completed_at, t.id
-        LIMIT $2`,
-          [tenant.id, Math.min(Math.max(input.limit ?? 100, 1), 500)],
-        );
-
-        let inserted = 0;
-
-        for (const row of rows.rows) {
-          await tx.query(`SELECT set_config('app.user_id',
-        $1,
-        true)`, [row.userId]);
-
-          const n = settledTaskNotification(row);
-          const prior = await tx.query(`SELECT 1
-        FROM ai_turn_events
-        WHERE tenant_id=$1 AND user_id=$2 AND event_id=$3`, [tenant.id, row.userId, durableEventFor(n).eventId]);
-
-          if (prior.rows.length) continue;
-
-          if (await insertTaskNotice(tx, { tenantId: tenant.id as UUID, userId: row.userId, conversationId: row.conversationId }, n)) {
-            inserted += 1;
+        LIMIT $3`,
+            [tenant.id, owner.userId, remaining, durableEventSuffix('task_completed'), durableEventSuffix('task_failed')],
+          );
+          for (const row of rows.rows) {
+            const n = settledTaskNotification(row);
+            if (await insertTaskNotice(tx, { tenantId: tenant.id as UUID, userId: row.userId, conversationId: row.conversationId }, n)) {
+              inserted += 1;
+            }
+            remaining -= 1;
           }
-
         }
         return inserted;
 
