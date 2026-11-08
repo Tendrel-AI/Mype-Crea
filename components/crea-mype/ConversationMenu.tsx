@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { ChevronDown, MessagesSquare, PlusCircle } from 'lucide-react';
+import { ChevronDown, FolderInput, MessagesSquare, PlusCircle } from 'lucide-react';
 import type { BrandListEntry, ConversationListEntry } from '../../src/conversations/selection';
 
 /** KAN-25: opening a conversation is a plain navigation; the server re-checks ownership. */
@@ -15,6 +15,7 @@ export type LoadConversations = () => Promise<
 >;
 
 export const UNNAMED_BRAND_LABEL = 'Marca sin nombre';
+export const UNNAMED_PRODUCT_LABEL = 'Producto sin nombre';
 
 const itemClass = 'w-full flex items-center gap-2 px-3 py-2 text-left text-sm font-medium text-orange-600 hover:bg-orange-50';
 
@@ -31,16 +32,24 @@ function ConversationLink({ entry, current }: { entry: ConversationListEntry; cu
   );
 }
 
+const subItemClass = 'w-full px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-100';
+
 /**
- * The open menu's content (KAN-85): «Crear marca» first, then each brand with its conversations,
- * «Nueva conversación» and «Archivar marca» (an inline confirm step, no `window.confirm`), then
- * conversations that predate brands.
+ * The open menu's content (KAN-85 / KAN-87): «Crear marca» and «Ya tengo una marca» first, then each
+ * brand with its own conversations, «Nuevo producto», «Editar marca», «Nueva conversación» and
+ * «Archivar marca» (an inline confirm step, no `window.confirm`), its products with their
+ * conversations, «Nueva conversación» and «Editar producto», then conversations that predate brands.
  */
 export function ConversationMenuItems({
   brands = [],
   conversations,
   currentConversationId,
   onCreateBrand,
+  onImportBrand = () => {},
+  onNewProduct = () => {},
+  onEditBrand = () => {},
+  onEditProduct = () => {},
+  onNewProductConversation = () => {},
   onNewConversation,
   confirmingBrandId = null,
   onAskArchive = () => {},
@@ -52,6 +61,11 @@ export function ConversationMenuItems({
   conversations: ReadonlyArray<ConversationListEntry>;
   currentConversationId: string;
   onCreateBrand: () => void;
+  onImportBrand?: () => void;
+  onNewProduct?: (brandId: string) => void;
+  onEditBrand?: (brandId: string) => void;
+  onEditProduct?: (productId: string) => void;
+  onNewProductConversation?: (brandId: string, productId: string) => void;
   onNewConversation: (brandId: string) => void;
   confirmingBrandId?: string | null;
   onAskArchive?: (brandId: string) => void;
@@ -66,6 +80,10 @@ export function ConversationMenuItems({
         <PlusCircle className="w-4 h-4" />
         Crear marca
       </button>
+      <button type="button" role="menuitem" onClick={onImportBrand} className={itemClass}>
+        <FolderInput className="w-4 h-4" />
+        Ya tengo una marca
+      </button>
       <div className="my-1 border-t border-neutral-100" />
       {error && <p role="status" className="px-3 py-2 text-xs text-amber-800">{error}</p>}
       {conversations.length === 0 && brands.length === 0 && !error && (
@@ -74,9 +92,29 @@ export function ConversationMenuItems({
       {brands.map((brand) => (
         <div key={brand.brandId} role="group" aria-label={brand.name ?? UNNAMED_BRAND_LABEL} className="border-b border-neutral-100 pb-1">
           <p className="px-3 pt-2 text-xs font-semibold uppercase text-neutral-500 truncate">{brand.name ?? UNNAMED_BRAND_LABEL}</p>
-          {conversations.filter((entry) => entry.brandId === brand.brandId).map((entry) => (
+          {conversations.filter((entry) => entry.brandId === brand.brandId && !entry.productId).map((entry) => (
             <ConversationLink key={entry.conversationId} entry={entry} current={entry.conversationId === currentConversationId} />
           ))}
+          {brand.products.map((product) => (
+            <div key={product.productId} role="group" aria-label={`Producto: ${product.name ?? UNNAMED_PRODUCT_LABEL}`} className="ml-3 border-l border-neutral-200">
+              <p className="px-3 pt-2 text-xs font-semibold text-neutral-500 truncate">Producto: {product.name ?? UNNAMED_PRODUCT_LABEL}</p>
+              {conversations.filter((entry) => entry.productId === product.productId).map((entry) => (
+                <ConversationLink key={entry.conversationId} entry={entry} current={entry.conversationId === currentConversationId} />
+              ))}
+              <button type="button" role="menuitem" onClick={() => onNewProductConversation(brand.brandId, product.productId)} className={subItemClass}>
+                Nueva conversación
+              </button>
+              <button type="button" role="menuitem" onClick={() => onEditProduct(product.productId)} className={subItemClass}>
+                Editar producto
+              </button>
+            </div>
+          ))}
+          <button type="button" role="menuitem" onClick={() => onNewProduct(brand.brandId)} className={itemClass}>
+            Nuevo producto
+          </button>
+          <button type="button" role="menuitem" onClick={() => onEditBrand(brand.brandId)} className={subItemClass}>
+            Editar marca
+          </button>
           <button type="button" role="menuitem" onClick={() => onNewConversation(brand.brandId)} className={itemClass}>
             Nueva conversación
           </button>
@@ -121,6 +159,11 @@ export function ConversationMenu({
   initialBrands = [],
   currentConversationId,
   onCreateBrand,
+  onImportBrand,
+  onNewProduct,
+  onEditBrand,
+  onEditProduct,
+  onNewProductConversation,
   onNewConversation,
   onArchiveBrand,
   loadConversations,
@@ -129,6 +172,11 @@ export function ConversationMenu({
   initialBrands?: ReadonlyArray<BrandListEntry>;
   currentConversationId: string;
   onCreateBrand: () => void;
+  onImportBrand: () => void;
+  onNewProduct: (brandId: string) => void;
+  onEditBrand: (brandId: string) => void;
+  onEditProduct: (productId: string) => void;
+  onNewProductConversation: (brandId: string, productId: string) => void;
   onNewConversation: (brandId: string) => void;
   onArchiveBrand: (brandId: string) => void;
   loadConversations: LoadConversations;
@@ -194,6 +242,11 @@ export function ConversationMenu({
             currentConversationId={currentConversationId}
             error={error}
             onCreateBrand={() => { setOpen(false); onCreateBrand(); }}
+            onImportBrand={() => { setOpen(false); onImportBrand(); }}
+            onNewProduct={(brandId) => { setOpen(false); onNewProduct(brandId); }}
+            onEditBrand={(brandId) => { setOpen(false); onEditBrand(brandId); }}
+            onEditProduct={(productId) => { setOpen(false); onEditProduct(productId); }}
+            onNewProductConversation={(brandId, productId) => { setOpen(false); onNewProductConversation(brandId, productId); }}
             onNewConversation={(brandId) => { setOpen(false); onNewConversation(brandId); }}
             confirmingBrandId={confirmingBrandId}
             onAskArchive={setConfirmingBrandId}

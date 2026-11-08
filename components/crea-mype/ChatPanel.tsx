@@ -7,9 +7,18 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Send, Loader2, Sparkles, PlusCircle, Download } from 'lucide-react';
 import { type BrandAssets, type Message } from './types';
 import { LIVE_CONNECTION_LOST_MESSAGE } from './live-updates';
+import type { ConversationContext } from '../../src/conversations/selection';
+import { UNNAMED_BRAND_LABEL, UNNAMED_PRODUCT_LABEL } from './ConversationMenu';
+
+/** «Marca: X» plus «· Producto: Y» for a product conversation; null for a legacy conversation. */
+export function contextLine(context: ConversationContext | null | undefined): string | null {
+  if (!context?.brandId) return null;
+  const brand = `Marca: ${context.brandName?.trim() || UNNAMED_BRAND_LABEL}`;
+  return context.productId ? `${brand} · Producto: ${context.productName?.trim() || UNNAMED_PRODUCT_LABEL}` : brand;
+}
 
 
-export function ChatPanel({ assets, processingAgents, conversationId, handleExportConversation, step, setShowRestartModal, messages, isLoading, messagesEndRef, conversationError, retryTurn, submitTurn, inputText, setInputText, handleKeyDown, handleSend, needsNewConversation, mobileDeliverablePanel, conversationMenu, conversationNotFound = false, liveConnectionLost = false }: { assets: BrandAssets; processingAgents: Set<string>; conversationId: string; handleExportConversation: () => void; step: number; setShowRestartModal: (open: boolean) => void; messages: Message[]; isLoading: boolean; messagesEndRef: React.RefObject<HTMLDivElement | null>; conversationError: string; retryTurn: { requestId: string; userMessage: string } | null; submitTurn: (text: string, requestId: string) => void; inputText: string; setInputText: (text: string) => void; handleKeyDown: (e: React.KeyboardEvent) => void; handleSend: () => void; needsNewConversation: boolean; /** KAN-28: deliverable commands for small screens, where the dashboard is hidden. */ mobileDeliverablePanel?: React.ReactNode; /** KAN-25: «Mis conversaciones» dropdown, next to the restart button. */ conversationMenu?: React.ReactNode; /** KAN-25: the requested conversation is not the caller's (or does not exist). */ conversationNotFound?: boolean; /** KAN-30: the SSE stream is gone; offer a reload of the durable state. */ liveConnectionLost?: boolean }) {
+export function ChatPanel({ assets, processingAgents, conversationId, handleExportConversation, step, onCreateBrand, onImportBrand, creationBlocked = false, context, messages, isLoading, messagesEndRef, conversationError, retryTurn, submitTurn, inputText, setInputText, handleKeyDown, handleSend, needsNewConversation, mobileDeliverablePanel, conversationMenu, conversationNotFound = false, liveConnectionLost = false }: { assets: BrandAssets; processingAgents: Set<string>; conversationId: string; handleExportConversation: () => void; step: number; /** KAN-87: opens the brand form. */ onCreateBrand: () => void; /** KAN-87: opens the «Ya tengo una marca» form. */ onImportBrand: () => void; /** KAN-27: the terms gate is unavailable; creating brands is disabled and the error message is shown instead. */ creationBlocked?: boolean; /** KAN-87: brand/product of the open conversation, for the header line. */ context?: ConversationContext | null; messages: Message[]; isLoading: boolean; messagesEndRef: React.RefObject<HTMLDivElement | null>; conversationError: string; retryTurn: { requestId: string; userMessage: string } | null; submitTurn: (text: string, requestId: string) => void; inputText: string; setInputText: (text: string) => void; handleKeyDown: (e: React.KeyboardEvent) => void; handleSend: () => void; needsNewConversation: boolean; /** KAN-28: deliverable commands for small screens, where the dashboard is hidden. */ mobileDeliverablePanel?: React.ReactNode; /** KAN-25: «Mis conversaciones» dropdown, next to the restart button. */ conversationMenu?: React.ReactNode; /** KAN-25: the requested conversation is not the caller's (or does not exist). */ conversationNotFound?: boolean; /** KAN-30: the SSE stream is gone; offer a reload of the durable state. */ liveConnectionLost?: boolean }) {
   return (
 <>
           {/* Left Panel: Chat Interface */}
@@ -40,17 +49,33 @@ export function ChatPanel({ assets, processingAgents, conversationId, handleExpo
             </div>
             {conversationMenu}
             <button
-              onClick={() => setShowRestartModal(true)}
-              className="text-xs font-medium px-2.5 py-1 rounded-full bg-orange-50 text-orange-600 hover:bg-orange-100 transition-colors flex items-center gap-1"
-              title="Crear un nuevo producto"
+              onClick={onCreateBrand}
+              disabled={creationBlocked}
+              className="text-xs font-medium px-2.5 py-1 rounded-full bg-orange-50 disabled:opacity-50 text-orange-600 hover:bg-orange-100 transition-colors flex items-center gap-1"
+              title="Crear una marca nueva"
             >
               <PlusCircle className="w-3 h-3" />
               Nuevo
             </button>
           </div>
         </div>
+        {contextLine(context) && (
+          <p data-testid="conversation-context" className="px-4 py-2 border-b border-neutral-100 bg-neutral-50 text-xs font-medium text-neutral-700 truncate">
+            {contextLine(context)}
+          </p>
+        )}
 
         <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
+          {!conversationId && !conversationNotFound && !creationBlocked && (
+            <div className="rounded-xl border border-neutral-200 bg-white p-4 text-sm text-neutral-700">
+              <p className="font-medium text-neutral-900">Empieza creando tu marca</p>
+              <p className="mt-1">Cuéntanos de tu negocio para crear tu primera conversación.</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" onClick={onCreateBrand} className="rounded-lg bg-orange-600 px-3 py-2 font-medium text-white hover:bg-orange-700">Crear marca</button>
+                <button type="button" onClick={onImportBrand} className="rounded-lg border border-neutral-300 px-3 py-2 font-medium hover:bg-neutral-100">Ya tengo una marca</button>
+              </div>
+            </div>
+          )}
           <AnimatePresence initial={false}>
             {messages.map((msg) => (
               <motion.div
@@ -157,7 +182,7 @@ export function ChatPanel({ assets, processingAgents, conversationId, handleExpo
           )}
           {needsNewConversation && (
             <p role="status" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-              No pudimos confirmar el resultado del turno anterior. No vuelvas a enviar ese mensaje; inicia un producto nuevo para continuar.
+              No pudimos confirmar el resultado del turno anterior. No vuelvas a enviar ese mensaje; inicia una conversación nueva para continuar.
             </p>
           )}
           <div className="relative flex items-end gap-2">
@@ -168,11 +193,11 @@ export function ChatPanel({ assets, processingAgents, conversationId, handleExpo
               placeholder="Escribe tu mensaje aquí..."
               className="w-full bg-neutral-50 border border-neutral-200 text-neutral-900 rounded-xl px-4 py-3 pr-12 focus:outline-none focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 resize-none min-h-[52px] max-h-32"
               rows={1}
-              disabled={isLoading || Boolean(retryTurn) || needsNewConversation || conversationNotFound}
+              disabled={!conversationId || isLoading || Boolean(retryTurn) || needsNewConversation || conversationNotFound}
             />
             <button
               onClick={handleSend}
-              disabled={!inputText.trim() || isLoading || Boolean(retryTurn) || needsNewConversation || conversationNotFound}
+              disabled={!conversationId || !inputText.trim() || isLoading || Boolean(retryTurn) || needsNewConversation || conversationNotFound}
               className="absolute right-2 bottom-2 p-2 bg-orange-600 hover:bg-orange-500 disabled:bg-neutral-200 disabled:text-neutral-400 text-white rounded-lg transition-colors flex-shrink-0"
             >
               <Send size={18} />

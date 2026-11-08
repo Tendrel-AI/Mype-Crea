@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => {
   const readPinnedConversation = vi.fn(async () => ({ state: 'pinned' }));
   const repos = vi.fn(() => ({
     writeRejections: { record },
-    conversations: { readPinnedConversation },
+    conversations: { readPinnedConversation, context: vi.fn(async () => undefined) },
     termsAcceptances: { hasAccepted: vi.fn(async (version: string) => acceptedVersions.has(version)) },
     llmCalls: { record: vi.fn(async () => 'fake-llm-call-id') },
     usage: { preflight: vi.fn(async () => ({ allowed: true, reservationId: null })) },
@@ -89,7 +89,8 @@ async function chatTurn(
   fields: Record<string, { value: string; confidence: number }>,
   options: { readonly release?: AdapterBehaviorSnapshot; readonly priorDecision?: ConfirmFieldDecision } = {},
 ) {
-  const askedFields = options.release?.extractor.fields.map((f) => f.name) ?? BRIEF_CATALOG.map((spec) => spec.name);
+  // D22: the extractor always asks the registry's fields, whatever list the release froze.
+  const askedFields = BRIEF_CATALOG.map((spec) => spec.name);
   const provider = new FakeLLMProvider({ purpose: 'extractor', modelId: 'google/gemini-2.5-flash' }).scriptToolCall(
     'submit_extracted_fields',
     // The tool schema requires every asked field; absent ones are null.
@@ -239,7 +240,8 @@ describe('brief actions (KAN-26)', () => {
   });
 
   describe('pinned releases captured before KAN-26 (extractor.v4 field list)', () => {
-    // The logo fields exactly as the pre-KAN-26 card declared them.
+    // The logo fields exactly as the pre-KAN-26 card declared them. Since D22 the release's list is
+    // provenance only: the extractor asks the runtime registry's fields.
     const v4Release: AdapterBehaviorSnapshot = (() => {
       const behavior = createCurrentAdapterBehaviorSnapshot([
         { name: 'business_name', required: true, promptHint: '¿Qué nombre debe llevar el logo?', agents: ['logo-agent'] },
@@ -254,7 +256,7 @@ describe('brief actions (KAN-26)', () => {
       return { ...behavior, extractor: { ...behavior.extractor, promptVersion: 'extractor.v4' } };
     })();
 
-    it('extracts the logo fields, asks the model nothing about product fields, and still generates', async () => {
+    it('asks the registry fields (not the stale release list) and still generates', async () => {
       const runtime = buildRuntime();
       const provider = await chatTurn(
         runtime,
@@ -265,10 +267,8 @@ describe('brief actions (KAN-26)', () => {
 
       const request = provider.create.mock.calls[0][0] as { tools: Array<{ function: { parameters: any } }> };
       const asked = Object.keys(request.tools[0].function.parameters.properties.fields.properties).sort();
-      expect(asked).toEqual(['business_name', 'color_palette', 'style_keywords']);
-      for (const productField of ['business_category', 'product_name', 'product_composition', 'product_presentation', 'manufacturer']) {
-        expect(provider.captured[0].systemPrompt).not.toContain(productField);
-      }
+      expect(asked).toEqual(expect.arrayContaining(['business_name', 'color_palette', 'style_keywords', 'product_name']));
+      expect(provider.captured[0].systemPrompt).toContain('product_name');
 
       const result = await brief();
       expect(field(result.fields, 'business_name')).toMatchObject({ status: 'filled', value: 'Dulce Andino', source: 'chat' });

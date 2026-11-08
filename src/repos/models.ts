@@ -86,6 +86,16 @@ export interface RecentConversationRow {
   readonly businessName: string | null;
   /** KAN-85: the brand the conversation belongs to; null for legacy conversations. */
   readonly brandId: UUID | null;
+  /** KAN-87: the product the conversation belongs to, when any. */
+  readonly productId: UUID | null;
+}
+
+/** KAN-87: brand and product of one conversation, for the chat header. */
+export interface ConversationContextRow {
+  readonly brandId: UUID | null;
+  readonly brandName: string | null;
+  readonly productId: UUID | null;
+  readonly productName: string | null;
 }
 
 /** KAN-27: one user's explicit acceptance of one terms version (server-timestamped). */

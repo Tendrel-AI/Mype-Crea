@@ -39,6 +39,7 @@ vi.mock('../../../src/repos', async () => {
       },
     },
     conversations: {
+      context: async () => undefined,
       // Owner rule: anything not owned by this user is invisible (another user's or tenant's).
       readPinnedConversation: async (id: string) => (mocks.owned.has(id) ? { state: 'pinned' } : undefined),
       ensurePinnedConversation: async ({ conversationId }: { conversationId: string }) => {

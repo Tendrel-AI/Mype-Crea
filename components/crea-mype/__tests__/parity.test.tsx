@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import { ChatPanel } from '../ChatPanel';
 import { Dashboard } from '../Dashboard';
 import { LandingPreview } from '../LandingPreview';
-import { RestartModal } from '../RestartModal';
 import { buildLandingPreviewSrcDoc } from '../landing-src-doc';
 import { type BrandAssets, type Message } from '../types';
 
@@ -130,7 +129,8 @@ describe('chat panel states (KAN-74)', () => {
     conversationId: 'c1',
     handleExportConversation: noop,
     step: 1,
-    setShowRestartModal: noop,
+    onCreateBrand: noop,
+    onImportBrand: noop,
     messages: [welcome],
     isLoading: false,
     messagesEndRef: React.createRef<HTMLDivElement>(),
@@ -172,7 +172,7 @@ describe('chat panel states (KAN-74)', () => {
     expect(retry).toMatch(/<textarea[^>]*disabled/);
 
     const uncertain = renderToStaticMarkup(<ChatPanel {...base} needsNewConversation />);
-    expect(uncertain).toContain('inicia un producto nuevo para continuar');
+    expect(uncertain).toContain('inicia una conversación nueva para continuar');
     expect(uncertain).toMatch(/<textarea[^>]*disabled/);
 
     const idle = renderToStaticMarkup(<ChatPanel {...base} />);
@@ -185,18 +185,5 @@ describe('chat panel states (KAN-74)', () => {
     );
     expect(markup).toContain('bg-amber-50 text-amber-900 border border-amber-200');
     expect(markup).toContain('animate-spin');
-  });
-});
-
-describe('restart modal (KAN-74)', () => {
-  it('renders the confirmation copy only when open', () => {
-    expect(renderToStaticMarkup(<RestartModal showRestartModal={false} setShowRestartModal={noop} handleRestart={noop} />)).toBe('');
-    const open = renderToStaticMarkup(<RestartModal showRestartModal setShowRestartModal={noop} handleRestart={noop} />);
-    expect(open).toContain('¿Crear una marca nueva?');
-    // KAN-25: the current conversation is kept, never discarded.
-    expect(open).toContain('Esto creará una marca nueva con su primera conversación. Tu conversación actual seguirá disponible en «Mis conversaciones».');
-    expect(open).not.toContain('descartará');
-    expect(open).toContain('Cancelar');
-    expect(open).toContain('Sí, crear marca');
   });
 });

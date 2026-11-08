@@ -211,3 +211,126 @@ describe('businessNameFromAgentStates (KAN-25)', () => {
     expect(businessNameFromAgentStates(states)).toBeNull();
   });
 });
+
+describe('KAN-88 brief <-> brand/product records', () => {
+  const when = new Date('2026-01-01T00:00:00.000Z');
+  const slot = (value: string) => ({ status: 'filled', value, confidence: 1 });
+  const stored = (required: Record<string, unknown>) => ({ logo: { requiredFields: required, optionalFields: {}, iterationCount: 0 } });
+
+  /** Mocked DB: the conversation row, the brand/product rows and every write. */
+  function db(opts: {
+    states: Record<string, unknown>;
+    brandId?: string | null;
+    productId?: string | null;
+    brand?: Record<string, unknown>;
+    brandStatus?: string;
+    product?: Record<string, unknown>;
+  }) {
+    const updates: { sql: string; params: unknown[] }[] = [];
+    mocked.query.mockImplementation(async (sql: string, params: unknown[] = []) => {
+      if (sql.includes('SELECT tenant_id, agent_states, started_at')) {
+        return { rows: [{ tenant_id: 't', user_id: 'u', agent_states: opts.states, brand_id: opts.brandId ?? null, product_id: opts.productId ?? null, started_at: when }] };
+      }
+      if (sql.includes('SELECT b.attributes AS brand_attributes')) {
+        return { rows: [{ brand_attributes: opts.brand ?? {}, product_attributes: opts.productId ? opts.product ?? {} : null }] };
+      }
+      if (sql.includes('UPDATE conversations')) {
+        return { rowCount: 1, rows: [{ previous_states: opts.states, tenant_id: 't', user_id: 'u', brand_id: opts.brandId ?? null, product_id: opts.productId ?? null }] };
+      }
+      if (sql.includes('FROM brands') && sql.includes('FOR UPDATE')) return { rows: [{ attributes: opts.brand ?? {}, status: opts.brandStatus ?? 'active' }] };
+      if (sql.includes('FROM products') && sql.includes('FOR UPDATE')) return { rows: [{ attributes: opts.product ?? {} }] };
+      if (/^UPDATE (brands|products)/.test(sql.trim())) { updates.push({ sql, params }); return { rowCount: 1, rows: [] }; }
+      return { rows: [] };
+    });
+    return { updates };
+  }
+  const repo = () => conversationsRepo({ id: 't' }, { id: 'u' });
+  const schemas = [{ agentId: 'logo', requiredFields: ['business_name', 'business_category', 'product_name', 'product_description'], optionalFields: [] }];
+  const setSlot = (field: string, value: string) =>
+    repo().updateFieldSlot('c', 'logo', field, true, slot(value) as never, schemas as never);
+
+  beforeEach(() => { mocked.query.mockReset(); });
+
+  it('overlays record values as filled slots, record wins over stored, pending becomes filled', async () => {
+    db({
+      brandId: 'b',
+      brand: { business_name: 'Dulce', business_category: 'Panadería' },
+      states: stored({ business_name: { status: 'pending_confirmation', value: 'Otro', confidence: 0.7 }, business_category: slot('Viejo'), product_name: { status: 'empty' } }),
+    });
+    const snap = await repo().get('c', schemas as never);
+    const slots = snap!.agentStates.logo.requiredFields;
+    expect(slots.business_name).toMatchObject({ status: 'filled', value: 'Dulce' });
+    expect(slots.business_category).toMatchObject({ status: 'filled', value: 'Panadería' });
+    expect(slots.product_name).toEqual({ status: 'empty' });
+  });
+
+  it('leaves a legacy conversation untouched (no record read)', async () => {
+    db({ states: stored({ business_name: slot('Stored') }) });
+    const snap = await repo().get('c', schemas as never);
+    expect(snap!.agentStates.logo.requiredFields.business_name).toEqual(slot('Stored'));
+    expect(mocked.query.mock.calls.some(([sql]) => String(sql).includes('FROM brands'))).toBe(false);
+  });
+
+  it('writes a confirmed value back to the brand (and name) in the same transaction', async () => {
+    const { updates } = db({ brandId: 'b', brand: { business_category: 'Viejo' }, states: stored({ business_name: { status: 'empty' } }) });
+    await setSlot('business_name', 'Dulce Andino');
+    expect(updates).toHaveLength(1);
+    expect(updates[0].sql).toContain('UPDATE brands');
+    expect(JSON.parse(String(updates[0].params[4]))).toEqual({ business_category: 'Viejo', business_name: 'Dulce Andino' });
+    expect(updates[0].params[3]).toBe('Dulce Andino');
+  });
+
+  it('does not write back unchanged values, pending values or unmapped fields', async () => {
+    const { updates } = db({ brandId: 'b', brand: { business_category: 'Café' }, states: stored({ business_category: slot('Café') }) });
+    await setSlot('business_category', 'Café');
+    await repo().updateFieldSlot('c', 'logo', 'business_name', true, { status: 'pending_confirmation', value: 'X', confidence: 0.7 }, schemas as never);
+    await setSlot('product_description', 'texto local');
+    expect(updates).toEqual([]);
+  });
+
+  it('skips an invalid write-back without throwing, and the brief still updates', async () => {
+    const { updates } = db({ brandId: 'b', states: stored({}) });
+    await expect(setSlot('business_category', 'x'.repeat(130))).resolves.toBeUndefined();
+    expect(updates).toEqual([]);
+    expect(mocked.query.mock.calls.some(([sql]) => String(sql).includes('UPDATE conversations'))).toBe(true);
+    expect(mocked.query.mock.calls.some(([sql]) => String(sql).includes('ROLLBACK TO SAVEPOINT'))).toBe(false);
+  });
+
+  it('rolls back to the savepoint when the record write fails, without failing the turn', async () => {
+    db({ brandId: 'b', states: stored({}) });
+    const inner = mocked.query.getMockImplementation()!;
+    mocked.query.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (/^UPDATE brands/.test(sql.trim())) throw new Error('boom');
+      return inner(sql, params);
+    });
+    await expect(setSlot('business_category', 'Café')).resolves.toBeUndefined();
+    expect(mocked.query.mock.calls.some(([sql]) => String(sql).includes('ROLLBACK TO SAVEPOINT'))).toBe(true);
+  });
+
+  it('overlays an archived brand but never writes back to it', async () => {
+    const { updates } = db({ brandId: 'b', brandStatus: 'archived', brand: { business_name: 'Vieja' }, states: stored({ business_name: { status: 'empty' } }) });
+    expect((await repo().get('c', schemas as never))!.agentStates.logo.requiredFields.business_name).toMatchObject({ value: 'Vieja' });
+    await setSlot('business_category', 'Café');
+    expect(updates).toEqual([]);
+  });
+
+  it('writes product fields to the product only in a product conversation', async () => {
+    const brandConversation = db({ brandId: 'b', states: stored({}) });
+    await setSlot('product_name', 'Molido');
+    expect(brandConversation.updates).toEqual([]);
+
+    const productConversation = db({ brandId: 'b', productId: 'p', states: stored({}) });
+    await setSlot('product_name', 'Molido');
+    expect(productConversation.updates).toHaveLength(1);
+    expect(productConversation.updates[0].sql).toContain('UPDATE products');
+    expect(productConversation.updates[0].params[3]).toBe('Molido');
+  });
+
+  it('locks the brand before the product', async () => {
+    db({ brandId: 'b', productId: 'p', states: stored({}) });
+    await setSlot('business_category', 'Café');
+    const sqls = mocked.query.mock.calls.map(([sql]) => String(sql));
+    expect(sqls.findIndex((s) => s.includes('FROM brands') && s.includes('FOR UPDATE')))
+      .toBeLessThan(sqls.findIndex((s) => s.includes('FROM products') && s.includes('FOR UPDATE')));
+  });
+});
