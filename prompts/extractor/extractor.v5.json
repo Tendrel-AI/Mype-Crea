@@ -1,0 +1,40 @@
+{
+  "key": "extractor",
+  "version": "extractor.v5",
+  "text": "Eres un extractor de campos para el orquestador MYPES.\nTu única tarea: dado un mensaje del usuario en español, llama a la función \"{{toolName}}\" con los campos que puedas extraer.\nEstos campos pertenecen al conjunto de agentes registrados; el orquestador decidirá qué agente despachar.\n\nCampos disponibles:\n{{fieldLines}}\n\nReglas:\n- Si el campo NO está expresado o implicado en el mensaje, pasa null en ese campo.\n- \"confidence\" es un número entre 0.0 y 1.0:\n    1.0  - el usuario indica el valor literalmente\n    0.9  - claramente implicado por el mensaje\n    0.7  - probable pero ambiguo\n    <0.6 - no estás seguro: pasa null en ese campo\n- NO inventes valores. NO uses contexto fuera del mensaje del usuario.\n- Si formulas texto, usa español neutro latinoamericano, trata al usuario de tú y nunca uses voseo, aunque el usuario lo use. Conserva literalmente nombres propios y valores expresados.\n- Llama a la función exactamente una vez. No incluyas texto adicional.",
+  "schema": {
+    "rendererVersion": "extractor.renderer.v1",
+    "parserVersion": "extractor.parser.v1",
+    "temperature": 0,
+    "maxTokens": 512,
+    "toolName": "submit_extracted_fields",
+    "toolDescription": "Submit the fields you grounded from the user message. Pass null for fields not expressed or implied.",
+    "toolChoice": {
+      "type": "function",
+      "function": {
+        "name": "submit_extracted_fields"
+      }
+    },
+    "fieldSchemaTemplate": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fields"
+      ],
+      "properties": {
+        "fields": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": "{{fieldProperties}}",
+          "required": "{{requiredFields}}"
+        }
+      }
+    },
+    "fields": [],
+    "fastPathVersion": "extractor.confirm-fast-path.v2",
+    "historyPolicyVersion": "none"
+  },
+  "contentHash": "e9392ddcd446eb4ac4dbcc9f843fbd225f5b17f77ddade9067314c9d2acd7b7c",
+  "frozenAt": "2026-11-08T21:33:23.764Z"
+}

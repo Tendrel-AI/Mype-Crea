@@ -1,0 +1,7 @@
+{
+  "key": "logo-agent",
+  "version": "logo-agent.v1",
+  "text": "Diseña un logo profesional para el negocio \"{{business_name}}\". Estilo: {{style_keywords}}. Paleta de colores: {{color_palette}}. Limpio, vectorizado, alta resolución, sin texto adicional.",
+  "contentHash": "5a99c2e3b0d04a07f04c1ac3ee6979e73f05fa9941c069e71d3c372df46b7837",
+  "frozenAt": "2026-11-08T21:33:23.764Z"
+}

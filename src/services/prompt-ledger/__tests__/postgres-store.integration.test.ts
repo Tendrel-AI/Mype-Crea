@@ -95,7 +95,7 @@ SUITE('PostgresLedgerStore (integration)', () => {
 
   it('registers the prompts in code', async () => {
     const out = await registerCodePrompts(ledger, undefined);
-    expect(out.map((v) => `${v.key}@${v.version}`)).toEqual(expect.arrayContaining(['extractor@extractor.v5', 'naming@name-agent.v1', 'logo-agent@logo-agent.v1']));
+    expect(out.map((v) => `${v.key}@${v.version}`)).toEqual(expect.arrayContaining(['extractor@extractor.v5', 'name-agent@name-agent.v1', 'logo-agent@logo-agent.v1']));
     // Platform-level rows are shared and persistent by design; they are not test-owned.
   });
 

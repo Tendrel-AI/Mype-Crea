@@ -17,6 +17,7 @@
     "migrate:redo": "dotenv -e .env.local -- node-pg-migrate redo",
     "migrate:deploy": "node scripts/migrate-deploy.mjs",
     "test": "vitest run",
+    "prompt:freeze": "jiti scripts/prompt-freeze.ts",
     "ledger:report": "dotenv -e .env.local -- jiti scripts/prompt-ledger-report.ts",
     "test:integration": "dotenv -e .env.local -- vitest run",
     "eval": "dotenv -e .env.local -- vitest run -c vitest.eval.config.ts",
