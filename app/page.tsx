@@ -34,6 +34,7 @@ export default async function Home({
         userName={userName}
         initialConversationId=""
         initialError={TERMS_UNAVAILABLE_MESSAGE}
+        creationBlocked
       />
     );
   }
@@ -56,6 +57,17 @@ export default async function Home({
           initialBrief={result.history.brief}
           initialStates={result.history.states}
           initialConversations={result.conversations}
+          initialBrands={result.brands}
+          initialContext={result.history.context}
+        />
+      );
+    case 'empty':
+      return (
+        <CreaMype
+          key="no-conversations"
+          userEmail={user.email}
+          userName={userName}
+          initialConversationId=""
           initialBrands={result.brands}
         />
       );

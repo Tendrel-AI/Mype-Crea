@@ -1,5 +1,5 @@
 /**
- * KAN-85 brands, products and limits against a disposable PostgreSQL database (NOT run by the
+ * KAN-85 / KAN-87 brands, products, files and limits against a disposable PostgreSQL database (NOT run by the
  * agent that wrote it). Proves owner-only RLS across users and tenants, that two concurrent
  * `create()` calls at limit-1 admit exactly one, and that a plain member cannot change the limit
  * columns (no column grant, helper refuses non-admins). DATABASE_URL (owner) only seeds and
@@ -57,9 +57,9 @@ SUITE('KAN-85 brands (integration)', () => {
     await closePool();
   });
 
-  it('defaults the limits to 3 brands per user and 5 conversations per brand', async () => {
+  it('defaults the limits to 3 brands per user and 5 products per brand', async () => {
     const { tenant, member } = await createTenant();
-    expect(await repos(tenant, member).brands.getLimits()).toEqual({ maxBrandsPerUser: 3, maxConversationsPerBrand: 5 });
+    expect(await repos(tenant, member).brands.getLimits()).toEqual({ maxBrandsPerUser: 3, maxProductsPerBrand: 5 });
   });
 
   it('isolates brands and products across users and tenants', async () => {
@@ -101,13 +101,130 @@ SUITE('KAN-85 brands (integration)', () => {
 
   it('a member cannot change the limits; an admin can; out-of-range values are refused by the database', async () => {
     const { tenant, admin, member } = await createTenant();
-    await expect(repos(tenant, member).brands.setLimits({ maxBrandsPerUser: 99, maxConversationsPerBrand: 99 })).rejects.toBeInstanceOf(NotTenantAdminError);
+    await expect(repos(tenant, member).brands.setLimits({ maxBrandsPerUser: 99, maxProductsPerBrand: 99 })).rejects.toBeInstanceOf(NotTenantAdminError);
     await expect(withTenantTransaction(tenant, member, (tx) => tx.query(`UPDATE tenants SET max_brands_per_user = 99 WHERE id = $1`, [tenant.id])))
       .rejects.toThrow(/permission denied/);
-    await expect(withTenantTransaction(tenant, member, (tx) => tx.query(`SELECT app.set_brand_limits(99, 99)`))).rejects.toThrow(/tenant admin required/);
+    await expect(withTenantTransaction(tenant, member, (tx) => tx.query(`SELECT app.set_brand_product_limits(99, 99)`))).rejects.toThrow(/tenant admin required/);
 
-    await repos(tenant, admin).brands.setLimits({ maxBrandsPerUser: 7, maxConversationsPerBrand: 8 });
-    expect(await repos(tenant, member).brands.getLimits()).toEqual({ maxBrandsPerUser: 7, maxConversationsPerBrand: 8 });
-    await expect(repos(tenant, admin).brands.setLimits({ maxBrandsPerUser: 1001, maxConversationsPerBrand: 1 })).rejects.toThrow(/between 0 and 1000/);
+    await repos(tenant, admin).brands.setLimits({ maxBrandsPerUser: 7, maxProductsPerBrand: 8 });
+    expect(await repos(tenant, member).brands.getLimits()).toEqual({ maxBrandsPerUser: 7, maxProductsPerBrand: 8 });
+    await expect(repos(tenant, admin).brands.setLimits({ maxBrandsPerUser: 1001, maxProductsPerBrand: 1 })).rejects.toThrow(/between 0 and 1000/);
+  });
+
+  it('two concurrent product creations at limit-1 admit exactly one (the brand row lock serializes them)', async () => {
+    const { tenant, member } = await createTenant();
+    await owner.query(`UPDATE tenants SET max_products_per_brand = 2 WHERE id = $1`, [tenant.id]);
+    const brand = await repos(tenant, member).brands.create({ name: 'Café' });
+    if (!brand.ok) throw new Error('expected brand');
+    expect((await repos(tenant, member).products.create({ brandId: brand.brandId, name: 'Uno' })).ok).toBe(true);
+    const results = await Promise.all([
+      repos(tenant, member).products.create({ brandId: brand.brandId, name: 'Dos' }),
+      repos(tenant, member).products.create({ brandId: brand.brandId, name: 'Tres' }),
+    ]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(results.find((r) => !r.ok)).toMatchObject({ code: 'product_limit_reached', limit: 2 });
+  });
+
+  it('refuses a conversation whose product belongs to another brand or another user (FKs), and keeps valid ones', async () => {
+    const { tenant, member, other } = await createTenant();
+    const mine = await repos(tenant, member).brands.create({ name: 'Mía' });
+    const mine2 = await repos(tenant, member).brands.create({ name: 'Mía 2' });
+    const theirs = await repos(tenant, other).brands.create({ name: 'Ajena' });
+    if (!mine.ok || !mine2.ok || !theirs.ok) throw new Error('expected brands');
+    const product = await repos(tenant, member).products.create({ brandId: mine.brandId, name: 'Molido' });
+    if (!product.ok) throw new Error('expected product');
+    const insert = (id: string, userId: string, brandId: string, productId: string | null) => owner.query(
+      `INSERT INTO conversations (id, tenant_id, user_id, brand_id, product_id) VALUES ($1, $2, $3, $4, $5)`,
+      [id, tenant.id, userId, brandId, productId],
+    );
+    await insert(randomUUID(), member.id, mine.brandId, product.product.id);
+    await expect(insert(randomUUID(), member.id, mine2.brandId, product.product.id)).rejects.toThrow(/conversations_product_brand_fk/);
+    await expect(insert(randomUUID(), other.id, theirs.brandId, product.product.id)).rejects.toThrow(/conversations_product_(brand|owner)_fk/);
+    await expect(owner.query(
+      `INSERT INTO conversations (id, tenant_id, user_id, product_id) VALUES ($1, $2, $3, $4)`, [randomUUID(), tenant.id, member.id, product.product.id],
+    )).rejects.toThrow(/conversations_product_needs_brand/);
+    // The repo answers the same cases with a typed refusal before reaching the FK.
+    const refused = await repos(tenant, member).brands.createConversation({
+      brandId: mine2.brandId, productId: product.product.id, conversationId: randomUUID() as never, schemas: [],
+    });
+    expect(refused).toEqual({ ok: false, code: 'product_not_found' });
+  });
+
+  it('isolates brand_files by owner and tenant, keeps one logo per brand and at most 5 assets', async () => {
+    const a = await createTenant();
+    const b = await createTenant();
+    const brand = await repos(a.tenant, a.member).brands.create({ name: 'Café' });
+    if (!brand.ok) throw new Error('expected brand');
+    const file = (kind: 'logo' | 'asset') => ({
+      id: randomUUID() as never, brandId: brand.brandId, kind, storageKey: `k/${randomUUID()}`, contentType: 'image/png',
+      byteSize: 10, sha256: 'a'.repeat(64), originalName: 'x.png',
+    });
+    const first = await repos(a.tenant, a.member).brandFiles.add(file('logo'));
+    expect(first).toMatchObject({ ok: true });
+    const second = await repos(a.tenant, a.member).brandFiles.add(file('logo'));
+    expect(second).toMatchObject({ ok: true, replacedStorageKey: first.ok ? first.file.storageKey : undefined });
+    expect((await repos(a.tenant, a.member).brandFiles.listByBrand(brand.brandId)).filter((f) => f.kind === 'logo')).toHaveLength(1);
+    for (let i = 0; i < 5; i += 1) expect((await repos(a.tenant, a.member).brandFiles.add(file('asset'))).ok).toBe(true);
+    expect(await repos(a.tenant, a.member).brandFiles.add(file('asset'))).toEqual({ ok: false, code: 'asset_limit_reached', limit: 5 });
+
+    const stored = await repos(a.tenant, a.member).brandFiles.listByBrand(brand.brandId);
+    expect(await repos(a.tenant, a.other).brandFiles.listByBrand(brand.brandId)).toEqual([]);
+    expect(await repos(b.tenant, b.member).brandFiles.listByBrand(brand.brandId)).toEqual([]);
+    expect(await repos(a.tenant, a.other).brandFiles.get(stored[0].id)).toBeNull();
+    expect(await repos(a.tenant, a.other).brandFiles.add(file('asset'))).toEqual({ ok: false, code: 'not_found' });
+    await expect(withTenantTransaction(a.tenant, a.other, (tx) => tx.query(
+      `INSERT INTO brand_files (tenant_id, user_id, brand_id, kind, storage_key, content_type, byte_size, sha256, original_name)
+       VALUES ($1, $2, $3, 'asset', 'k', 'image/png', 1, 'x', 'x')`, [a.tenant.id, a.other.id, brand.brandId],
+    ))).rejects.toThrow();
+  });
+
+  it('creates a brand with its first conversation and a product conversation, storing brand_id and product_id', async () => {
+    const { tenant, member } = await createTenant();
+    // A frozen, activated release so pinConversationInTx can pin (replica mode skips the freeze triggers).
+    const releaseId = randomUUID();
+    await owner.query('BEGIN');
+    try {
+      await owner.query(`SET LOCAL session_replication_role = 'replica'`);
+      await owner.query(
+        `INSERT INTO ai_releases (id, tenant_id, name, status, manifest, canonical_content, content_hash, created_by, updated_by, frozen_at)
+         VALUES ($1, $2, $3, 'frozen', '{}'::jsonb, '{}', $4, $5, $5, now())`,
+        [releaseId, tenant.id, `KAN-87 ${releaseId}`, 'a'.repeat(64), member.id],
+      );
+      await owner.query(
+        `INSERT INTO ai_release_activations (tenant_id, release_id, version, updated_by) VALUES ($1, $2, 1, $3)`,
+        [tenant.id, releaseId, member.id],
+      );
+      await owner.query('COMMIT');
+    } catch (error) {
+      await owner.query('ROLLBACK');
+      throw error;
+    }
+
+    const firstId = randomUUID() as never;
+    const brand = await repos(tenant, member).brands.create({ name: 'Café', firstConversation: { conversationId: firstId, schemas: [] } });
+    if (!brand.ok) throw new Error('expected brand');
+    expect(brand.pin?.state).toBe('pinned');
+    const product = await repos(tenant, member).products.create({ brandId: brand.brandId, name: 'Molido' });
+    if (!product.ok) throw new Error('expected product');
+    const productConversationId = randomUUID() as never;
+    const second = await repos(tenant, member).brands.createConversation({
+      brandId: brand.brandId, productId: product.product.id, conversationId: productConversationId, schemas: [],
+    });
+    expect(second.ok).toBe(true);
+
+    const rows = await owner.query<{ id: string; brand_id: string; product_id: string | null; ai_release_id: string }>(
+      `SELECT id, brand_id, product_id, ai_release_id FROM conversations WHERE tenant_id = $1`, [tenant.id],
+    );
+    const byId = new Map(rows.rows.map((r) => [r.id, r]));
+    expect(byId.get(firstId)).toMatchObject({ brand_id: brand.brandId, product_id: null, ai_release_id: releaseId });
+    expect(byId.get(productConversationId)).toMatchObject({ brand_id: brand.brandId, product_id: product.product.id });
+  });
+
+  it('a member cannot call app.set_brand_product_limits; an admin can', async () => {
+    const { tenant, admin, member } = await createTenant();
+    await expect(withTenantTransaction(tenant, member, (tx) => tx.query(`SELECT app.set_brand_product_limits(99, 99)`))).rejects.toThrow(/tenant admin required/);
+    expect(await repos(tenant, member).brands.getLimits()).toEqual({ maxBrandsPerUser: 3, maxProductsPerBrand: 5 });
+    await repos(tenant, admin).brands.setLimits({ maxBrandsPerUser: 4, maxProductsPerBrand: 6 });
+    expect(await repos(tenant, member).brands.getLimits()).toEqual({ maxBrandsPerUser: 4, maxProductsPerBrand: 6 });
   });
 });

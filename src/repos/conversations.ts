@@ -18,7 +18,7 @@ import type {
   TaskId,
   UUID,
 } from '../core/contracts';
-import type { AiConversationPin, RecentConversationRow } from './models';
+import type { AiConversationPin, ConversationContextRow, RecentConversationRow } from './models';
 import type { AgentFieldSchema } from '../core/orchestrator/in-memory-store';
 import {
   withTenantAdminTransaction,
@@ -203,6 +203,7 @@ export async function pinConversationInTx(
   user: User,
   input: { readonly conversationId: ConversationId; readonly schemas: ReadonlyArray<AgentFieldSchema> },
   brandId: UUID | null = null,
+  productId: UUID | null = null,
 ): Promise<AiConversationPin> {
   let pinned = await tx.query<{
     configuration_state: 'pinned' | 'legacy_unversioned';
@@ -219,11 +220,11 @@ export async function pinConversationInTx(
     resolvedReleaseId = await resolveNewConversationRelease(tx, tenant);
     await tx.query(
       `INSERT INTO conversations
-         (id, tenant_id, user_id, ai_release_id, configuration_state)
-       SELECT $1, $2, $3, $4, 'pinned'
+         (id, tenant_id, user_id, ai_release_id, configuration_state, brand_id, product_id)
+       SELECT $1, $2, $3, $4, 'pinned', $5::uuid, $6::uuid
         WHERE $4::uuid IS NOT NULL
        ON CONFLICT (id) DO NOTHING`,
-      [input.conversationId, tenant.id, user.id, resolvedReleaseId ?? null, brandId],
+      [input.conversationId, tenant.id, user.id, resolvedReleaseId ?? null, brandId, productId],
     );
     pinned = await tx.query<{
       configuration_state: 'pinned' | 'legacy_unversioned';
@@ -318,8 +319,9 @@ export function conversationsRepo(tenant: Tenant, user: User) {
           last_activity_at: Date;
           agent_states: unknown;
           brand_id: UUID | null;
+          product_id: UUID | null;
         }>(
-          `SELECT c.id, c.started_at, c.agent_states, c.brand_id,
+          `SELECT c.id, c.started_at, c.agent_states, c.brand_id, c.product_id,
                   COALESCE(last_message.created_at, c.started_at) AS last_activity_at
              FROM conversations c
              LEFT JOIN LATERAL (
@@ -344,7 +346,24 @@ export function conversationsRepo(tenant: Tenant, user: User) {
           lastActivityAt: row.last_activity_at.toISOString(),
           businessName: businessNameFromAgentStates(row.agent_states),
           brandId: row.brand_id,
+          productId: row.product_id,
         }));
+      });
+    },
+
+    /** KAN-87: the brand and product (ids and names) of the caller's own conversation; undefined when foreign or missing. */
+    async context(conversationId: ConversationId): Promise<ConversationContextRow | undefined> {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<{ brand_id: UUID | null; brand_name: string | null; product_id: UUID | null; product_name: string | null }>(
+          `SELECT c.brand_id, b.name AS brand_name, c.product_id, p.name AS product_name
+             FROM conversations c
+             LEFT JOIN brands b ON b.tenant_id = c.tenant_id AND b.id = c.brand_id
+             LEFT JOIN products p ON p.tenant_id = c.tenant_id AND p.id = c.product_id
+            WHERE c.id = $1 AND c.tenant_id = $2 AND c.user_id = $3`,
+          [conversationId, tenant.id, user.id],
+        );
+        const row = res.rows[0];
+        return row && { brandId: row.brand_id, brandName: row.brand_name, productId: row.product_id, productName: row.product_name };
       });
     },
 
