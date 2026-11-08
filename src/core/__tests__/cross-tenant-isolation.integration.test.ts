@@ -323,6 +323,19 @@ describe('cross-tenant isolation (PostgreSQL integration)', () => {
     expect(otherUserAudit.rowCount).toBe(0);
   });
 
+  it('tenants_self is read-only: a tenant context reads its own tenant but cannot change its status', async () => {
+    const own = await withTenantTransaction(tenantA.tenant, tenantA.user, (tx) =>
+      tx.query(`SELECT id FROM tenants WHERE id = $1`, [tenantA.tenant.id]),
+    );
+    expect(own.rowCount).toBe(1);
+    // No UPDATE policy applies to app_user here, so the row is invisible to the UPDATE (0 rows) or it is denied.
+    const update = await withTenantTransaction(tenantA.tenant, tenantA.user, (tx) =>
+      tx.query(`UPDATE tenants SET status = 'active' WHERE id = $1`, [tenantA.tenant.id]),
+    ).catch((error: unknown) => error);
+    if (update instanceof Error) expect(update.message).toMatch(/row-level security|permission denied/);
+    else expect(update.rowCount).toBe(0);
+  });
+
   it('prompt ledger F13: deliverable feedback is private to the owner, across members and tenants', async () => {
     const ownA = repos(tenantA.tenant, tenantA.user);
     const { conversationId, deliverableId } = tenantA;
