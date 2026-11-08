@@ -169,9 +169,10 @@ function presentations(field: CatalogField, raw: unknown): FieldOutcome {
     if (!label.ok) return { error: label.message };
     items.push({ label: label.value, principal: item.principal });
   }
-  if (items.filter((i) => i.principal).length !== 1) return { error: 'Marca exactamente una presentación como principal.' };
   if (new Set(items.map((i) => i.label.toLowerCase())).size !== items.length) return { error: 'No repitas presentaciones.' };
-  return { value: items };
+  // Normalize to exactly one principal: the first flagged one wins; with none flagged, the first row is it.
+  const principal = Math.max(items.findIndex((i) => i.principal), 0);
+  return { value: items.map((i, index) => ({ ...i, principal: index === principal })) };
 }
 
 function normalize(field: CatalogField, raw: unknown): FieldOutcome {

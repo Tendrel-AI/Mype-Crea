@@ -62,10 +62,8 @@ function presentationFromBrief(value: string, current: Attrs): Record<string, un
   let next: Presentation[];
   if (known >= 0) next = items.map((p, i) => ({ ...p, principal: i === known }));
   else if (items.length < MAX_PRESENTATIONS) next = [...items.map((p) => ({ ...p, principal: false })), { label: value, principal: true }];
-  else {
-    const principal = Math.max(items.findIndex((p) => p.principal), 0);
-    next = items.map((p, i) => (i === principal ? { label: value, principal: true } : { ...p, principal: false }));
-  }
+  // At the cap a new label is not applied: replacing the principal's label would overwrite the owner's data.
+  else return {};
   return { product_presentations: next };
 }
 

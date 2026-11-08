@@ -64,7 +64,7 @@ describe('brief-records mapping', () => {
     expect(map.toBrief({ brand: stored })).toBe(shown);
   });
 
-  it('presentation: reads the principal; an existing label becomes principal; a new one is added; cap replaces the principal', () => {
+  it('presentation: reads the principal; an existing label becomes principal; a new one is added; at the cap it is ignored', () => {
     const items = [{ label: '250 g', principal: true }, { label: '500 g', principal: false }];
     const map = m('product_presentation');
     expect(map.toBrief({ brand: {}, product: { product_presentations: items } })).toBe('250 g');
@@ -77,10 +77,16 @@ describe('brief-records mapping', () => {
     });
     expect(map.fromBrief('1 kg', {})).toEqual({ product_presentations: [{ label: '1 kg', principal: true }] });
     const full = ['a', 'b', 'c', 'd', 'e'].map((label, i) => ({ label, principal: i === 2 }));
-    const out = map.fromBrief('nueva', { product_presentations: full }).product_presentations as { label: string; principal: boolean }[];
-    expect(out.map((p) => p.label)).toEqual(['a', 'b', 'nueva', 'd', 'e']);
-    expect(out.filter((p) => p.principal)).toEqual([{ label: 'nueva', principal: true }]);
-    expect(validateAttributes('product', { product_presentations: out }, { partial: true }).ok).toBe(true);
+    // At the cap a new label leaves the record untouched (no overwrite of the principal's label).
+    expect(map.fromBrief('nueva', { product_presentations: full })).toEqual({});
+    expect(map.fromBrief('C', { product_presentations: full })).toEqual({ product_presentations: full.map((p) => ({ ...p, principal: p.label === 'c' })) });
+  });
+
+  it('presentation: switching the principal via chat keeps exactly one principal and a valid payload', () => {
+    const items = [{ label: '250 g', principal: true }, { label: '500 g', principal: false }];
+    const out = m('product_presentation').fromBrief('500 g', { product_presentations: items });
+    const verdict = validateAttributes('product', out, { partial: true });
+    expect(verdict.ok && (verdict.values.product_presentations as { principal: boolean }[]).filter((p) => p.principal)).toHaveLength(1);
   });
 
   it('ignores unmapped fields and keeps product fields local in a brand conversation', () => {

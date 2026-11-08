@@ -281,6 +281,10 @@ async function writeBackToRecords(
         log.warn({ conversationId, field: name, errors: verdict.errors }, 'brief.writeback_skipped_invalid');
         continue;
       }
+      if (Object.keys(verdict.values).length === 0 && verdict.cleared.length === 0) {
+        log.info({ conversationId, field: name }, 'brief.writeback_skipped_no_change');
+        continue;
+      }
       current[mapping.level] = applyAttributePatch(current[mapping.level], verdict);
       dirty.set(mapping.level, dirty.get(mapping.level) || name === 'business_name' || name === 'product_name');
     }
