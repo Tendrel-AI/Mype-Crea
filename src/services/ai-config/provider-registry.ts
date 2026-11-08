@@ -44,6 +44,15 @@ const ALLOWED_CREDENTIAL_REFS: Readonly<Record<ModelProfile['provider'], string>
  * Explicit provider/model resolver. It never reads LLM_PROVIDER and never mutates process.env.
  * The capability catalog is platform-owned code, not the manifest's self-declared capabilities.
  */
+/** Env kill switch `AI_CONFIG_<PROVIDER>_ENABLED`. Throws on a malformed value. */
+export function isProviderEnvEnabled(provider: ModelProfile['provider']): boolean {
+  const setting = process.env[`AI_CONFIG_${provider.toUpperCase()}_ENABLED`];
+  if (setting !== undefined && setting !== '' && setting !== 'true' && setting !== 'false') {
+    throw new Error(`AI_CONFIG_${provider.toUpperCase()}_ENABLED must be "true" or "false".`);
+  }
+  return setting !== 'false';
+}
+
 export class ProviderRegistry {
   private readonly clients = new Map<string, ILLMProvider>();
 
@@ -74,11 +83,7 @@ export class ProviderRegistry {
 
   resolve(profile: ModelProfile, purpose: Purpose, context: ProviderCacheContext): ResolvedModel {
     this.assertProfileSupported(profile, purpose);
-    const enabledSetting = process.env[`AI_CONFIG_${profile.provider.toUpperCase()}_ENABLED`];
-    if (enabledSetting !== undefined && enabledSetting !== '' && enabledSetting !== 'true' && enabledSetting !== 'false') {
-      throw new Error(`AI_CONFIG_${profile.provider.toUpperCase()}_ENABLED must be "true" or "false".`);
-    }
-    if (enabledSetting === 'false') {
+    if (!isProviderEnvEnabled(profile.provider)) {
       throw new ProfileUnavailableError('provider_disabled');
     }
     const trusted = this.capabilityResolver(profile)!;
@@ -117,11 +122,7 @@ export class ProviderRegistry {
 
   /** Availability is based only on configured platform credentials and an explicit disable flag. */
   isPlatformAvailable(provider: ModelProfile['provider']): boolean {
-    const setting = process.env[`AI_CONFIG_${provider.toUpperCase()}_ENABLED`];
-    if (setting !== undefined && setting !== '' && setting !== 'true' && setting !== 'false') {
-      throw new Error(`AI_CONFIG_${provider.toUpperCase()}_ENABLED must be "true" or "false".`);
-    }
-    if (setting === 'false') return false;
+    if (!isProviderEnvEnabled(provider)) return false;
     return Boolean(this.credentialResolver(ALLOWED_CREDENTIAL_REFS[provider])?.trim());
   }
 }
