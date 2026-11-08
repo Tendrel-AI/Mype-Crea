@@ -37,6 +37,9 @@ function toRun(r: any, kind: RunKind): Run {
   return run;
 }
 
+// Ledger keys per agent; llm_calls.purpose stays 'naming' for both (versions keep them apart).
+const PRODUCTION_PURPOSE: Record<string, string> = { 'name-agent': 'naming', 'tagline-agent': 'naming' };
+
 export class PostgresLedgerStore implements LedgerStore {
   constructor(private readonly db: TransactionalQueryable) {}
 
@@ -114,7 +117,7 @@ export class PostgresLedgerStore implements LedgerStore {
     if (kind !== 'eval') {
       const { rows } = await this.db.query(
         `SELECT *, occurred_at AS started_at FROM app.prompt_ledger_production_runs($1, $2)`,
-        [key, version],
+        [PRODUCTION_PURPOSE[key] ?? key, version],
       );
       runs.push(...rows.map((r) => toRun(r, 'production')));
     }
