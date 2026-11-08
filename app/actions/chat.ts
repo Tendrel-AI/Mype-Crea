@@ -8,7 +8,7 @@ import type { ConversationId, FieldDelta, PlannerDecision, UUID } from '../../sr
 import type { AiTurnRow, AiTurnStage } from '../../src/repos/models';
 import type { JsonValue } from '../../src/services/ai-config/manifest';
 import { AiConfigRuntime, AiConfigExecutionError, type AttemptWriter } from '../../src/services/ai-config/execution';
-import { captureSourceIdentity, createBaselineDraft } from '../../src/services/ai-config/baseline';
+import { captureRuntimeIdentity } from '../../src/services/ai-config/baseline';
 import { ProviderRegistry } from '../../src/services/ai-config/provider-registry';
 import { activePromptVersions } from '../../src/services/prompts';
 import { loggerFor } from '../../src/services/logger';
@@ -278,9 +278,16 @@ export async function chatAction(params: {
   }
 }
 
+// Hashing the sources and building the registry once per process; a turn must not re-validate env models.
+let runtimeIdentity: ReturnType<typeof captureRuntimeIdentity> | undefined;
+const providerRegistry = new ProviderRegistry();
+
 async function buildAiConfigRuntime(_identity: ResolvedIdentity): Promise<AiConfigRuntime> {
-  const sourceIdentity = await captureSourceIdentity();
-  const baseline = await createBaselineDraft();
+  runtimeIdentity ??= captureRuntimeIdentity();
+  const { runtimeVersion, codeFingerprint, dependencyFingerprint } = await runtimeIdentity.catch((error) => {
+    runtimeIdentity = undefined; // do not cache a failure
+    throw error;
+  });
   const repositoriesFor = (resolved: ResolvedIdentity) => {
     const scoped = repos(resolved.tenant, resolved.user);
     return {
@@ -307,11 +314,7 @@ async function buildAiConfigRuntime(_identity: ResolvedIdentity): Promise<AiConf
       usage: scoped.usage,
     };
   };
-  return new AiConfigRuntime(repositoriesFor, new ProviderRegistry(), {
-    runtimeVersion: baseline.runtimeCompatibility.min,
-    codeFingerprint: sourceIdentity.codeFingerprint,
-    dependencyFingerprint: sourceIdentity.dependencyFingerprint,
-  });
+  return new AiConfigRuntime(repositoriesFor, providerRegistry, { runtimeVersion, codeFingerprint, dependencyFingerprint });
 }
 
 function fieldDelta(value: JsonValue | undefined): FieldDelta {

@@ -113,11 +113,11 @@ export async function createBaselineDraft(): Promise<AiConfigManifestV1> {
   }
   const selectedProvider = configuredProvider;
   const extractorModel = selectedProvider === 'anthropic'
-    ? process.env.ANTHROPIC_EXTRACTOR_MODEL ?? 'claude-haiku-5-5'
-    : process.env.OPENROUTER_EXTRACTOR_MODEL ?? 'google/gemini-2.5-flash';
+    ? process.env.ANTHROPIC_EXTRACTOR_MODEL?.trim() ?? 'claude-haiku-5-5'
+    : process.env.OPENROUTER_EXTRACTOR_MODEL?.trim() ?? 'google/gemini-2.5-flash';
   const responderModel = selectedProvider === 'anthropic'
-    ? process.env.ANTHROPIC_RESPONDER_MODEL ?? 'claude-sonnet-5-5'
-    : process.env.OPENROUTER_RESPONDER_MODEL ?? 'google/gemini-2.5-pro';
+    ? process.env.ANTHROPIC_RESPONDER_MODEL?.trim() ?? 'claude-sonnet-5-5'
+    : process.env.OPENROUTER_RESPONDER_MODEL?.trim() ?? 'google/gemini-2.5-pro';
   const profiles = [
     profile('openrouter-extractor', 'extractor', 'openrouter', 'google/gemini-2.5-flash', 'platform.openrouter', extractor.temperature, extractor.maxTokens, ['forced-tool-call', 'json-schema']),
     profile('anthropic-extractor', 'extractor', 'anthropic', 'claude-haiku-5-5', 'platform.anthropic', 1, extractor.maxTokens, ['forced-tool-call', 'json-schema']),
