@@ -253,6 +253,16 @@ describe('summarizeVersion edge cases', () => {
     expect(summarizeVersion([run()], [], 0, []).failureRate).toBe(0);
     expect(summarizeVersion([run({ outcome: 'failed' })], [], 0, []).failureRate).toBe(1);
   });
+  it('failureRate ignores unknown outcomes and is null when none is known', () => {
+    expect(summarizeVersion([run({ outcome: undefined }), run({ outcome: 'failed' })], [], 0, []).failureRate).toBe(1);
+    expect(summarizeVersion([run({ outcome: undefined })], [], 0, []).failureRate).toBeNull();
+  });
+  it('requires outcome for eval runs but not for production runs', async () => {
+    const ledger = new PromptLedger({ store: new InMemoryLedgerStore() });
+    await ledger.registerVersion({ key: 'k', version: 'v1', text: 't' });
+    await expect(ledger.recordRun(run({ outcome: undefined }))).rejects.toBeInstanceOf(LedgerValidationError);
+    await expect(ledger.recordRun(run({ id: 'p1', kind: 'production', outcome: undefined }))).resolves.toBeUndefined();
+  });
 });
 
 describe('compare edge cases', () => {

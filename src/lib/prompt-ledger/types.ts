@@ -23,7 +23,8 @@ export interface Run {
   inputTokens?: number;
   outputTokens?: number;
   costUsd?: number;
-  outcome: RunOutcome;
+  /** undefined = unknown (production calls only log completed calls); required for eval runs. */
+  outcome?: RunOutcome;
   errorCategory?: string;
   experimentId?: string;
 }

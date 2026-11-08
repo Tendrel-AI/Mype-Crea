@@ -53,7 +53,7 @@ export const NAME_SYSTEM_PROMPT = [
   `Responde solo llamando a la herramienta ${TOOL_NAME}.`,
 ].join('\n');
 
-const TOOL = {
+export const NAME_TOOL = {
   type: 'function',
   function: {
     name: TOOL_NAME,
@@ -166,7 +166,7 @@ export const handler: AgentHandler<undefined> = async (message: A2AMessage) => {
       request: {
         messages: buildNameMessages(message.requirements, message.iteration),
         max_tokens: 1024,
-        tools: [TOOL],
+        tools: [NAME_TOOL],
         tool_choice: { type: 'function', function: { name: TOOL_NAME } },
       },
       usage: { tenantId: message.tenantId, agentTaskId: message.taskId },

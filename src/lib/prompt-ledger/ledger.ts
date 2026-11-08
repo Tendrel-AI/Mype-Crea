@@ -134,7 +134,7 @@ function validateRun(run: Run) {
   nonNeg('run.inputTokens', run.inputTokens);
   nonNeg('run.outputTokens', run.outputTokens);
   nonNeg('run.costUsd', run.costUsd);
-  oneOf('run.outcome', run.outcome, ['succeeded', 'failed']);
+  if (run.outcome !== undefined || run.kind === 'eval') oneOf('run.outcome', run.outcome, ['succeeded', 'failed']);
   optStr('run.errorCategory', run.errorCategory);
   optStr('run.experimentId', run.experimentId);
 }

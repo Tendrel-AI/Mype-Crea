@@ -20,6 +20,7 @@ export function summarizeVersion(
 ): VersionSummary {
   const latencies = present(runs.map((r) => r.latencyMs));
   const costs = present(runs.map((r) => r.costUsd));
+  const known = runs.filter((r) => r.outcome !== undefined);
 
   const byMetric = new Map<string, number[]>();
   for (const s of scores) byMetric.set(s.metric, [...(byMetric.get(s.metric) ?? []), s.value]);
@@ -31,7 +32,7 @@ export function summarizeVersion(
 
   return {
     runs: runs.length,
-    failureRate: runs.length ? runs.filter((r) => r.outcome === 'failed').length / runs.length : null,
+    failureRate: known.length ? known.filter((r) => r.outcome === 'failed').length / known.length : null,
     latencyMs: { p50: percentile(latencies, 50), p95: percentile(latencies, 95) },
     tokens: {
       avgInput: mean(present(runs.map((r) => r.inputTokens))),
