@@ -6,7 +6,6 @@ import { repos } from '../../src/repos';
 import { AiAdminService } from '../../src/services/ai-config/admin-service';
 import { AiConfigService } from '../../src/services/ai-config/service';
 import { ProviderRegistry } from '../../src/services/ai-config/provider-registry';
-import { AiPromptSyncService } from '../../src/services/ai-config/prompt-sync';
 
 /** Typed failure reasons the page can act on. Everything else stays a generic failure. */
 export type AiAdminFailureReason = 'mfa_required';
@@ -27,10 +26,6 @@ function configService(identity: ResolvedIdentity): AiConfigService {
 
 function adminService(identity: ResolvedIdentity): AiAdminService {
   return new AiAdminService(() => repos(identity.tenant, identity.user, repositoryActor(identity)).aiTurns);
-}
-
-function promptSyncService(identity: ResolvedIdentity): AiPromptSyncService {
-  return new AiPromptSyncService(() => repos(identity.tenant, identity.user, repositoryActor(identity)).aiConfig);
 }
 
 async function action<T>(work: (identity: ResolvedIdentity) => Promise<T>): Promise<AiAdminActionResult<T>> {
@@ -165,18 +160,6 @@ export async function exportSharedAiConfigRelease(releaseId: string) {
 
 export async function listAiSyncEvents(limit?: number) {
   return action((identity) => configService(identity).listSyncEvents(identity, limit));
-}
-
-export async function publishSharedAiPrompt(releaseId: string) {
-  return action((identity) => promptSyncService(identity).publishShared(identity, requiredId(releaseId)));
-}
-
-export async function retrySharedAiPrompt(input: { releaseId: string; parentOperationId: string }) {
-  return action((identity) => promptSyncService(identity).retrySharedPublish(identity, { releaseId: requiredId(input.releaseId), parentOperationId: requiredId(input.parentOperationId) }));
-}
-
-export async function importSharedAiPrompt(input: { name: string; prompt: string; commit: string }) {
-  return action((identity) => promptSyncService(identity).importSharedPrompt(identity, input));
 }
 
 export async function getAiTurnTrace(turnId: string) {
