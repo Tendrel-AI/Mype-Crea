@@ -19,10 +19,12 @@ import {
   deriveDeliverableStates,
   deriveStaleCandidateIds,
   deriveStaleKinds,
+  requirementsFromSnapshot,
   type ApprovalFact,
   type DeliverableWorkflowFacts,
 } from '../deliverable-state';
 import type { WorkflowCandidate, WorkflowTask } from '../deliverable-workflow';
+import { overlayRecords } from '../../brief-records';
 import { inputVersion } from '../../deliverable-inputs';
 
 const conversationId = '00000000-0000-0000-0000-000000000003';
@@ -520,6 +522,26 @@ describe('KAN-35 — staleness from recorded inputs (RF-07)', () => {
     approvals: [{ deliverableKind: 'business_name', deliverableId: 'nA' }],
   });
   const withNameB: DeliverableWorkflowFacts = { ...withNameA, approvals: [{ deliverableKind: 'business_name', deliverableId: 'nB' }] };
+
+  it('KAN-90: agents only get the principal presentation; a switched principal (record overlay) marks the logo stale', () => {
+    const rec = (principal: number) => ({
+      brand: {},
+      product: { product_presentations: ['250 g', '500 g', '1 kg'].map((label, i) => ({ label, principal: i === principal })) },
+    });
+    // The stored slot is a stale cache ('250 g'); the overlay is what snapshot reads show.
+    const stored = brief(BRIEF, { product_presentation: '250 g' });
+    const seen = (principal: number): ConversationSnapshot =>
+      ({ ...stored, agentStates: overlayRecords(stored.agentStates, rec(principal), 'brief-panel') });
+    const logo = { ...L1, inputVersions: used({ business_name: BRIEF.business_name, style_keywords: BRIEF.style_keywords, product_presentation: '250 g' }) };
+    const f = { ...withNameA, candidates: [nameA, nameB, logo, S1] };
+
+    const requirements = requirementsFromSnapshot(seen(1), 'logo-agent');
+    expect(requirements.product_presentation).toBe('500 g');
+    expect(JSON.stringify(requirements)).not.toMatch(/250 g|1 kg|principal/);
+    expect(deriveStaleCandidateIds(seen(0), specs, f).has('L1')).toBe(false);
+    expect([...deriveStaleCandidateIds(seen(1), specs, f)]).toEqual(['L1']);
+    expect(deriveStaleCandidateIds(stored, specs, f).has('L1')).toBe(false); // raw cache would miss it
+  });
 
   it('the logo stays blocked until a name is approved (verbal identity → logo)', () => {
     const view = stateOf(brief(BRIEF), specs, facts({}));

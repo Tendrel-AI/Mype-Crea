@@ -98,10 +98,26 @@ describe('validateAttributes: product', () => {
   });
 
   it.each([
+    ['no principal: the first becomes principal', [{ label: 'A', principal: false }, { label: 'B', principal: false }], [true, false]],
+    ['two principals: the first flagged one wins', [{ label: 'A', principal: false }, { label: 'B', principal: true }, { label: 'C', principal: true }], [false, true, false]],
+    ['one presentation is principal even if unflagged', [{ label: 'A', principal: false }], [true]],
+    ['switching the principal', [{ label: 'A', principal: false }, { label: 'B', principal: true }], [false, true]],
+  ])('presentations normalize to exactly one principal: %s', (_label, presentations, expected) => {
+    const verdict = validateAttributes('product', { ...product, product_presentations: presentations });
+    expect(verdict.ok).toBe(true);
+    if (!verdict.ok) return;
+    expect((verdict.values.product_presentations as { principal: boolean }[]).map((p) => p.principal)).toEqual(expected);
+  });
+
+  it('removing the principal row (first remaining is promoted) validates', () => {
+    const rest = [{ label: 'B', principal: false }, { label: 'C', principal: false }];
+    const verdict = validateAttributes('product', { ...product, product_presentations: rest });
+    expect(verdict.ok && (verdict.values.product_presentations as { principal: boolean }[])[0].principal).toBe(true);
+  });
+
+  it.each([
     ['zero presentations', []],
     ['six presentations', Array.from({ length: 6 }, (_, i) => ({ label: `P${i}`, principal: i === 0 }))],
-    ['no principal', [{ label: 'A', principal: false }]],
-    ['two principals', [{ label: 'A', principal: true }, { label: 'B', principal: true }]],
     ['duplicate labels (case-insensitive)', [{ label: 'Bolsa', principal: true }, { label: 'bolsa', principal: false }]],
     ['label over 60', [{ label: 'x'.repeat(61), principal: true }]],
   ])('presentations: %s is refused', (_label, presentations) => {
