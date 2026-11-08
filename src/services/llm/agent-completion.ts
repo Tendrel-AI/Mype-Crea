@@ -20,13 +20,17 @@ import type { ConversationId, TaskId, UUID } from '../../core/contracts';
 import { TaskError, type TaskErrorKind } from '../../core/task-errors';
 import { repos, systemRepos } from '../../repos';
 import { getConversationOwnerUserId } from '../../repos/conversations';
+import { isProviderEnvEnabled } from '../ai-config/provider-registry';
 import { usageGatedCompletion } from '../ai-config/execution';
 import type { ProviderId } from '../ai-config/manifest';
+import { loggerFor } from '../logger';
 import { withLlmLogging } from '../llm-logger';
 import { UsageLimitError, type UsageLedger } from '../usage/gateway';
 import { getProvider } from './index';
 import { ProviderCallError, type ProviderFailureCategory } from './provider-error';
 import type { ChatCompletion, ChatRequest, IChatClient, ILLMProvider, ModelPurpose } from './types';
+
+const log = loggerFor('service.agent-llm');
 
 export interface AgentCompletionRequest {
   readonly purpose: ModelPurpose;
@@ -54,6 +58,12 @@ export type AgentUsageResolver = (scope: AgentCompletionRequest['usage']) => Pro
   readonly ownerUserId: string;
 }>;
 
+/** Tenant switch from /admin/ai, read as the conversation owner. Must throw if unreadable (fail closed). */
+export type ProviderAvailabilityReader = (
+  scope: { readonly tenantId: UUID; readonly ownerUserId: string },
+  provider: ProviderId,
+) => Promise<boolean>;
+
 const KIND_BY_PROVIDER_FAILURE: Readonly<Record<ProviderFailureCategory, TaskErrorKind>> = {
   rate_limited: 'rate_limited',
   provider_unavailable: 'provider_unavailable',
@@ -69,6 +79,7 @@ export class AgentLlmService implements IAgentLlm {
   constructor(
     private readonly provider: () => ILLMProvider = getProvider,
     private readonly usageFor: AgentUsageResolver = resolveAgentUsage,
+    private readonly availability: ProviderAvailabilityReader = readTenantAvailability,
   ) {}
 
   async complete(input: AgentCompletionRequest): Promise<AgentCompletionResult> {
@@ -80,6 +91,7 @@ export class AgentLlmService implements IAgentLlm {
     }
     const scope = await this.usageFor(input.usage);
     const provider: ProviderId = resolved.provider ?? 'openrouter';
+    await this.assertProviderEnabled(input.usage.tenantId, scope.ownerUserId, provider);
     const gated: IChatClient = {
       chat: {
         completions: {
@@ -109,6 +121,25 @@ export class AgentLlmService implements IAgentLlm {
       throw error;
     }
   }
+
+  private async assertProviderEnabled(tenantId: UUID, ownerUserId: string, provider: ProviderId): Promise<void> {
+    let enabled: boolean;
+    try {
+      enabled = isProviderEnvEnabled(provider) && (await this.availability({ tenantId, ownerUserId }, provider));
+    } catch (err) {
+      enabled = false; // fail closed: an unreadable switch refuses
+      log.error({ provider, err, reason: 'availability_unreadable' }, 'agent.llm.provider_check_failed');
+    }
+    if (!enabled) {
+      log.warn({ provider, tenantId, reason: 'provider_disabled' }, 'agent.llm.provider_refused');
+      throw new TaskError('provider_unavailable', 'The LLM provider is disabled.');
+    }
+  }
+}
+
+/** Same two switches chat honors; a refusal happens before any reservation or network call. */
+async function readTenantAvailability(scope: { tenantId: UUID; ownerUserId: string }, provider: ProviderId): Promise<boolean> {
+  return (await repos({ id: scope.tenantId }, { id: scope.ownerUserId as UUID }).aiConfig.getProviderAvailability(provider)).enabled;
 }
 
 /** KAN-43: an agent's LLM call is charged to the owner of the task's conversation. Fails closed. */

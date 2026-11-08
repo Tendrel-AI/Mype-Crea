@@ -4,7 +4,7 @@
  * the `naming` purpose, and its failures become typed TaskErrors. Fake
  * provider and ledger only.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const record = vi.hoisted(() => vi.fn(async () => 'llm-call-id'));
 vi.mock('../../../repos', () => ({
@@ -37,11 +37,34 @@ function ledger(allowed: boolean) {
   } as unknown as UsageLedger & { reserve: ReturnType<typeof vi.fn>; settle: ReturnType<typeof vi.fn> };
 }
 
-function service(provider: ILLMProvider, usage: UsageLedger) {
-  return new AgentLlmService(() => provider, async () => ({ ledger: usage, conversationId: CONVERSATION, ownerUserId: OWNER }));
+function service(provider: ILLMProvider, usage: UsageLedger, available: () => Promise<boolean> = async () => true) {
+  return new AgentLlmService(() => provider, async () => ({ ledger: usage, conversationId: CONVERSATION, ownerUserId: OWNER }), available);
 }
 
 describe('AgentLlmService', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('refuses when the env switch is off: no reservation, no call', async () => {
+    vi.stubEnv('AI_CONFIG_OPENROUTER_ENABLED', 'false');
+    const provider = new FakeLLMProvider({ purpose: 'naming' }).scriptContent('ok');
+    const usage = ledger(true);
+    await expect(service(provider, usage).complete(REQUEST)).rejects.toMatchObject({ name: 'TaskError', kind: 'provider_unavailable' });
+    expect(provider.create).not.toHaveBeenCalled();
+    expect(usage.reserve).not.toHaveBeenCalled();
+  });
+
+  it.each([['disabled', async (): Promise<boolean> => false], ['unreadable', async (): Promise<boolean> => { throw new Error('db down'); }]] as const)(
+    'refuses when the tenant availability is %s: no reservation, no call',
+    async (_name, available) => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const provider = new FakeLLMProvider({ purpose: 'naming' }).scriptContent('ok');
+      const usage = ledger(true);
+      await expect(service(provider, usage, available).complete(REQUEST)).rejects.toMatchObject({ kind: 'provider_unavailable' });
+      expect(provider.create).not.toHaveBeenCalled();
+      expect(usage.reserve).not.toHaveBeenCalled();
+    },
+  );
+
   it('reserves, calls, settles and audits the call with the naming purpose', async () => {
     const provider = new FakeLLMProvider({ purpose: 'naming', modelId: 'fake/naming-1' }).scriptContent('ok');
     const usage = ledger(true);
