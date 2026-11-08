@@ -127,7 +127,7 @@ describe('CreaMype progress and reload (KAN-30)', () => {
     const html = render([failed]);
     expect(html).not.toContain('Generando');
     expect(html).toContain('Falló');
-    expect(html).toContain('Fue un problema temporal: toca Reintentar.');
+    expect(html).toContain('La generación dejó de responder. Puedes intentarlo de nuevo. Toca Reintentar.');
     expect(html).toContain('Iteración 1 · Lista');
     expect(html).toContain(`src="${LOGO_URL}"`);
     expect(textarea(html)).not.toContain('disabled');

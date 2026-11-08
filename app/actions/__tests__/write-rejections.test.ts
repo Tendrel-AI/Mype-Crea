@@ -106,6 +106,7 @@ vi.mock('../../../src/services/ai-config/execution', () => ({
 }));
 vi.mock('../../../src/services/ai-config/baseline', () => ({
   captureSourceIdentity: async () => ({ codeFingerprint: 'code', dependencyFingerprint: 'deps' }),
+  captureRuntimeIdentity: async () => ({ runtimeVersion: '1.0.0', codeFingerprint: 'code', dependencyFingerprint: 'deps' }),
   createBaselineDraft: async () => ({ runtimeCompatibility: { min: '1.0.0', max: '1.0.0' } }),
 }));
 vi.mock('../../../src/services/ai-config/provider-registry', () => ({ ProviderRegistry: class {} }));
