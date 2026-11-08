@@ -34,6 +34,9 @@ const mocks = vi.hoisted(() => ({
   listRecent: vi.fn(),
   readPinnedConversation: vi.fn(),
   ensurePinnedConversation: vi.fn(),
+  brandLimit: { current: undefined as number | undefined },
+  conversationLimit: { current: undefined as number | undefined },
+  brandCreate: vi.fn(),
   listTurns: vi.fn(),
   listNotices: vi.fn(),
   listByConversation: vi.fn(),
@@ -58,6 +61,16 @@ vi.mock('../../core/orchestrator/runtime', () => ({
 vi.mock('../../core/orchestrator/bootstrap-registry', () => ({
   buildDefaultRegistry: () => ({ getFieldSchemas: () => [] }),
 }));
+const BRAND = '88888888-8888-4888-8888-888888888888';
+async function pin(tenant: { id: string }, user: { id: string }, input: { conversationId: string }) {
+  await mocks.ensurePinnedConversation(tenant, user, input);
+  mocks.store.push({
+    id: input.conversationId, tenantId: tenant.id, userId: user.id, state: 'pinned',
+    lastActivityAt: '2026-10-25T12:00:00.000Z', businessName: null,
+  });
+  return { conversationId: input.conversationId, state: 'pinned', releaseId: 'release-1', snapshot: { agentStates: {} } };
+}
+
 vi.mock('../../repos', () => ({
   repos: (tenant: { id: string }, user: { id: string }) => {
     const visible = (row: StoredConversation) => row.tenantId === tenant.id && row.userId === user.id;
@@ -68,7 +81,7 @@ vi.mock('../../repos', () => ({
           .sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt))
           .slice(0, limit)
           .map((row) => ({
-            conversationId: row.id, startedAt: row.lastActivityAt, lastActivityAt: row.lastActivityAt, businessName: row.businessName,
+            conversationId: row.id, startedAt: row.lastActivityAt, lastActivityAt: row.lastActivityAt, businessName: row.businessName, brandId: null,
           }))),
         readPinnedConversation: async (conversationId: string) => {
           await mocks.readPinnedConversation(tenant, user, conversationId);
@@ -77,13 +90,18 @@ vi.mock('../../repos', () => ({
             ? { conversationId, state: row.state, releaseId: row.state === 'pinned' ? 'release-1' : null, snapshot: { agentStates: row.agentStates ?? {} } }
             : undefined;
         },
-        ensurePinnedConversation: async (input: { conversationId: string }) => {
-          await mocks.ensurePinnedConversation(tenant, user, input);
-          mocks.store.push({
-            id: input.conversationId, tenantId: tenant.id, userId: user.id, state: 'pinned',
-            lastActivityAt: '2026-10-25T12:00:00.000Z', businessName: null,
-          });
-          return { conversationId: input.conversationId, state: 'pinned', releaseId: 'release-1', snapshot: { agentStates: {} } };
+      },
+      brands: {
+        listActive: async () => [{ id: BRAND, name: 'Café Andino' }],
+        create: async (input: { firstConversation: { conversationId: string } }) => {
+          mocks.brandCreate(tenant, user, input);
+          if (mocks.brandLimit.current !== undefined) return { ok: false, code: 'brand_limit_reached', limit: mocks.brandLimit.current };
+          return { ok: true, brandId: BRAND, pin: await pin(tenant, user, input.firstConversation) };
+        },
+        createConversation: async (input: { brandId: string; conversationId: string }) => {
+          if (input.brandId !== BRAND) return { ok: false, code: 'brand_not_found' };
+          if (mocks.conversationLimit.current !== undefined) return { ok: false, code: 'conversation_limit_reached', limit: mocks.conversationLimit.current };
+          return { ok: true, pin: await pin(tenant, user, input) };
         },
       },
       aiTurns: {
@@ -97,6 +115,7 @@ vi.mock('../../repos', () => ({
 
 import {
   CONVERSATION_NOT_FOUND_MESSAGE,
+  createOwnedBrand,
   createOwnedConversation,
   isConversationId,
   listOwnedConversations,
@@ -126,8 +145,8 @@ function seed(): StoredConversation[] {
 }
 
 const OWN_LIST = [
-  { conversationId: ids.latest, label: 'Café Andino · 24 oct', lastActivityAt: '2026-10-24T15:00:00.000Z' },
-  { conversationId: ids.older, label: 'Nueva conversación · 20 oct', lastActivityAt: '2026-10-20T15:00:00.000Z' },
+  { conversationId: ids.latest, brandId: null, label: 'Café Andino · 24 oct', lastActivityAt: '2026-10-24T15:00:00.000Z' },
+  { conversationId: ids.older, brandId: null, label: 'Nueva conversación · 20 oct', lastActivityAt: '2026-10-20T15:00:00.000Z' },
 ];
 
 describe('resolveHomeConversation (KAN-25)', () => {
@@ -161,6 +180,7 @@ describe('resolveHomeConversation (KAN-25)', () => {
     mocks.store = seed().filter((row) => row.id !== ids.latest && row.id !== ids.older);
     const result = await resolveHomeConversation(undefined);
     expect(result).toEqual({ kind: 'redirect', conversationId: ids.created, created: true });
+    expect(mocks.brandCreate).toHaveBeenCalledTimes(1);
     expect(mocks.ensurePinnedConversation).toHaveBeenCalledWith(OWN.tenant, OWN.user, expect.objectContaining({ conversationId: ids.created }));
     expect(mocks.startConversation).toHaveBeenCalledWith(ids.created, 'tenant-a', 'user-a');
   });
@@ -217,7 +237,7 @@ describe('resolveHomeConversation (KAN-25)', () => {
     ];
     const results = [];
     for (const id of requested) results.push(await resolveHomeConversation(id));
-    const expected = { kind: 'not_found', message: CONVERSATION_NOT_FOUND_MESSAGE, conversations: OWN_LIST };
+    const expected = { kind: 'not_found', message: CONVERSATION_NOT_FOUND_MESSAGE, conversations: OWN_LIST, brands: [{ brandId: BRAND, name: 'Café Andino' }] };
     for (const result of results) expect(result).toEqual(expected);
     expect(CONVERSATION_NOT_FOUND_MESSAGE).toBe('No encontramos esta conversación.');
     // Nothing of the foreign conversations is ever read.
@@ -234,8 +254,8 @@ describe('resolveHomeConversation (KAN-25)', () => {
   });
 
   it('starting a new conversation keeps the previous one listed', async () => {
-    const created = await createOwnedConversation(OWN as never);
-    expect(created).toEqual({ ok: true, conversationId: ids.created });
+    const created = await createOwnedConversation(OWN as never, BRAND as never);
+    expect(created).toEqual({ ok: true, conversationId: ids.created, brandId: BRAND });
     const list = await listOwnedConversations(OWN as never);
     expect(list.map((entry) => entry.conversationId)).toEqual([ids.created, ids.latest, ids.older]);
     expect(list[0].label).toBe('Nueva conversación · 25 oct');
@@ -254,6 +274,42 @@ describe('resolveHomeConversation (KAN-25)', () => {
     mocks.ensurePinnedConversation.mockImplementationOnce(async () => { throw new Error('no release'); });
     const result = await resolveHomeConversation(undefined);
     expect(result).toEqual({ kind: 'error', message: 'No pudimos iniciar la conversación. Inténtalo de nuevo.' });
+    expect(mocks.startConversation).not.toHaveBeenCalled();
+  });
+});
+
+describe('brand limits (KAN-85)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.brandLimit.current = undefined;
+    mocks.conversationLimit.current = undefined;
+  });
+
+  it('first visit at the brand limit shows the limit message and creates nothing', async () => {
+    mocks.store = [];
+    mocks.brandLimit.current = 0;
+    const result = await resolveHomeConversation(undefined);
+    expect(result).toEqual({
+      kind: 'error',
+      message: 'Llegaste al límite de 0 marcas de tu organización. Archiva una marca o pide a tu administrador que lo aumente.',
+    });
+    expect(mocks.startConversation).not.toHaveBeenCalled();
+  });
+
+  it('createOwnedBrand returns the typed refusal at the limit and the brand plus first conversation under it', async () => {
+    mocks.brandLimit.current = 3;
+    expect(await createOwnedBrand(OWN as never)).toMatchObject({ ok: false, code: 'brand_limit_reached', limit: 3 });
+    mocks.brandLimit.current = undefined;
+    expect(await createOwnedBrand(OWN as never)).toEqual({ ok: true, conversationId: ids.created, brandId: BRAND });
+    expect(mocks.startConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it('a new conversation over the per-brand limit or on a foreign brand starts nothing', async () => {
+    mocks.conversationLimit.current = 5;
+    expect(await createOwnedConversation(OWN as never, BRAND as never)).toEqual({
+      ok: false, code: 'conversation_limit_reached', limit: 5, message: 'Esta marca llegó al límite de 5 conversaciones.',
+    });
+    expect(await createOwnedConversation(OWN as never, ids.missing as never)).toMatchObject({ ok: false, code: 'brand_not_found' });
     expect(mocks.startConversation).not.toHaveBeenCalled();
   });
 });

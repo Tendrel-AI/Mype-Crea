@@ -13,7 +13,8 @@ import { BriefPanel } from './crea-mype/BriefPanel';
 import { loadBriefAction, updateBriefFieldAction, type BriefPanelField } from '../app/actions/brief';
 import { chatAction } from '../app/actions/chat';
 import { createConversationAction, exportConversationTraceAction, listConversationsAction } from '../app/actions/conversations';
-import type { ConversationListEntry } from '../src/conversations/selection';
+import { archiveBrandAction, createBrandAction } from '../app/actions/brands';
+import type { BrandListEntry, ConversationListEntry } from '../src/conversations/selection';
 import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/actions/deliverable-command';
 import { deliverableFeedbackAction, loadDeliverableFeedbackAction } from '../app/actions/deliverable-feedback';
 import type { FeedbackValue } from '../src/repos/deliverable-feedback';
@@ -50,6 +51,8 @@ interface CreaMypeProps {
   initialError?: string;
   /** KAN-25: the caller's latest conversations for «Mis conversaciones», labelled server-side. */
   initialConversations?: ReadonlyArray<ConversationListEntry>;
+  /** KAN-85: the caller's active brands, to group «Mis conversaciones». */
+  initialBrands?: ReadonlyArray<BrandListEntry>;
   /** KAN-25: the requested id is foreign, missing or malformed (one identical outcome). */
   conversationNotFound?: boolean;
 }
@@ -86,7 +89,7 @@ const EMPTY_ASSETS: BrandAssets = {
   marketingPlan: '',
 };
 
-export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialBrief = [], initialStates = [], landingPageContent, initialError, initialConversations = [], conversationNotFound = false }: CreaMypeProps) {
+export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialBrief = [], initialStates = [], landingPageContent, initialError, initialConversations = [], initialBrands = [], conversationNotFound = false }: CreaMypeProps) {
   const [activeTab, setActiveTab] = useState<'create' | 'gallery' | 'landing'>('create');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
@@ -475,11 +478,12 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     }
   };
 
-  const handleRestart = () => {
+  /** Start a fresh conversation: a new brand («Crear marca») or a new conversation in an existing brand. */
+  const startConversation = (create: () => ReturnType<typeof createBrandAction>) => {
     void (async () => {
       setIsLoading(true);
       try {
-        const result = await createConversationAction();
+        const result = await create();
         if (!result.ok) {
           setConversationError(result.message);
           return;
@@ -503,6 +507,16 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
         setIsLoading(false);
       }
     })();
+  };
+
+  const handleRestart = () => startConversation(createBrandAction);
+  const handleNewConversationInBrand = (brandId: string) => startConversation(() => createConversationAction({ brandId }));
+  const handleArchiveBrand = (brandId: string) => {
+    void archiveBrandAction({ brandId }).then((result) => {
+      // Reload through `/`: it opens the latest remaining conversation, or creates a brand if none is left.
+      if (result.ok) window.location.assign('/');
+      else setConversationError(result.message);
+    });
   };
 
   const handleExportConversation = async () => {
@@ -544,7 +558,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
               {renderTextCommands(LOGO_AGENT_ID, logoView, 'Logo', 'logo')}
             </>
           ) : undefined} conversationNotFound={notFound} liveConnectionLost={liveLost} conversationMenu={
-            <ConversationMenu initialConversations={initialConversations} currentConversationId={conversationId} onNewConversation={() => setShowRestartModal(true)} loadConversations={listConversationsAction} />
+            <ConversationMenu initialConversations={initialConversations} initialBrands={initialBrands} currentConversationId={conversationId} onCreateBrand={() => setShowRestartModal(true)} onNewConversation={handleNewConversationInBrand} onArchiveBrand={handleArchiveBrand} loadConversations={listConversationsAction} />
           } />
           <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
       </>
