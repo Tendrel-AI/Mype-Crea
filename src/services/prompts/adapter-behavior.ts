@@ -30,10 +30,10 @@ function fromFrozen(
     ...(file.schema as object),
     promptVersion: file.version,
     promptTemplate: file.text,
-    // Profile settings come from the execution. The extractor's field list is runtime state, as before:
-    // the execution's list when there is one, else the registry's (the frozen file carries none).
+    // Profile settings come from the execution. The extractor's field list is always the runtime
+    // registry's (the frozen file carries none; the release's list is provenance only).
     ...(fromExecution ? { temperature: fromExecution.temperature, maxTokens: fromExecution.maxTokens } : {}),
-    ...(purpose === 'extractor' ? { fields: execution ? execution.behavior.extractor.fields : base.extractor.fields } : {}),
+    ...(purpose === 'extractor' ? { fields: base.extractor.fields } : {}),
   };
   return { ...base, [purpose]: section } as AdapterBehaviorSnapshot;
 }

@@ -1,8 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  assertSupportedAdapterBehavior,
-  type AdapterBehaviorSnapshot,
-} from './adapter-behavior';
+import type { AdapterBehaviorSnapshot } from './adapter-behavior';
 
 /** JSON value allowed in a portable, non-executable AI configuration manifest. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
@@ -192,12 +189,7 @@ export function validateManifest(input: unknown): AiConfigManifestV1 {
     requiredString(fragmentId, '$.adapterBehavior.responder.promptFragments key', ID);
     requiredString(fragment, `$.adapterBehavior.responder.promptFragments.${fragmentId}`);
   }
-  try {
-    assertSupportedAdapterBehavior(input.adapterBehavior as unknown as AdapterBehaviorSnapshot, 'extractor');
-    assertSupportedAdapterBehavior(input.adapterBehavior as unknown as AdapterBehaviorSnapshot, 'responder');
-  } catch (error) {
-    fail('$.adapterBehavior', error instanceof Error ? error.message : 'unsupported adapter behavior');
-  }
+  // The release's adapterBehavior is provenance only since D22; the runtime gate is in resolveAdapterBehavior.
 
   if (!isRecord(input.agents) || Object.keys(input.agents).length === 0) fail('$.agents', 'full Agent Card content is required');
   for (const [agentId, card] of Object.entries(input.agents)) {

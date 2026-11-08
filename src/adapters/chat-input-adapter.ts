@@ -321,9 +321,6 @@ export class ChatInputAdapter implements InputAdapter {
     // D22: the prompt comes from the frozen file (pinned version, else active); the support gate runs inside.
     const behavior = resolveAdapterBehavior('extractor', promptVersions, currentFields, execution);
     if (execution) assertResolvedModelPurpose(execution.model, 'extractor');
-    if (execution && !frozenFieldsInRegistry(behavior.extractor.fields, currentFields)) {
-      throw new Error('Frozen extractor field schema does not match the runtime agent registry.');
-    }
 
     child.info(
       {
@@ -632,23 +629,6 @@ function adapterFieldsFromOwnership(ownership: Map<string, FieldOwnership>): Ada
       agents: [...entry.agents].sort(),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
-}
-
-/**
- * A pinned release stays usable while every field it froze still exists in
- * the runtime registry with the same hint. The prompt is rendered from the
- * frozen fields (name, required, hint), so the pinned release still defines
- * what the model is asked (KAN-70). Owners and the live required flag only
- * route values and drive the planner, which always use the live registry, so
- * a new card sharing a field (KAN-31 name-agent) does not break old pins. The
- * registry may also declare more fields (KAN-26 added the product fields).
- */
-function frozenFieldsInRegistry(
-  frozen: ReadonlyArray<AdapterFieldBehavior>,
-  current: ReadonlyArray<AdapterFieldBehavior>,
-): boolean {
-  const hints = new Map(current.map((field) => [field.name, field.promptHint]));
-  return frozen.every((field) => hints.get(field.name) === field.promptHint);
 }
 
 function renderExtractorToolSchema(

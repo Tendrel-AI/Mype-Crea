@@ -77,6 +77,13 @@ describe('AI configuration manifest', () => {
     expect(() => validateManifest(missingTemplate)).toThrow(/promptTemplate/);
   });
 
+  it('accepts a release whose adapter-behavior code versions are older than the current code (D22)', () => {
+    const old: any = manifest();
+    old.adapterBehavior.extractor.fastPathVersion = 'extractor.confirm-fast-path.v1';
+    expect(() => validateManifest(old)).not.toThrow();
+    expect(() => freezeManifest(old)).not.toThrow();
+  });
+
   it('rejects secret-bearing fields and never includes them in exports', () => {
     const leaked = manifest() as any; leaked.agents['logo-agent'].apiKey = 'should-not-export';
     expect(() => exportManifest(leaked)).toThrow(/secret-bearing field names/);
