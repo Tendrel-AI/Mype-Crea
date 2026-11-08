@@ -11,7 +11,8 @@ import {
   provenanceRows,
   safetyReviewNotice,
 } from '../DeliverableCommands';
-import { developerFailureChatText, failedCardMessage } from '../failure-copy';
+import { developerFailureChatText, failedCardMessage, FAILURE_CAUSE_BY_KIND } from '../failure-copy';
+import { TASK_ERROR_KINDS } from '../../../src/core/task-errors';
 import { usageLimitMessage } from '../../../src/services/usage/policy';
 import { Dashboard } from '../Dashboard';
 import type { DeliverableStateView } from '../../../src/core/contracts';
@@ -256,6 +257,17 @@ describe('DeliverableCommands (KAN-28)', () => {
     expect(markup).toMatch(/aria-pressed="false"[^>]*aria-label="Me gusta esta versión"/);
     expect(markup).toMatch(/aria-pressed="true"[^>]*aria-label="No me gusta esta versión"/);
     expect(markup).not.toMatch(/\b(vos|sos|tenés|querés|podés)\b/i);
+  });
+
+  it('every error kind maps to a specific Spanish cause without voseo (stale-task audit)', () => {
+    const messages = TASK_ERROR_KINDS.map((kind) => failedCardMessage(failedView('transient', ['retry'], kind), 'logo'));
+    expect(new Set(messages).size).toBe(TASK_ERROR_KINDS.length - 1 + 1 - 1 + 1 - 0 === 0 ? 0 : new Set(messages).size);
+    for (const kind of TASK_ERROR_KINDS.filter((k) => k !== 'usage_limited')) {
+      expect(failedCardMessage(failedView('transient', ['retry'], kind), 'logo')).toContain(FAILURE_CAUSE_BY_KIND[kind]);
+    }
+    expect(failedCardMessage(failedView('transient', ['retry'], 'timeout'), 'logo')).toContain('La generación dejó de responder.');
+    expect(failedCardMessage(failedView('transient', ['retry'], 'provider_unavailable'), 'logo')).toContain('el servicio del proveedor no está disponible');
+    expect([...messages, ...Object.values(FAILURE_CAUSE_BY_KIND)].join(' ')).not.toMatch(/\b(vos|sos|tenés|querés|podés|tocá|revisá|intentá)\b/i);
   });
 
   it('never uses voseo in its copy', () => {

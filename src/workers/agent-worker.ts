@@ -315,6 +315,11 @@ export async function startAgentWorker(
               }
             : {}),
         });
+        if (settled.applied === false) {
+          // The sweep (or Cancelar) already settled the task: drop this late result.
+          child.warn({ status: finalState.status }, `${logScope}.settlement_ignored`);
+          return;
+        }
         deliverableIds = settled.deliverableIds as DeliverableId[];
         durableSettlement = true;
       } catch (err) {

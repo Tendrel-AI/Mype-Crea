@@ -58,6 +58,18 @@ const CATEGORY_BY_KIND: Readonly<Record<TaskErrorKind, TaskErrorCategory>> = {
   usage_limited: 'transient',
 };
 
+/**
+ * A task `in_progress` for longer than this is considered abandoned (the process died mid-generation)
+ * and is failed by the periodic recovery sweep with kind `timeout`. The one place this value lives.
+ */
+export const STALE_IN_PROGRESS_TASK_MS = 10 * 60 * 1000;
+
+/** Error stored on a task the sweep failed. Stable text: never shown to users (failure-copy is). */
+export const STALE_TASK_ERROR = {
+  kind: 'timeout',
+  message: 'The generation stopped responding and was failed by the recovery sweep.',
+} as const;
+
 /** Category for kinds the classifier does not know. Never retried automatically. */
 export const DEFAULT_TASK_ERROR_CATEGORY: TaskErrorCategory = 'permanent_bug';
 

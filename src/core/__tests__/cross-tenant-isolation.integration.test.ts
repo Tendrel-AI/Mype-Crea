@@ -331,7 +331,7 @@ describe('cross-tenant isolation (PostgreSQL integration)', () => {
     // No UPDATE policy applies to app_user here, so the row is invisible to the UPDATE (0 rows) or it is denied.
     const update = await withTenantTransaction(tenantA.tenant, tenantA.user, (tx) =>
       tx.query(`UPDATE tenants SET status = 'active' WHERE id = $1`, [tenantA.tenant.id]),
-    ).catch((error: unknown) => error);
+    ).catch((error: Error) => error);
     if (update instanceof Error) expect(update.message).toMatch(/row-level security|permission denied/);
     else expect(update.rowCount).toBe(0);
   });
