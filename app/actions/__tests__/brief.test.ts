@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => {
   const readPinnedConversation = vi.fn(async () => ({ state: 'pinned' }));
   const repos = vi.fn(() => ({
     writeRejections: { record },
-    conversations: { readPinnedConversation },
+    conversations: { readPinnedConversation, context: vi.fn(async () => undefined) },
     termsAcceptances: { hasAccepted: vi.fn(async (version: string) => acceptedVersions.has(version)) },
     llmCalls: { record: vi.fn(async () => 'fake-llm-call-id') },
     usage: { preflight: vi.fn(async () => ({ allowed: true, reservationId: null })) },

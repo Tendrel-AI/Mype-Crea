@@ -15,6 +15,7 @@ function fields(overrides: Record<string, Partial<BriefPanelField>> = {}): Brief
     status: 'empty',
     value: null,
     source: null,
+    origin: 'conversation',
     ...overrides[spec.name],
   }));
 }
@@ -69,5 +70,18 @@ describe('BriefPanel (KAN-26)', () => {
       <BriefPanel fields={fields({ style_keywords: { status: 'pending_confirmation', value: 'x', source: 'chat' } })} savingField={null} error={null} onSave={onSave} />,
     );
     expect(html).not.toMatch(/\b(vos|sos|querés|tenés|podés|editá|confirmá|guardá)\b/i);
+  });
+
+  it('shows where each value lives: «De la marca» and «Del producto», nothing for conversation-only fields', () => {
+    const html = renderToStaticMarkup(
+      <BriefPanel
+        fields={fields({ business_name: { origin: 'brand' }, product_name: { origin: 'product' } })}
+        savingField={null}
+        error={null}
+        onSave={onSave}
+      />,
+    );
+    expect(html.match(/De la marca/g)).toHaveLength(1);
+    expect(html.match(/Del producto/g)).toHaveLength(1);
   });
 });
