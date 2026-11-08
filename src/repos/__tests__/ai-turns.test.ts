@@ -4,12 +4,14 @@ const mocked = vi.hoisted(() => ({ query: vi.fn() }));
 vi.mock('../../db/with-transaction', () => ({
   withTenantTransaction: async (_tenant: unknown, _user: unknown, work: (tx: { query: typeof mocked.query }) => unknown) =>
     work({ query: mocked.query }),
-  withTenantAdminTransaction: vi.fn(),
+  withTenantAdminTransaction: async (_tenant: unknown, work: (tx: { query: typeof mocked.query }) => unknown) =>
+    work({ query: mocked.query }),
 }));
 
 import type { ConversationId, TaskId } from '../../core/contracts';
 import { parseNotification } from '../../core/contracts/notifications';
-import { aiTurnsRepo } from '../ai-turns';
+import { aiEventsRepo, aiTurnsRepo } from '../ai-turns';
+import { STALE_IN_PROGRESS_TASK_MS } from '../../core/task-errors';
 
 const TENANT = 'tenant-a';
 const USER = 'user-a';
@@ -228,5 +230,52 @@ describe('aiTurnsRepo task settlement artifact parity (KAN-81)', () => {
       expect(calls().some((call) => call.sql.includes('INSERT INTO deliverables'))).toBe(false);
       expect((outboxPayload() as { artifacts: Array<{ url: string }> }).artifacts[0].url).toBe('/api/assets/deliverable-a');
     });
+  });
+});
+
+describe('stale in_progress sweep and late settlement', () => {
+  const MIN = 60_000;
+  /** Fake the sweep's conditional UPDATE: only rows older than the `$2` threshold come back. */
+  function fakeSweep(ageMs: number) {
+    mocked.query.mockReset();
+    mocked.query.mockImplementation(async (sql: string, params: unknown[] = []) => {
+      if (sql.includes('UPDATE agent_tasks t') && sql.includes('SKIP LOCKED')) {
+        return ageMs > Number(params[1])
+          ? { rows: [{ id: TASK, conversation_id: CONVERSATION, agent_id: 'logo-agent', user_id: USER }], rowCount: 1 }
+          : { rows: [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+  }
+
+  it('fails a task stuck 11 minutes with kind timeout / transient and enqueues the task_failed notice', async () => {
+    fakeSweep(11 * MIN);
+    expect(await aiEventsRepo({ id: TENANT }).failStaleInProgress()).toBe(1);
+    const sweep = calls().find((call) => call.sql.includes('SKIP LOCKED'))!;
+    expect(sweep.params[1]).toBe(STALE_IN_PROGRESS_TASK_MS);
+    expect(sweep.params[2]).toBe('transient');
+    expect(JSON.parse(String(sweep.params[3])).kind).toBe('timeout');
+    const notice = parseNotification(outboxPayload());
+    expect(notice).toMatchObject({
+      ok: true,
+      notification: { kind: 'task_failed', taskId: TASK, detail: { errorKind: 'timeout', errorCategory: 'transient' } },
+    });
+  });
+
+  it('leaves a task at 9 minutes untouched', async () => {
+    fakeSweep(9 * MIN);
+    expect(await aiEventsRepo({ id: TENANT }).failStaleInProgress()).toBe(0);
+    expect(calls().some((call) => call.sql.includes('INSERT INTO ai_turn_events'))).toBe(false);
+  });
+
+  it('drops a late completed settlement for a task the sweep already failed', async () => {
+    mocked.query.mockReset();
+    mocked.query.mockImplementation(async (sql: string) =>
+      sql.includes('FOR UPDATE') ? { rows: [{ agent_id: 'logo-agent', status: 'failed' }] } : { rows: [], rowCount: 1 });
+    const settled = await aiTurnsRepo({ id: TENANT }, { id: USER }).settleTaskAndEnqueue({
+      conversationId: CONVERSATION, taskId: TASK, state: 'completed', deliverableKind: 'logo', artifacts: [LOGO_ARTIFACT],
+    });
+    expect(settled).toEqual({ deliverableIds: [], applied: false });
+    expect(calls().some((call) => /INSERT INTO (deliverables|ai_turn_events)|UPDATE agent_tasks/.test(call.sql))).toBe(false);
   });
 });

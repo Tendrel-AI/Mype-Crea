@@ -176,6 +176,8 @@ async function reconcileConfiguredTenantEvents(publisher: RedisClient): Promise<
   await Promise.all(tenantIds.map(async (tenantId) => {
     try {
       const tenantRepositories = systemRepos({ id: tenantId as UUID });
+      const staleFailed = await tenantRepositories.aiEvents?.failStaleInProgress();
+      if (staleFailed) log.warn({ tenantId, staleFailed }, 'orchestrator.runtime.stale_in_progress_tasks_failed');
       await tenantRepositories.aiEvents?.reconcileSettledTasks({ limit: 500 });
       for (const agentId of REDIS_DISPATCH_AGENTS) {
         const republished = await republishPendingDispatches({

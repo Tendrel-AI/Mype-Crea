@@ -10,7 +10,26 @@
  *   only when the failure-disclosure policy allows it (developer mode).
  */
 import type { DeliverableStateView, TaskFailureDetail } from '../../src/core/contracts';
+import { isTaskErrorKind, type TaskErrorKind } from '../../src/core/task-errors';
 import { usageLimitMessage } from '../../src/services/usage/policy';
+
+/**
+ * The cause, in plain words, per error kind. Never exposes provider internals or stack traces.
+ * `usage_limited` is handled before this table (its copy names the exact limit).
+ */
+export const FAILURE_CAUSE_BY_KIND: Readonly<Record<TaskErrorKind, string>> = {
+  provider_unavailable: 'Lo sentimos, el servicio del proveedor no está disponible en este momento. Inténtalo más tarde.',
+  rate_limited: 'El proveedor está recibiendo demasiadas solicitudes. Espera un momento antes de intentarlo de nuevo.',
+  timeout: 'La generación dejó de responder. Puedes intentarlo de nuevo.',
+  storage_unavailable: 'Se generó el resultado, pero no pudimos guardarlo. Puedes intentarlo de nuevo.',
+  content_policy: 'El proveedor rechazó la solicitud por sus políticas de seguridad.',
+  provider_rejected: 'El proveedor rechazó la solicitud.',
+  invalid_output: 'El proveedor no devolvió un resultado utilizable.',
+  config_missing: 'Este servicio no está configurado todavía.',
+  not_implemented: 'Este entregable aún no está disponible.',
+  handler_threw: 'Ocurrió un error inesperado.',
+  usage_limited: 'Alcanzaste un límite de uso. Inténtalo más tarde.',
+};
 
 /** Card copy for a failed deliverable. `label` is a lowercase noun, e.g. "logo". */
 export function failedCardMessage(
@@ -26,17 +45,19 @@ export function failedCardMessage(
     return usageLimitMessage(llm ? 'user_llm_hourly' : 'user_image_daily');
   }
   const base = `No pudimos generar tu ${label}.`;
+  const kind = view.lastFailure?.errorKind;
+  const cause = isTaskErrorKind(kind) ? ` ${FAILURE_CAUSE_BY_KIND[kind]}` : '';
   if (view.allowedCommands.length === 0) {
     // Recovery commands also need a complete brief and approved upstream deliverables.
-    return `${base} Completa la información en el chat para volver a intentarlo.`;
+    return `${base}${cause} Completa la información en el chat para volver a intentarlo.`;
   }
   switch (view.lastFailure?.errorCategory) {
     case 'transient':
-      return `${base} Fue un problema temporal: toca Reintentar.`;
+      return cause ? `${base}${cause} Toca Reintentar.` : `${base} Fue un problema temporal: toca Reintentar.`;
     case 'content_policy':
-      return `${base} Toca Iterar para cambiar lo que pediste, o Reintentar para probar otra vez.`;
+      return `${base}${cause} Toca Iterar para cambiar lo que pediste, o Reintentar para probar otra vez.`;
     default:
-      return `${base} Toca Reintentar para probar otra vez.`;
+      return `${base}${cause} Toca Reintentar para probar otra vez.`;
   }
 }
 

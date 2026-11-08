@@ -28,6 +28,10 @@ import type { AiConfigManifestV1 } from '../services/ai-config/manifest';
 import type { RepositoryActor } from './ai-config';
 import { summarizeUsage } from './usage-summary';
 import { readUsageCounters } from './usage';
+import { classifyTaskError, STALE_IN_PROGRESS_TASK_MS, STALE_TASK_ERROR } from '../core/task-errors';
+import { loggerFor } from '../services/logger';
+
+const log = loggerFor('repo.ai_turns');
 
 interface TurnDbRow {
   readonly id: UUID;
@@ -167,6 +171,23 @@ async function insertTaskNotice(
   );
   return r.rowCount === 1;
 }
+/** Drop the conversation's "dispatched" marker for a settled task (the agent is free again). */
+async function clearDispatchedMarker(
+  tx: TxClient,
+  scope: { readonly tenantId: string; readonly userId: string; readonly conversationId: string },
+  agentId: string,
+  taskId: string,
+): Promise<void> {
+  await tx.query(
+    `UPDATE conversations
+        SET agent_states=jsonb_set(agent_states,
+        ARRAY[$4],(agent_states->$4)-'lastDispatchedTaskId',
+        false)
+        WHERE tenant_id=$1 AND id=$2 AND user_id=$3 AND agent_states->$4->>'lastDispatchedTaskId'=$5`,
+    [scope.tenantId, scope.conversationId, scope.userId, agentId, taskId],
+  );
+}
+
 const TURN_COLUMNS = `id, user_id AS "userId", conversation_id AS "conversationId", request_id AS "requestId", input_hash AS "inputHash", input_content AS "inputContent", response_content AS "responseContent", release_id AS "releaseId", stage, version, payload, failure_category AS "failureCategory", created_at AS "createdAt", updated_at AS "updatedAt"`;
 
 function mapTurn(row: TurnDbRow): AiTurnRow {
@@ -1003,7 +1024,7 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
       /** Classified category for `agent_tasks.error_category` (failed only). */
       errorCategory?: ErrorCategory;
 
-    }): Promise<{ deliverableIds: UUID[] }> {
+    }): Promise<{ deliverableIds: UUID[]; applied: boolean }> {
       return withTenantTransaction(tenant, user, async (tx) => {
         const task = await tx.query<{
           agent_id: string;
@@ -1022,9 +1043,14 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
 
         const priorStatus = task.rows[0].status;
 
-        if (['completed', 'failed'].includes(priorStatus) && priorStatus !== input.state) {
-          throw new Error('La tarea ya tiene un resultado guardado.');
-
+        // A late result (e.g. a worker finishing after the stale sweep failed the task, or after Cancelar)
+        // must neither overwrite the stored outcome nor insert deliverables.
+        if (priorStatus === 'canceled' || (['completed', 'failed'].includes(priorStatus) && priorStatus !== input.state)) {
+          log.warn(
+            { taskId: input.taskId, priorStatus, state: input.state },
+            'ai_turns.settlement_ignored',
+          );
+          return { deliverableIds: [], applied: false };
         }
         const ids: UUID[] = [];
         // What the live notice announces: one fact per stored deliverable, paired with its row.
@@ -1115,13 +1141,11 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
             ],
           );
 
-          await tx.query(
-            `UPDATE conversations
-        SET agent_states=jsonb_set(agent_states,
-        ARRAY[$4],(agent_states->$4)-'lastDispatchedTaskId',
-        false)
-        WHERE tenant_id=$1 AND id=$2 AND user_id=$3 AND agent_states->$4->>'lastDispatchedTaskId'=$5`,
-            [tenant.id, input.conversationId, user.id, task.rows[0].agent_id, input.taskId],
+          await clearDispatchedMarker(
+            tx,
+            { tenantId: tenant.id, userId: user.id, conversationId: input.conversationId },
+            task.rows[0].agent_id,
+            input.taskId,
           );
 
         }
@@ -1139,7 +1163,7 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
           }),
         );
 
-        return { deliverableIds: ids };
+        return { deliverableIds: ids, applied: true };
 
       });
 
@@ -1189,6 +1213,48 @@ export function aiTurnsRepo(tenant: Tenant, user: User, actor?: RepositoryActor)
 
 export function aiEventsRepo(tenant: Tenant) {
   return {
+    /**
+     * Recovery sweep: fail tasks stuck `in_progress` past `olderThanMs` (the process died mid-generation).
+     * One conditional UPDATE picks the rows (`FOR UPDATE SKIP LOCKED`, bounded), so concurrent sweeps never
+     * fail the same task twice. The durable `task_failed` notice is written in the same transaction, so the
+     * open UI flips to the failure card over SSE. No automatic retry. Returns how many tasks it failed.
+     */
+    async failStaleInProgress(input: { olderThanMs?: number; limit?: number } = {}): Promise<number> {
+      const olderThanMs = input.olderThanMs ?? STALE_IN_PROGRESS_TASK_MS;
+      return withTenantAdminTransaction(tenant, async (tx) => {
+        const failed = await tx.query<{ id: TaskId; conversation_id: ConversationId; agent_id: string; user_id: UUID }>(
+          `UPDATE agent_tasks t
+              SET status='failed', completed_at=now(), error_category=$3, error=$4::jsonb
+            FROM conversations c
+            WHERE t.id IN (
+                SELECT id FROM agent_tasks
+                 WHERE tenant_id=$1 AND status='in_progress'
+                   AND last_attempt_at < now() - make_interval(secs => $2::double precision / 1000)
+                 ORDER BY last_attempt_at, id
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT $5)
+              AND c.tenant_id=t.tenant_id AND c.id=t.conversation_id
+            RETURNING t.id, t.conversation_id, t.agent_id, c.user_id`,
+          [tenant.id, olderThanMs, classifyTaskError(STALE_TASK_ERROR), JSON.stringify(STALE_TASK_ERROR),
+            Math.min(Math.max(input.limit ?? 50, 1), 500)],
+        );
+        for (const row of failed.rows) {
+          await tx.query(`SELECT set_config('app.user_id', $1, true)`, [row.user_id]);
+          const scope = { tenantId: tenant.id, userId: row.user_id, conversationId: row.conversation_id };
+          await clearDispatchedMarker(tx, scope, row.agent_id, row.id);
+          await insertTaskNotice(
+            tx,
+            { ...scope, tenantId: tenant.id as UUID },
+            settledTaskNotification({
+              taskId: row.id, agentId: row.agent_id, status: 'failed', errorCategory: classifyTaskError(STALE_TASK_ERROR),
+              error: STALE_TASK_ERROR, deliverableIds: [], artifacts: [],
+            }),
+          );
+          log.warn({ tenantId: tenant.id, taskId: row.id, agentId: row.agent_id }, 'ai_events.stale_task_failed');
+        }
+        return failed.rows.length;
+      });
+    },
     async reconcileSettledTasks(input: { limit?: number } = {}): Promise<number> {
       return withTenantAdminTransaction(tenant, async (tx) => {
         const rows = await tx.query<ReconcileRow>(

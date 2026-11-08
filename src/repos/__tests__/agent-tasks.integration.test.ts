@@ -190,6 +190,37 @@ SUITE('agent_tasks repository (integration)', () => {
     });
   });
 
+  it('sweep fails an in_progress task older than 10 minutes and leaves a fresh one alone', async () => {
+    const conversationId = await newConversation();
+    const sys = systemRepos({ id: tenantId });
+    const mk = async () => {
+      const row = await sys.agentTasks.insertRoot({
+        conversationId, agentId: 'logo-agent', agentCardVersion: '1.0.0', idempotencyKey: randomUUID(), requirementsSnapshot: {},
+      });
+      await sys.agentTasks.claimById(row.id, 'logo-agent');
+      return row.id;
+    };
+    const fresh = await mk();
+    const stale = await mk();
+    // Age the stale claim by backdating last_attempt_at through the owner connection.
+    const admin = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await admin.connect();
+    try {
+      await admin.query(`UPDATE agent_tasks SET last_attempt_at = now() - interval '11 minutes' WHERE id = $1`, [stale]);
+    } finally {
+      await admin.end();
+    }
+    expect(await sys.aiEvents!.failStaleInProgress()).toBeGreaterThanOrEqual(1);
+    expect(await sys.agentTasks.findById(stale)).toMatchObject({ status: 'failed', errorCategory: 'transient', error: { kind: 'timeout' } });
+    expect((await sys.agentTasks.findById(fresh))?.status).toBe('in_progress');
+    // A late worker result is ignored: the failure stays.
+    const late = await repos({ id: tenantId }, { id: userId }).aiTurns.settleTaskAndEnqueue({
+      conversationId, taskId: stale, state: 'completed', deliverableKind: 'logo', artifacts: [],
+    });
+    expect(late.applied).toBe(false);
+    expect((await sys.agentTasks.findById(stale))?.status).toBe('failed');
+  });
+
   it('rejects JSONB writes that embed a UUID not visible under the current tenant', async () => {
     const conversationId = await newConversation();
     const sys = systemRepos({ id: tenantId });
