@@ -50,7 +50,9 @@ const mocks = vi.hoisted(() => {
     return { value, effectiveProfileId: 'profile-1' };
   });
   const childInfo = vi.fn();
+  const baselineCalls = { identity: 0, draft: 0 }; // plain counters: survive vi.clearAllMocks
   return {
+    baselineCalls,
     calls, pin, identity, turn, snapshot, delta, decision, ensurePinnedConversation, claimTurn,
     ensureUserMessage, checkpointTurn, failTurn, completeTurn, listNotices, listTurns,
     repository, repos, startConversation, applyDelta, peekNextDecision, acknowledgeDecisions,
@@ -75,8 +77,16 @@ vi.mock('../../../src/services/ai-config/execution', () => ({
   },
 }));
 vi.mock('../../../src/services/ai-config/baseline', () => ({
-  captureSourceIdentity: async () => ({ codeFingerprint: 'code', dependencyFingerprint: 'deps' }),
-  createBaselineDraft: async () => ({ runtimeCompatibility: { min: '1.0.0', max: '1.0.0' } }),
+  captureRuntimeIdentity: async () => {
+    mocks.baselineCalls.identity += 1;
+    return { runtimeVersion: '1.0.0', codeFingerprint: 'code', dependencyFingerprint: 'deps' };
+  },
+  // Stands in for the registry check that rejects untrusted env models.
+  createBaselineDraft: async () => {
+    mocks.baselineCalls.draft += 1;
+    if (process.env.OPENROUTER_EXTRACTOR_MODEL) throw new Error('model_unsupported');
+    return { runtimeCompatibility: { min: '1.0.0', max: '1.0.0' } };
+  },
 }));
 vi.mock('../../../src/services/ai-config/provider-registry', () => ({ ProviderRegistry: class {} }));
 vi.mock('../../../src/services/logger', () => ({
@@ -318,5 +328,19 @@ describe('chatAction durable turn boundary', () => {
     const invalid = await chatAction({ ...input, requestId: 'bad' });
     expect(invalid).toMatchObject({ ok: false, code: 'invalid_request' });
     expect(mocks.claimTurn).not.toHaveBeenCalled();
+  });
+
+  it('does not validate env model overrides nor re-hash sources per turn', async () => {
+    process.env.OPENROUTER_EXTRACTOR_MODEL = 'google/gemini-2.5-flash-lite';
+    try {
+      const first = await chatAction(input);
+      const second = await chatAction(input);
+      expect(first).toMatchObject({ ok: true });
+      expect(second).toMatchObject({ ok: true });
+      expect(mocks.baselineCalls.draft).toBe(0);
+      expect(mocks.baselineCalls.identity).toBe(1);
+    } finally {
+      delete process.env.OPENROUTER_EXTRACTOR_MODEL;
+    }
   });
 });
