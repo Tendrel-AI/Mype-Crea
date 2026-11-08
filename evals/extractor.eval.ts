@@ -11,13 +11,17 @@ import { expect } from 'vitest';
 import { ChatInputAdapter } from '../src/adapters/chat-input-adapter';
 import { buildDefaultRegistry } from '../src/core/orchestrator/bootstrap-registry';
 import { buildFakeCore } from '../src/core/__tests__/_fixtures/core';
+import { createCurrentAdapterBehaviorSnapshot } from '../src/services/ai-config/adapter-behavior';
 import { getProvider } from '../src/services/llm';
 import { evalModelProfile } from '../src/services/llm/eval-model-profile';
 import { EVAL_CONVERSATION_ID, evalLlmContext } from './_support/context';
+import { recordEvalCase } from './_support/ledger';
 import { EXTRACTOR_DATASET_VERSION, extractorCases } from './datasets/extractor';
-import { flattenDeltaFields, scoreExtraction } from './evaluators/extractor';
+import { flattenDeltaFields, scoreExtraction, type Feedback } from './evaluators/extractor';
 
 const adapter = new ChatInputAdapter(buildFakeCore(), buildDefaultRegistry());
+
+const extractorVersion = createCurrentAdapterBehaviorSnapshot().extractor.promptVersion;
 
 ls.describe(
   'mypes-extractor',
@@ -27,18 +31,28 @@ ls.describe(
         c.id,
         { inputs: c.inputs, referenceOutputs: c.expected, metadata: { tags: c.tags } },
         async ({ inputs }) => {
-          const delta = await adapter.extract({
-            conversationId: EVAL_CONVERSATION_ID,
-            userMessage: inputs.userMessage,
-            priorDecision: inputs.priorDecision,
-            llmContext: evalLlmContext,
-          });
+          let feedback: ReadonlyArray<Feedback> = [];
+          let error: unknown;
+          try {
+            const delta = await adapter.extract({
+              conversationId: EVAL_CONVERSATION_ID,
+              userMessage: inputs.userMessage,
+              priorDecision: inputs.priorDecision,
+              llmContext: evalLlmContext,
+            });
 
-          const { pass, feedback } = scoreExtraction(delta, c.expected);
-          for (const f of feedback) ls.logFeedback(f);
-          ls.logOutputs({ fields: flattenDeltaFields(delta), intents: delta.intents ?? [] });
+            const scored = scoreExtraction(delta, c.expected);
+            feedback = scored.feedback;
+            for (const f of feedback) ls.logFeedback(f);
+            ls.logOutputs({ fields: flattenDeltaFields(delta), intents: delta.intents ?? [] });
 
-          expect(pass, feedback.filter((f) => f.score < 1).map((f) => `${f.key}=${f.score.toFixed(2)} ${f.comment ?? ''}`).join(' | ')).toBe(true);
+            expect(scored.pass, feedback.filter((f) => f.score < 1).map((f) => `${f.key}=${f.score.toFixed(2)} ${f.comment ?? ''}`).join(' | ')).toBe(true);
+          } catch (e) {
+            error = e;
+            throw e;
+          } finally {
+            await recordEvalCase({ key: 'extractor', version: extractorVersion, caseId: c.id, feedback, error });
+          }
         },
       );
     }
