@@ -16,11 +16,8 @@ import {
   freezeSharedAiDraft,
   getAiTurnTrace,
   importAiConfigDraft,
-  importSharedAiPrompt,
-  publishSharedAiPrompt,
   retireAiConfigRelease,
   retireSharedAiRelease,
-  retrySharedAiPrompt,
   setAiProviderAvailability,
   updateAiConfigDraft,
   updateSharedAiDraft,
@@ -77,8 +74,6 @@ export default function AiConfigurationAdmin({ initialData }: { initialData: Rec
   const [details, setDetails] = useState('');
   const [importText, setImportText] = useState('');
   const [importBaseId, setImportBaseId] = useState(data.sharedReleases.find((release) => release.status === 'frozen')?.id ?? '');
-  const [promptReference, setPromptReference] = useState('');
-  const [promptCommit, setPromptCommit] = useState('');
   const [traceId, setTraceId] = useState('');
   const [providerEnabled, setProviderEnabled] = useState<Record<string, boolean>>(() => Object.fromEntries(data.providers.map((item) => [item.provider, item.enabled])));
   const selected = allReleases.find((release) => release.id === selectedId);
@@ -167,7 +162,6 @@ export default function AiConfigurationAdmin({ initialData }: { initialData: Rec
             {selected?.status === 'frozen' && selected && canManageSelected && <button className="rounded-md border border-red-300 px-3 py-2 text-sm text-red-700" onClick={() => void run(() => selectedIsShared ? retireSharedAiRelease({ releaseId: selected.id, expectedVersion: selected.draftVersion }) : retireAiConfigRelease({ releaseId: selected.id, expectedVersion: selected.draftVersion }), 'Release retirado.')}>Retirar</button>}
             {selected && !selectedIsShared && <button className="rounded-md border px-3 py-2 text-sm" onClick={async () => { const result = await exportAiConfigRelease(selected.id); if (result.ok && typeof result.data === 'string') downloadJson(selected.name, result.data); else setNotice(result.error ?? 'No se pudo exportar.'); }}>Descargar JSON</button>}
             {selectedIsShared && selected && data.platformAdmin && isAdmin && <button className="rounded-md border px-3 py-2 text-sm" onClick={async () => { const result = await exportSharedAiConfigRelease(selected.id); if (result.ok && typeof result.data === 'string') downloadJson(selected.name, result.data); else setNotice(result.error ?? 'No se pudo exportar.'); }}>Exportar compartido</button>}
-            {selectedIsShared && selected?.status === 'frozen' && data.platformAdmin && isAdmin && <button className="rounded-md border px-3 py-2 text-sm" onClick={() => void run(() => publishSharedAiPrompt(selected.id), 'Prompt privado publicado con commit fijado.', (value) => JSON.stringify(value, null, 2))}>Publicar plantilla privada</button>}
           </div>
           {isAdmin && selected?.status === 'frozen' && selectedIsShared && <button className="rounded-md border px-3 py-2 text-sm" onClick={() => void run(() => createAiConfigDraft({ name: `${selected.name} · personalización`, manifest: selected.manifest, baseSharedReleaseId: selected.id }), 'Borrador derivado creado.')}>Crear personalización permitida</button>}
         </div>
@@ -175,6 +169,7 @@ export default function AiConfigurationAdmin({ initialData }: { initialData: Rec
         <aside className="space-y-5">
           {(isAdmin || data.platformAdmin) && <section className="space-y-3 rounded-xl border bg-white p-5 shadow-sm">
             <h2 className="font-semibold">Catálogo y activación</h2>
+            <p className="text-xs text-slate-500">Los prompts los gestiona el equipo de desarrollo; aquí solo se configuran modelos y respaldos.</p>
             <p className="text-sm text-slate-600">Release activo para conversaciones nuevas: {data.activation?.releaseId ?? 'ninguno'}.</p>
             <p className="text-xs text-slate-500">Cambiar la activación no modifica conversaciones que ya tienen una versión fijada.</p>
             {data.platformAdmin && <button className="w-full rounded-md border px-3 py-2 text-sm" onClick={() => void run(() => createSharedAiBaseline(`Baseline ${new Date().toISOString().slice(0, 10)}`), 'Borrador base compartido creado.')}>Capturar borrador base de plataforma</button>}
@@ -188,14 +183,6 @@ export default function AiConfigurationAdmin({ initialData }: { initialData: Rec
             <label className="block text-sm">Release compartido de origen<select className="mt-1 w-full rounded-md border p-2" value={importBaseId} onChange={(event) => setImportBaseId(event.target.value)}>{data.sharedReleases.filter((release) => release.status === 'frozen').map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></label>
             <button disabled={!importBaseId} className="rounded-md border px-3 py-2 text-sm disabled:opacity-50" onClick={() => void run(() => importAiConfigDraft({ name: releaseName || 'Importación', serialized: importText, baseSharedReleaseId: importBaseId }), 'Importación validada como borrador.')}>Importar sobre release compartido congelado</button>
             <p className="text-xs text-slate-500">La importación queda como datos inertes en un borrador. No ejecuta código ni selecciona credenciales.</p>
-          </section>}
-
-          {isAdmin && data.platformAdmin && <section className="space-y-3 rounded-xl border bg-white p-5 shadow-sm">
-            <h2 className="font-semibold">Importar plantilla LangSmith fijada</h2>
-            <input className="w-full rounded-md border p-2 text-sm" value={promptReference} onChange={(event) => setPromptReference(event.target.value)} placeholder="mypes-ai-config-&lt;hash SHA-256&gt;" aria-label="Identificador privado de prompt" />
-            <input className="w-full rounded-md border p-2 font-mono text-sm" value={promptCommit} onChange={(event) => setPromptCommit(event.target.value)} placeholder="Commit hexadecimal explícito" aria-label="Commit de LangSmith" />
-            <button disabled={!promptReference || !promptCommit} className="rounded-md border px-3 py-2 text-sm disabled:opacity-50" onClick={() => void run(() => importSharedAiPrompt({ name: releaseName || 'Importación LangSmith', prompt: promptReference, commit: promptCommit }), 'Plantilla importada como borrador validado.')}>Importar como borrador</button>
-            <p className="text-xs text-slate-500">Solo se consultan prompts privados con nombre de contenido y commit explícitos. No se cargan objetos ejecutables ni se activa el borrador.</p>
           </section>}
 
           {isAdmin && <section className="space-y-3 rounded-xl border bg-white p-5 shadow-sm">
@@ -228,7 +215,7 @@ export default function AiConfigurationAdmin({ initialData }: { initialData: Rec
             <p className="text-xs text-slate-500">El presupuesto se cuenta por mes calendario (hora de Lima) y se verifica antes de cada llamada a modelos e imágenes. Los costos desconocidos no se estiman ni se convierten en cero.</p>
           </> : <p className="text-sm">Sin resumen de uso disponible.</p>}
         </div>
-        <div className="space-y-3 rounded-xl border bg-white p-5 shadow-sm"><h2 className="font-semibold">Auditoría y sincronización</h2><p className="text-sm text-slate-600">La exportación local prepara un JSON descargable. La sincronización usa contenido de configuración privado y solo se ejecuta al elegir Publicar o Importar; no hay consultas automáticas.</p><div className="space-y-2">{data.syncEvents.map((event, index) => <div key={`${String(event.operationId)}-${String(event.status)}-${index}`} className="rounded bg-slate-50 p-2 text-xs"><p>{String(event.destination)} · {String(event.action)} · {String(event.status)} · {event.pinnedCommit ? `commit ${String(event.pinnedCommit)}` : 'sin commit fijado'}</p>{event.status === 'failed' && event.destination === 'langsmith' && ['prompt_publish', 'retry'].includes(String(event.action)) && selectedIsShared && selected?.status === 'frozen' && data.platformAdmin && isAdmin && event.contentHash === selected.contentHash && <button className="mt-2 rounded border px-2 py-1" onClick={() => void run(() => retrySharedAiPrompt({ releaseId: selected.id, parentOperationId: String(event.operationId) }), 'Reintento registrado con referencia al intento anterior.')}>Reintentar</button>}</div>)}</div></div>
+        <div className="space-y-3 rounded-xl border bg-white p-5 shadow-sm"><h2 className="font-semibold">Auditoría y sincronización</h2><p className="text-sm text-slate-600">La exportación local prepara un JSON descargable. Se muestra el historial existente de solo lectura.</p><div className="space-y-2">{data.syncEvents.map((event, index) => <div key={`${String(event.operationId)}-${String(event.status)}-${index}`} className="rounded bg-slate-50 p-2 text-xs"><p>{String(event.destination)} · {String(event.action)} · {String(event.status)} · {event.pinnedCommit ? `commit ${String(event.pinnedCommit)}` : 'sin commit fijado'}</p></div>)}</div></div>
       </section>
 
       {isAdmin && <section className="space-y-3 rounded-xl border bg-white p-5 shadow-sm"><h2 className="font-semibold">Trazas de esta organización</h2><div className="flex gap-2"><select className="min-w-0 flex-1 rounded-md border p-2 text-sm" value={traceId} onChange={(event) => setTraceId(event.target.value)}><option value="">Selecciona un turno</option>{data.turns.map((turn) => <option key={turn.id} value={turn.id}>{turn.createdAt} · {turn.stage}{turn.failureCategory ? ` · ${turn.failureCategory}` : ''}</option>)}</select><button disabled={!traceId} className="rounded-md border px-3 py-2 text-sm disabled:opacity-50" onClick={() => void run(() => getAiTurnTrace(traceId), 'Traza cargada.', (value) => JSON.stringify(value, null, 2))}>Ver</button><button disabled={!traceId} className="rounded-md border px-3 py-2 text-sm disabled:opacity-50" onClick={async () => { const result = await exportAiTurnTrace(traceId); if (result.ok && result.data) downloadJson(`traza-${traceId}`, result.data); else setNotice(result.error ?? 'No se pudo exportar.'); }}>Exportar</button><button disabled={!traceId} className="rounded-md border px-3 py-2 text-sm disabled:opacity-50" title="Descargar la conversación completa de este turno y sus registros" onClick={async () => { const conversationId = data.turns.find((turn) => turn.id === traceId)?.conversationId; if (!conversationId) return; const result = await exportConversationTraceAction({ conversationId }); if (result.ok) downloadJson(`conversacion-${conversationId}`, result.content); else setNotice(result.message); }}>Exportar conversación</button><button disabled={!traceId} className="rounded-md border border-red-300 px-3 py-2 text-sm text-red-700 disabled:opacity-50" onClick={() => { if (window.confirm('Se borrará el contenido de entrada, respuesta y solicitudes de proveedor. Los datos de uso y auditoría permanecerán. Esta acción no se puede deshacer.')) void run(() => deleteAiTurnTraceContent(traceId), 'Se eliminó el contenido de la traza. Los metadatos y el registro de uso permanecen.'); }}>Eliminar contenido</button></div></section>}
