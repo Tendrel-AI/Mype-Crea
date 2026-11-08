@@ -17,6 +17,9 @@ vi.mock('../../app/actions/conversations', () => ({
 vi.mock('../../app/actions/deliverable-command', () => ({
   deliverableCommandAction: vi.fn(), loadDeliverableStatesAction: vi.fn(),
 }));
+vi.mock('../../app/actions/deliverable-feedback', () => ({
+  deliverableFeedbackAction: vi.fn(), loadDeliverableFeedbackAction: vi.fn(async () => ({ ok: true, feedback: {} })),
+}));
 
 import CreaMype from '../CreaMype';
 import { briefPanelFields } from '../../src/conversations/brief-panel';

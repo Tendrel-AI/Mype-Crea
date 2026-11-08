@@ -247,6 +247,17 @@ describe('DeliverableCommands (KAN-28)', () => {
     );
   });
 
+  it('F13: each approvable candidate shows pressable thumbs only when feedback is wired', () => {
+    const v = view({ state: 'in_review', candidates: [candidate(1)] });
+    expect(render(v)).not.toContain('Me gusta esta versión');
+    const markup = renderToStaticMarkup(
+      <DeliverableCommands view={v} label="logo" busy={false} error="" onCommand={noop} onFeedback={noop} feedback={{ [candidate(1).deliverableId]: 'down' }} />,
+    );
+    expect(markup).toMatch(/aria-pressed="false"[^>]*aria-label="Me gusta esta versión"/);
+    expect(markup).toMatch(/aria-pressed="true"[^>]*aria-label="No me gusta esta versión"/);
+    expect(markup).not.toMatch(/\b(vos|sos|tenés|querés|podés)\b/i);
+  });
+
   it('never uses voseo in its copy', () => {
     const all = [
       render(view({ state: 'blocked' })),

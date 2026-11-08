@@ -49,9 +49,14 @@ describe('PostgresLedgerStore', () => {
     await expect(new PostgresLedgerStore(fakeDb().db).insertRun({ ...run, kind: 'production' }, [], [])).rejects.toThrow(/llm_calls/);
   });
 
-  it('feedback: upsert throws until step 4, list is empty', async () => {
-    const store = new PostgresLedgerStore(fakeDb().db);
-    await expect(store.upsertFeedback({} as never)).rejects.toThrow(/step 4/);
-    expect(await store.listFeedback('k', 'v')).toEqual([]);
+  it('maps app.prompt_ledger_feedback rows to Feedback and refuses to write it', async () => {
+    const { db } = fakeDb();
+    const query = vi.fn(async () => ({ rows: [{ subject_id: 'd1', rater_hash: 'abc', value: 'up', updated_at: new Date('2026-01-01T00:00:00Z') }] }));
+    const store = new PostgresLedgerStore({ ...db, query } as unknown as TransactionalQueryable);
+    expect(await store.listFeedback('logo-agent', 'logo-agent.v1')).toEqual([
+      { subjectId: 'd1', raterId: 'abc', key: 'logo-agent', version: 'logo-agent.v1', value: 'up', at: '2026-01-01T00:00:00.000Z' },
+    ]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('app.prompt_ledger_feedback'), ['logo-agent.v1']);
+    await expect(store.upsertFeedback({} as never)).rejects.toThrow(/only by the app/);
   });
 });

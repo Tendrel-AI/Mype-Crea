@@ -94,13 +94,12 @@ export class PostgresLedgerStore implements LedgerStore {
   }
 
   async upsertFeedback(_fb: Feedback): Promise<void> {
-    // shortcut: feedback storage arrives in step 4; fail loudly instead of dropping data.
-    throw new Error('Feedback storage is not available until step 4');
+    throw new Error('Feedback is written only by the app through repos (deliverableFeedback), never through the ledger');
   }
 
-  async listFeedback(_key: string, _version: string): Promise<Feedback[]> {
-    // shortcut: no feedback table until step 4, so there is nothing to list.
-    return [];
+  async listFeedback(key: string, version: string): Promise<Feedback[]> {
+    const { rows } = await this.db.query(`SELECT * FROM app.prompt_ledger_feedback($1)`, [version]);
+    return rows.map((r) => ({ subjectId: r.subject_id, raterId: r.rater_hash, key, version, value: r.value, at: iso(r.updated_at) }));
   }
 
   async listRuns(key: string, version: string, kind?: RunKind): Promise<Run[]> {

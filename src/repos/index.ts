@@ -12,6 +12,7 @@ import { refinementsRepo, type RefinementsRepo } from './refinements';
 import { conversationsRepo, type ConversationsRepo } from './conversations';
 import { conversationTraceRepo, type ConversationTraceRepo } from './conversation-trace';
 import { deliverablesRepo, type DeliverablesRepo } from './deliverables';
+import { deliverableFeedbackRepo, type DeliverableFeedbackRepo } from './deliverable-feedback';
 import { llmCallsRepo, type LlmCallsRepo } from './llm-calls';
 import { identityRepo, type IdentityRepo } from './identity';
 import { aiConfigRepo, type AiConfigRepo, type RepositoryActor } from './ai-config';
@@ -28,6 +29,7 @@ export interface Repos {
   readonly messages: MessagesRepo;
   readonly agentTasks: AgentTasksRepo;
   readonly deliverables: DeliverablesRepo;
+  readonly deliverableFeedback: DeliverableFeedbackRepo;
   readonly llmCalls: LlmCallsRepo;
   readonly aiConfig: AiConfigRepo;
   readonly aiTurns: AiTurnsRepo;
@@ -46,6 +48,7 @@ export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repo
     messages: messagesRepo(tenant, user),
     agentTasks: agentTasksRepo(tenant),
     deliverables: deliverablesRepo(tenant, user),
+    deliverableFeedback: deliverableFeedbackRepo(tenant, user),
     llmCalls: llmCallsRepo(tenant, user),
     aiConfig: aiConfigRepo(tenant, user, actor),
     aiTurns: aiTurnsRepo(tenant, user, actor),
