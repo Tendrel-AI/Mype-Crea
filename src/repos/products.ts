@@ -1,9 +1,19 @@
 /**
- * KAN-85 products. Each product belongs to one of the caller's ACTIVE brands; a foreign, missing or
- * archived brand yields `brand_not_found`. Owner-only by RLS plus the explicit predicates below.
+ * KAN-85 / KAN-87 products. Each product belongs to one of the caller's ACTIVE brands; a foreign,
+ * missing or archived brand yields `brand_not_found`. Owner-only by RLS plus the explicit predicates below.
+ * Creation is limited per brand (`tenants.max_products_per_brand`): the owner's active brand row is
+ * locked FOR UPDATE, its products are counted, and over the limit a typed refusal comes back.
+ * With `firstConversation` the product's first conversation is pinned in the same transaction.
  */
 import type { UUID } from '../core/contracts';
+import type { AiConversationPin } from './models';
 import { withTenantTransaction, type Tenant, type User } from '../db/with-transaction';
+import { loggerFor } from '../services/logger';
+import { updateAttributesInTx, type AttributePatch } from './attributes';
+import { readLimits, type BrandNotFound, type FirstConversation, type InvalidAttributes } from './brands';
+import { pinConversationInTx } from './conversations';
+
+const log = loggerFor('repos.products');
 
 export interface ProductRow {
   readonly id: UUID;
@@ -13,11 +23,19 @@ export interface ProductRow {
   readonly createdAt: string;
 }
 
+export type ProductLimitRefusal = { readonly ok: false; readonly code: 'product_limit_reached'; readonly limit: number };
+type ProductNotFound = { readonly ok: false; readonly code: 'product_not_found' };
+
 export interface ProductsRepo {
-  create(input: { brandId: UUID; name?: string | null; attributes?: Record<string, unknown> }):
-    Promise<{ ok: true; product: ProductRow } | { ok: false; code: 'brand_not_found' }>;
+  /** `name` and `attributes` must already be validated (`validateAttributes('product', …)`). */
+  create(input: { brandId: UUID; name?: string | null; attributes?: Record<string, unknown>; firstConversation?: FirstConversation }):
+    Promise<{ ok: true; product: ProductRow; pin?: AiConversationPin } | BrandNotFound | ProductLimitRefusal>;
+  get(productId: UUID): Promise<ProductRow | null>;
+  update(productId: UUID, patch: AttributePatch): Promise<{ ok: true; name: string | null } | ProductNotFound | InvalidAttributes>;
   /** Newest first; empty for a foreign or missing brand. */
   listByBrand(brandId: UUID): Promise<ProductRow[]>;
+  /** Every product of the caller's active brands, oldest first. */
+  listActive(): Promise<ProductRow[]>;
 }
 
 interface ProductRowDb {
@@ -36,15 +54,52 @@ export function productsRepo(tenant: Tenant, user: User): ProductsRepo {
   return {
     async create(input) {
       return withTenantTransaction(tenant, user, async (tx) => {
+        const brand = await tx.query(
+          `SELECT id FROM brands WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active' FOR UPDATE`,
+          [input.brandId, tenant.id, user.id],
+        );
+        if (brand.rows.length === 0) return { ok: false, code: 'brand_not_found' } as const;
+        const { maxProductsPerBrand } = await readLimits(tx, tenant);
+        const count = await tx.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM products WHERE tenant_id = $1 AND brand_id = $2`,
+          [tenant.id, input.brandId],
+        );
+        if ((count.rows[0]?.n ?? 0) >= maxProductsPerBrand) {
+          log.info({ tenantId: tenant.id, brandId: input.brandId, limit: maxProductsPerBrand }, 'products.create.limit_reached');
+          return { ok: false, code: 'product_limit_reached', limit: maxProductsPerBrand } as const;
+        }
         const res = await tx.query<ProductRowDb>(
           `INSERT INTO products (tenant_id, brand_id, user_id, name, attributes)
-           SELECT b.tenant_id, b.id, b.user_id, $4, $5::jsonb
-             FROM brands b
-            WHERE b.id = $1 AND b.tenant_id = $2 AND b.user_id = $3 AND b.status = 'active'
+           VALUES ($1, $2, $3, $4, $5::jsonb)
            RETURNING id, brand_id, name, attributes, created_at`,
-          [input.brandId, tenant.id, user.id, input.name ?? null, JSON.stringify(input.attributes ?? {})],
+          [tenant.id, input.brandId, user.id, input.name ?? null, JSON.stringify(input.attributes ?? {})],
         );
-        return res.rows[0] ? { ok: true, product: toRow(res.rows[0]) } as const : { ok: false, code: 'brand_not_found' } as const;
+        const product = toRow(res.rows[0]);
+        log.debug({ tenantId: tenant.id, brandId: input.brandId, productId: product.id }, 'products.create.ok');
+        if (!input.firstConversation) return { ok: true, product } as const;
+        // Same transaction: if the conversation cannot be pinned, the product is not created either.
+        const pin = await pinConversationInTx(tx, tenant, user, input.firstConversation, input.brandId, product.id);
+        return { ok: true, product, pin } as const;
+      });
+    },
+
+    async get(productId) {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<ProductRowDb>(
+          `SELECT p.id, p.brand_id, p.name, p.attributes, p.created_at FROM products p
+             JOIN brands b ON b.tenant_id = p.tenant_id AND b.id = p.brand_id AND b.status = 'active'
+            WHERE p.id = $1 AND p.tenant_id = $2 AND p.user_id = $3`,
+          [productId, tenant.id, user.id],
+        );
+        return res.rows[0] ? toRow(res.rows[0]) : null;
+      });
+    },
+
+    async update(productId, patch) {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const result = await updateAttributesInTx(tx, { level: 'product', id: productId, tenantId: tenant.id, userId: user.id, patch });
+        if (result.ok) return { ok: true, name: result.name } as const;
+        return result.code === 'not_found' ? { ok: false, code: 'product_not_found' } as const : result;
       });
     },
 
@@ -55,6 +110,19 @@ export function productsRepo(tenant: Tenant, user: User): ProductsRepo {
             WHERE tenant_id = $1 AND user_id = $2 AND brand_id = $3
             ORDER BY created_at DESC, id DESC`,
           [tenant.id, user.id, brandId],
+        );
+        return res.rows.map(toRow);
+      });
+    },
+
+    async listActive() {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<ProductRowDb>(
+          `SELECT p.id, p.brand_id, p.name, p.attributes, p.created_at FROM products p
+             JOIN brands b ON b.tenant_id = p.tenant_id AND b.id = p.brand_id AND b.status = 'active'
+            WHERE p.tenant_id = $1 AND p.user_id = $2
+            ORDER BY p.created_at, p.id`,
+          [tenant.id, user.id],
         );
         return res.rows.map(toRow);
       });

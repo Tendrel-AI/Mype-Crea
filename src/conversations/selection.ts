@@ -14,6 +14,7 @@ import { buildDefaultRegistry } from '../core/orchestrator/bootstrap-registry';
 import { getOrchestrator } from '../core/orchestrator/runtime';
 import type { ConversationId, DeliverableStateView, UUID } from '../core/contracts';
 import { clientDeliverableUrl } from '../core/deliverable-url';
+import { IMPORTED_KEY, entityName, validateAttributes } from '../core/brand-catalog';
 import { loggerFor } from '../services/logger';
 import { conversationListLabel } from './label';
 import { briefPanelFields, type BriefPanelField } from './brief-panel';
@@ -27,19 +28,48 @@ export const CONVERSATIONS_UNAVAILABLE_MESSAGE = 'No pudimos cargar tus conversa
 
 export const brandLimitMessage = (limit: number) =>
   `Llegaste al límite de ${limit} marcas de tu organización. Archiva una marca o pide a tu administrador que lo aumente.`;
-export const conversationLimitMessage = (limit: number) => `Esta marca llegó al límite de ${limit} conversaciones.`;
+export const productLimitMessage = (limit: number) =>
+  `Esta marca llegó al límite de ${limit} productos. Pide a tu administrador que lo aumente.`;
 export const BRAND_NOT_FOUND_MESSAGE = 'No encontramos esta marca.';
+export const PRODUCT_NOT_FOUND_MESSAGE = 'No encontramos este producto.';
+export const INVALID_FIELDS_MESSAGE = 'Revisa los campos marcados.';
+
+export interface ProductListEntry {
+  readonly productId: UUID;
+  readonly name: string | null;
+}
 
 /** A brand in «Mis conversaciones»; `name` is null until the brief names the business. */
 export interface BrandListEntry {
   readonly brandId: UUID;
   readonly name: string | null;
+  readonly products: ReadonlyArray<ProductListEntry>;
+}
+
+/** KAN-87: the brand and product a conversation belongs to, for the chat header. Null brand = legacy conversation. */
+export interface ConversationContext {
+  readonly brandId: UUID | null;
+  readonly brandName: string | null;
+  readonly productId: UUID | null;
+  readonly productName: string | null;
+}
+
+/** KAN-87: an uploaded logo/asset as the forms list it; `url` is the authorized route. */
+export interface BrandFileView {
+  readonly id: UUID;
+  readonly kind: 'logo' | 'asset';
+  readonly productId: UUID | null;
+  readonly originalName: string;
+  readonly byteSize: number;
+  readonly url: string;
 }
 
 export interface ConversationListEntry {
   readonly conversationId: ConversationId;
   /** KAN-85: null for conversations created before brands existed. */
   readonly brandId: UUID | null;
+  /** KAN-87: the product the conversation belongs to, when any. */
+  readonly productId: UUID | null;
   /** «Café Andino · 24 oct» / «Nueva conversación · 24 oct». */
   readonly label: string;
   readonly lastActivityAt: string;
@@ -47,6 +77,8 @@ export interface ConversationListEntry {
 
 export interface ConversationHistory {
   readonly conversationId: ConversationId;
+  /** KAN-87: brand/product of the conversation; null when it could not be read. */
+  readonly context: ConversationContext | null;
   readonly turns: ReadonlyArray<{
     readonly requestId: UUID;
     readonly userMessage: string | null;
@@ -81,17 +113,21 @@ export type OwnedConversationLoad =
   | { readonly state: 'legacy_unversioned' };
 
 export type NewOwnedConversation =
-  | { readonly ok: true; readonly conversationId: ConversationId; readonly brandId: UUID }
+  | { readonly ok: true; readonly conversationId: ConversationId; readonly brandId: UUID; readonly productId: UUID | null; readonly context: ConversationContext }
   | {
       readonly ok: false;
-      readonly code: 'brand_limit_reached' | 'conversation_limit_reached' | 'brand_not_found' | 'configuration_unavailable';
+      readonly code: 'brand_limit_reached' | 'product_limit_reached' | 'brand_not_found' | 'product_not_found' | 'invalid_input' | 'configuration_unavailable';
       readonly message: string;
       readonly limit?: number;
+      /** `invalid_input`: Spanish error per catalog key (`_form` for whole-object errors). */
+      readonly fieldErrors?: Record<string, string>;
     };
 
 /** What `/` shows. `redirect` keeps the selected id in the URL so a reload reopens it. */
 export type HomeConversationResult =
-  | { readonly kind: 'redirect'; readonly conversationId: ConversationId; readonly created: boolean }
+  | { readonly kind: 'redirect'; readonly conversationId: ConversationId }
+  /** KAN-87: the user has no conversation yet; the page offers «Crear marca» / «Ya tengo una marca». */
+  | { readonly kind: 'empty'; readonly brands: ReadonlyArray<BrandListEntry> }
   | {
       readonly kind: 'open';
       readonly history: ConversationHistory;
@@ -124,6 +160,7 @@ export async function listOwnedConversations(
   return rows.map((row) => ({
     conversationId: row.conversationId,
     brandId: row.brandId ?? null,
+    productId: row.productId ?? null,
     label: conversationListLabel(row),
     lastActivityAt: row.lastActivityAt,
   }));
@@ -131,13 +168,18 @@ export async function listOwnedConversations(
 
 /** The owner's active brands, named by the brand or by its newest conversation's business name. */
 export async function listOwnedBrands(identity: ResolvedIdentity): Promise<BrandListEntry[]> {
-  const rows = await repository(identity).brands.listActive();
-  return rows.map((row) => ({ brandId: row.id, name: row.name }));
+  const owned = repository(identity);
+  const [rows, products] = await Promise.all([owned.brands.listActive(), owned.products.listActive()]);
+  return rows.map((row) => ({
+    brandId: row.id,
+    name: row.name,
+    products: products.filter((p) => p.brandId === row.id).map((p) => ({ productId: p.id, name: p.name })),
+  }));
 }
 
 /**
  * Load the owner's durable trace. Foreign and missing ids are both `not_found`.
- * // shortcut: a conversation of an archived brand still opens by direct URL (it only leaves the list); revisit if archived brands must be read-only.
+ * Note: a conversation of an archived brand leaves the list but still opens by direct URL (not read-only).
  */
 export async function loadOwnedConversation(
   identity: ResolvedIdentity,
@@ -151,10 +193,12 @@ export async function loadOwnedConversation(
   const turns = await owned.aiTurns.listTurns(conversationId);
   const deliverables = await owned.deliverables.listByConversation(conversationId);
   const states = await deliverableStates(identity, conversationId);
+  const context = (await owned.conversations.context(conversationId)) ?? null;
   return {
     state: 'loaded',
     history: {
       conversationId,
+      context,
       turns: await Promise.all(turns.map(async (turn) => ({
         requestId: turn.requestId,
         userMessage: turn.inputContent,
@@ -196,50 +240,105 @@ async function startPinned(identity: ResolvedIdentity, conversationId: Conversat
   await getOrchestrator().startConversation(conversationId, identity.tenant.id as UUID, identity.user.id as UUID);
 }
 
+/** What the client may send: never the server-owned `imported` flag. */
+export function stripServerFlags(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
+  const { [IMPORTED_KEY]: _server, ...rest } = raw as Record<string, unknown>;
+  return rest;
+}
+
+/** The refusal for invalid attributes: per-field errors, nothing written. */
+export function invalidFields(errors: Record<string, string>) {
+  return { ok: false, code: 'invalid_input', message: INVALID_FIELDS_MESSAGE, fieldErrors: errors } as const;
+}
+
+async function startedConversation(
+  identity: ResolvedIdentity,
+  conversationId: ConversationId,
+  brandId: UUID,
+  productId: UUID | null,
+  pin: { state: string } | undefined,
+): Promise<NewOwnedConversation> {
+  if (pin?.state !== 'pinned') return { ok: false, code: 'configuration_unavailable', message: NEW_CONVERSATION_UNAVAILABLE_MESSAGE };
+  await startPinned(identity, conversationId);
+  const context = (await repository(identity).conversations.context(conversationId))
+    ?? { brandId, brandName: null, productId, productName: null };
+  return { ok: true, conversationId, brandId, productId, context };
+}
+
 /**
- * KAN-85 «Crear marca»: create a brand and its first conversation in one transaction (limit checked
- * there), then start the orchestrator. At the brand limit nothing is created.
+ * KAN-87 «Crear marca» / «Ya tengo una marca»: validate the typed attributes (server verdict), then
+ * create the brand and its first conversation in one transaction (limit checked there) and start the
+ * orchestrator. Invalid input or the brand limit creates nothing.
  */
-export async function createOwnedBrand(identity: ResolvedIdentity): Promise<NewOwnedConversation> {
+export async function createOwnedBrand(
+  identity: ResolvedIdentity,
+  input: { readonly attributes: unknown; readonly imported?: boolean },
+): Promise<NewOwnedConversation> {
+  const verdict = validateAttributes('brand', stripServerFlags(input.attributes), { partial: false });
+  if (!verdict.ok) return invalidFields(verdict.errors);
+  const attributes = input.imported ? { ...verdict.values, [IMPORTED_KEY]: true } : verdict.values;
   const conversationId = randomUUID() as ConversationId;
   const created = await repository(identity).brands.create({
+    name: entityName('brand', attributes),
+    attributes,
     firstConversation: { conversationId, schemas: buildDefaultRegistry().getFieldSchemas() },
   });
   if (!created.ok) {
     return { ok: false, code: created.code, limit: created.limit, message: brandLimitMessage(created.limit) };
   }
-  if (created.pin?.state !== 'pinned') return { ok: false, code: 'configuration_unavailable', message: NEW_CONVERSATION_UNAVAILABLE_MESSAGE };
-  await startPinned(identity, conversationId);
   log.debug({ brandId: created.brandId, conversationId }, 'selection.brand_created');
-  return { ok: true, conversationId, brandId: created.brandId };
+  return startedConversation(identity, conversationId, created.brandId, null, created.pin);
+}
+
+/** KAN-87 «Nuevo producto»: validate, then create the product and its first conversation in one transaction. */
+export async function createOwnedProduct(
+  identity: ResolvedIdentity,
+  input: { readonly brandId: UUID; readonly attributes: unknown },
+): Promise<NewOwnedConversation> {
+  const verdict = validateAttributes('product', input.attributes, { partial: false });
+  if (!verdict.ok) return invalidFields(verdict.errors);
+  const conversationId = randomUUID() as ConversationId;
+  const created = await repository(identity).products.create({
+    brandId: input.brandId,
+    name: entityName('product', verdict.values),
+    attributes: verdict.values,
+    firstConversation: { conversationId, schemas: buildDefaultRegistry().getFieldSchemas() },
+  });
+  if (!created.ok) {
+    return created.code === 'brand_not_found'
+      ? { ok: false, code: 'brand_not_found', message: BRAND_NOT_FOUND_MESSAGE }
+      : { ok: false, code: created.code, limit: created.limit, message: productLimitMessage(created.limit) };
+  }
+  log.debug({ brandId: input.brandId, productId: created.product.id, conversationId }, 'selection.product_created');
+  return startedConversation(identity, conversationId, input.brandId, created.product.id, created.pin);
 }
 
 /**
- * Create and durably pin a new conversation under one of the owner's active brands before the UI
- * opens SSE. Never touches the caller's other conversations: they stay listed (owner decision).
+ * Create and durably pin a new conversation under one of the owner's active brands (and optionally
+ * one of its products) before the UI opens SSE. Never touches the caller's other conversations.
  */
-export async function createOwnedConversation(identity: ResolvedIdentity, brandId: UUID): Promise<NewOwnedConversation> {
+export async function createOwnedConversation(identity: ResolvedIdentity, brandId: UUID, productId?: UUID): Promise<NewOwnedConversation> {
   const conversationId = randomUUID() as ConversationId;
   const created = await repository(identity).brands.createConversation({
     brandId,
+    productId,
     conversationId,
     schemas: buildDefaultRegistry().getFieldSchemas(),
   });
   if (!created.ok) {
     return created.code === 'brand_not_found'
       ? { ok: false, code: 'brand_not_found', message: BRAND_NOT_FOUND_MESSAGE }
-      : { ok: false, code: created.code, limit: created.limit, message: conversationLimitMessage(created.limit) };
+      : { ok: false, code: 'product_not_found', message: PRODUCT_NOT_FOUND_MESSAGE };
   }
-  if (created.pin.state !== 'pinned') return { ok: false, code: 'configuration_unavailable', message: NEW_CONVERSATION_UNAVAILABLE_MESSAGE };
-  await startPinned(identity, conversationId);
-  return { ok: true, conversationId, brandId };
+  return startedConversation(identity, conversationId, brandId, productId ?? null, created.pin);
 }
 
 /**
  * Decide what `/` shows for the signed-in user.
- * - No id: redirect to the most recent conversation by last activity; create one
- *   only when the user has none (legacy unversioned rows never count): a brand plus its first
- *   conversation, or the brand-limit message when the user cannot create another brand.
+ * - No id: redirect to the most recent conversation by last activity; when the user has none
+ *   (legacy unversioned rows never count) the result is `empty` and the page offers the brand forms
+ *   (KAN-87: a brand needs its required fields, so none is auto-created).
  * - An id: open it when it is the caller's own pinned conversation. Foreign
  *   (other user or tenant), missing, malformed and legacy ids all return the
  *   same `not_found` value, with the caller's own list so they can move on.
@@ -255,17 +354,10 @@ export async function resolveHomeConversation(requestedId: string | string[] | u
   if (requestedId === undefined) {
     try {
       const [latest] = await repository(identity).conversations.listRecent(1);
-      if (latest) return { kind: 'redirect', conversationId: latest.conversationId, created: false };
+      if (latest) return { kind: 'redirect', conversationId: latest.conversationId };
+      return { kind: 'empty', brands: await listOwnedBrands(identity) };
     } catch {
       return { kind: 'error', message: CONVERSATIONS_UNAVAILABLE_MESSAGE };
-    }
-    try {
-      const created = await createOwnedBrand(identity);
-      return created.ok
-        ? { kind: 'redirect', conversationId: created.conversationId, created: true }
-        : { kind: 'error', message: created.message };
-    } catch {
-      return { kind: 'error', message: NEW_CONVERSATION_FAILED_MESSAGE };
     }
   }
 

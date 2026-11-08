@@ -14,7 +14,10 @@ vi.mock('../../app/actions/chat', () => ({ chatAction: vi.fn() }));
 vi.mock('../../app/actions/conversations', () => ({
   createConversationAction: vi.fn(), exportConversationTraceAction: vi.fn(), listConversationsAction: vi.fn(),
 }));
-vi.mock('../../app/actions/brands', () => ({ archiveBrandAction: vi.fn(), createBrandAction: vi.fn() }));
+vi.mock('../../app/actions/brands', () => ({
+  archiveBrandAction: vi.fn(), createBrandAction: vi.fn(), createProductAction: vi.fn(), getBrandAction: vi.fn(),
+  getProductAction: vi.fn(), updateBrandAction: vi.fn(), updateProductAction: vi.fn(),
+}));
 vi.mock('../../app/actions/deliverable-command', () => ({
   deliverableCommandAction: vi.fn(), loadDeliverableStatesAction: vi.fn(),
 }));

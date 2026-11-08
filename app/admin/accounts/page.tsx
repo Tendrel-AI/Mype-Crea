@@ -14,5 +14,5 @@ export default async function TenantAccountsPage() {
       </main>
     );
   }
-  return <TenantAccountsAdmin members={view.members} audit={view.audit} currentUserId={view.currentUserId} limits={limits.ok ? { maxBrandsPerUser: limits.maxBrandsPerUser, maxConversationsPerBrand: limits.maxConversationsPerBrand } : undefined} />;
+  return <TenantAccountsAdmin members={view.members} audit={view.audit} currentUserId={view.currentUserId} limits={limits.ok ? { maxBrandsPerUser: limits.maxBrandsPerUser, maxProductsPerBrand: limits.maxProductsPerBrand } : undefined} />;
 }
