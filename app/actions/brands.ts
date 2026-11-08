@@ -27,9 +27,9 @@ const log = loggerFor('controller.brands');
 
 const FAILED = 'No pudimos completar la acción. Inténtalo de nuevo.';
 const NOT_FOUND = { ok: false, code: 'brand_not_found', message: BRAND_NOT_FOUND_MESSAGE } as const;
-export const MAX_ATTRIBUTES_BYTES = 16 * 1024;
-export const MAX_NAME_LENGTH = 120;
-export const MAX_LIMIT = 1000;
+const MAX_ATTRIBUTES_BYTES = 16 * 1024;
+const MAX_NAME_LENGTH = 120;
+const MAX_LIMIT = 1000;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
