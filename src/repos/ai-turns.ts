@@ -1198,11 +1198,13 @@ export function aiEventsRepo(tenant: Tenant) {
         FROM agent_tasks t
         JOIN conversations c ON c.tenant_id=t.tenant_id AND c.id=t.conversation_id
         LEFT JOIN deliverables d ON d.tenant_id=t.tenant_id AND d.agent_task_id=t.id
-        WHERE t.tenant_id=$1 AND t.status IN ('completed','failed')
+        LEFT JOIN ai_turn_events e ON e.tenant_id=t.tenant_id AND e.event_id=t.id::text||':'||CASE WHEN t.status='completed' THEN $3 ELSE $4 END
+        WHERE t.tenant_id=$1 AND t.status IN ('completed','failed') AND e.id IS NULL
         GROUP BY t.id, c.user_id
         ORDER BY t.completed_at, t.id
         LIMIT $2`,
-          [tenant.id, Math.min(Math.max(input.limit ?? 100, 1), 500)],
+          [tenant.id, Math.min(Math.max(input.limit ?? 100, 1), 500),
+            durableEventSuffix('task_completed'), durableEventSuffix('task_failed')],
         );
 
         let inserted = 0;
