@@ -16,7 +16,7 @@
  *   generating = generando        approve  = Aprobar
  *   in_review  = en revisión      retry    = Reintentar
  *   approved   = aprobado         cancel   = Cancelar
- *   failed     = fallido
+ *   failed     = fallido          use_own  = Usar mi nombre / logo / lema (KAN-89)
  *   stale      = potencialmente desactualizado (overlay on `approved` / `in_review`)
  *
  * "Avanzar" is UI navigation only. It is not a command and never reaches
@@ -38,13 +38,14 @@ export type DeliverableStateKind =
   | 'approved'
   | 'failed';
 
-export type DeliverableCommandKind = 'generate' | 'iterate' | 'approve' | 'retry' | 'cancel';
+export type DeliverableCommandKind = 'generate' | 'iterate' | 'approve' | 'use_own' | 'retry' | 'cancel';
 
 /** Canonical order used when listing allowed commands. */
 export const DELIVERABLE_COMMAND_ORDER: ReadonlyArray<DeliverableCommandKind> = [
   'generate',
   'iterate',
   'approve',
+  'use_own',
   'retry',
   'cancel',
 ];
@@ -70,6 +71,8 @@ export interface DeliverableProvenance {
   readonly model: string | null;
   /** Brief fields the handler recorded as used (`metadata.inputs`), with their values. */
   readonly inputs: ReadonlyArray<{ readonly field: string; readonly value: string }>;
+  /** `user` when the person brought this version («Usar mi …», KAN-89); `generated` otherwise (absent on older views). */
+  readonly origin?: 'user' | 'generated';
   /** Approved upstream deliverables the task was created under (derived deliverables only). */
   readonly upstream: ReadonlyArray<{ readonly kind: string; readonly deliverableId: string; readonly value: string | null }>;
 }
@@ -105,6 +108,16 @@ export interface DeliverableCandidateView {
 export interface DeliverableStateView {
   readonly agentId: AgentId;
   readonly deliverableKind: string;
+  /**
+   * `brand`: the name, logo and tagline belong to the brand and are approved once for all its
+   * conversations (KAN-89); `product`: made per conversation.
+   */
+  readonly level?: 'brand' | 'product';
+  /**
+   * A brand-level deliverable seen from a product conversation: read-only here (no command is ever
+   * allowed); it is completed, and approved, in the brand's chat (KAN-89).
+   */
+  readonly inheritedFromBrand?: boolean;
   readonly state: DeliverableStateKind;
   /**
    * «Potencialmente desactualizado» overlay (RF-07, KAN-35) on `approved` or
@@ -170,6 +183,11 @@ export type DeliverableCommand =
       readonly deliverableId: DeliverableId;
       /** Currently approved deliverable the client saw, or null (KAN-34 AC3). */
       readonly expectedApprovedId: DeliverableId | null;
+    })
+  | (CommandBase & {
+      readonly kind: 'use_own';
+      /** The text of «Usar mi nombre / lema». Absent for «Usar mi logo», which takes the brand's uploaded logo. */
+      readonly value?: string;
     })
   | (CommandBase & { readonly kind: 'retry'; readonly failedTaskId: TaskId })
   | (CommandBase & { readonly kind: 'cancel'; readonly taskId: TaskId });

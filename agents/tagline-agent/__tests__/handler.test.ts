@@ -142,7 +142,7 @@ describe('tagline-agent handler', () => {
   });
 
   it('card: depends on the approved name and reuses the name card fields and hints exactly (pinned releases)', () => {
-    expect(taglineCard['mypes:deliverable']).toEqual({ kind: 'tagline', dependsOn: ['business_name'] });
+    expect(taglineCard['mypes:deliverable']).toEqual({ kind: 'tagline', dependsOn: ['business_name'], level: 'brand', ownSource: 'text' });
     expect(taglineCard['mypes:requirements']).toEqual(nameCard['mypes:requirements']);
     expect(taglineCard['mypes:ui'].tabLabel).toBe('Lema');
   });

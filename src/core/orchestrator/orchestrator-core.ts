@@ -68,6 +68,7 @@ import {
   COMMAND_MESSAGES,
   commandFingerprint,
   deriveStatesFor,
+  adoptOwnVersion,
   executeDeliverableCommand,
   type DeliverableCommandContext,
 } from './deliverable-commands';
@@ -403,6 +404,22 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
       if (result.ok) this.rememberCommand(cacheKey, { result, fingerprint });
       return result;
     });
+  }
+
+  /**
+   * Imported brands (KAN-89): store `deliverableKind` as the approved version «Usar mi …» would, through
+   * the same path as the command. False when the conversation cannot take it now. Not a user command:
+   * the caller is server code that already authenticated the owner.
+   */
+  async adoptOwnVersion(
+    conversationId: ConversationId,
+    deliverableKind: string,
+    text?: string,
+  ): Promise<boolean> {
+    this.requireStarted(conversationId);
+    return this.withCommandLock(conversationId, () =>
+      adoptOwnVersion(this.commandContext(conversationId), { conversationId, deliverableKind, text }),
+    );
   }
 
   private requireStarted(conversationId: ConversationId): void {

@@ -27,6 +27,7 @@ export interface IApprovalStore {
     readonly deliverableId: string;
     readonly expectedApprovedId: string | null;
     readonly dependentKinds: ReadonlyArray<string>;
+    readonly brandLevel?: boolean;
   }): Promise<ApproveResult>;
   getApproved(
     conversationId: string,

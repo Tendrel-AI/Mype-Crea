@@ -36,7 +36,7 @@ import {
   type DeliverableStateView,
   type TaskId,
 } from '../contracts';
-import type { IApprovalStore } from '../approvals';
+import type { IApprovalStore, OwnSource } from '../approvals';
 import {
   REFINEMENT_SNAPSHOT_KEY,
   buildIterationRefinement,
@@ -51,6 +51,7 @@ import {
   requirementsFromSnapshot,
   type DeliverableWorkflowFacts,
 } from './deliverable-state';
+import { validateBriefValue } from '../brief';
 import { UPSTREAM_INPUTS_KEY, UPSTREAM_SNAPSHOT_KEY, type UpstreamInput } from '../deliverable-inputs';
 
 export { requirementsFromSnapshot };
@@ -69,7 +70,12 @@ export const COMMAND_MESSAGES = {
   approveStale: 'La aprobación cambió mientras decidías. Revisa la propuesta aprobada actual e inténtalo de nuevo.',
   iterateNeedsChange: 'Cuéntanos qué quieres cambiar para intentarlo de nuevo.',
   replayConflict: 'Esta acción ya se usó con otros datos. Inténtalo de nuevo desde el panel.',
+  useOwnMissingLogo: 'Primero sube el logo de tu marca desde «Editar marca» y vuelve a intentarlo.',
 } as const;
+
+/** Longest text of «Usar mi nombre / lema», in code points (the catalog's `business_name` / `existing_tagline` limit). */
+export const OWN_TEXT_MAX_LENGTH = 120;
+const OWN_TEXT_FIELD = { name: 'own_text', type: 'string', label: 'Tu texto', maxLength: OWN_TEXT_MAX_LENGTH } as const;
 
 /** Everything the handler needs, already scoped to one conversation's tenant/user. */
 export interface DeliverableCommandContext {
@@ -119,6 +125,71 @@ export async function deriveStatesFor(
     loadWorkflowFacts(ctx, conversationId),
   ]);
   return deriveDeliverableStates(snapshot, ctx.specs, facts);
+}
+
+export type UseOwnResult =
+  | { readonly ok: true; readonly approvalId: string }
+  | { readonly ok: false; readonly reason: DeliverableCommandRejection; readonly message: string };
+
+/**
+ * «Usar mi nombre / logo / lema» (F12 / KAN-89), after the caller validated the view: stores what the
+ * user brought as an approved version of `spec`, origin `user`. The ONE path for the panel buttons and
+ * for imported brands. `text` is the typed value of a `text` kind; a `brand_logo` kind takes none.
+ */
+export async function useOwnVersion(
+  ctx: Pick<DeliverableCommandContext, 'approvals' | 'specs' | 'agentCardVersion'>,
+  input: {
+    readonly conversationId: ConversationId;
+    readonly spec: DeliverableSpec;
+    readonly text?: string;
+    readonly expectedApprovedId: string | null;
+  },
+): Promise<UseOwnResult> {
+  const { spec } = input;
+  if (!ctx.approvals.approveOwn || !spec.ownSource) {
+    return { ok: false, reason: 'not_allowed', message: COMMAND_MESSAGES.notAllowed };
+  }
+  let source: OwnSource;
+  if (spec.ownSource === 'text') {
+    const checked = validateBriefValue(OWN_TEXT_FIELD, input.text);
+    if (!checked.ok) return { ok: false, reason: 'invalid', message: checked.message };
+    source = { kind: 'text', value: checked.value };
+  } else {
+    if (input.text !== undefined) return { ok: false, reason: 'invalid', message: COMMAND_MESSAGES.invalid };
+    source = { kind: 'brand_logo' };
+  }
+  const result = await ctx.approvals.approveOwn({
+    conversationId: input.conversationId,
+    agentId: spec.agentId,
+    agentCardVersion: ctx.agentCardVersion(spec.agentId),
+    deliverableKind: spec.deliverableKind,
+    source,
+    expectedApprovedId: input.expectedApprovedId,
+    dependentKinds: dependentKindsOf(spec.deliverableKind, ctx.specs),
+  });
+  if (result.ok) return { ok: true, approvalId: result.approvalId };
+  if (result.reason === 'stale') return { ok: false, reason: 'stale', message: COMMAND_MESSAGES.approveStale };
+  if (result.reason === 'missing_source') return { ok: false, reason: 'invalid', message: COMMAND_MESSAGES.useOwnMissingLogo };
+  return { ok: false, reason: 'not_found', message: COMMAND_MESSAGES.notFound };
+}
+
+/**
+ * Imported brands (KAN-89): bring `deliverableKind` as the approved version when the conversation can
+ * take it now. Same gate as the command (the fresh view must allow `use_own`), so a product chat or a
+ * generation in flight is skipped. Returns whether a version was stored.
+ */
+export async function adoptOwnVersion(
+  ctx: DeliverableCommandContext,
+  input: { readonly conversationId: ConversationId; readonly deliverableKind: string; readonly text?: string },
+): Promise<boolean> {
+  const spec = ctx.specs.find((s) => s.deliverableKind === input.deliverableKind);
+  const view = spec && (await deriveStatesFor(ctx, input.conversationId)).find((v) => v.agentId === spec.agentId);
+  if (!spec || !view?.allowedCommands.includes('use_own')) return false;
+  const result = await useOwnVersion(ctx, {
+    conversationId: input.conversationId, spec, text: input.text, expectedApprovedId: view.approvedDeliverableId,
+  });
+  if (!result.ok) log.info({ conversationId: input.conversationId, kind: input.deliverableKind, reason: result.reason }, 'orchestrator.command.adopt_skipped');
+  return result.ok;
 }
 
 type OkExtras = { readonly taskId?: TaskId; readonly approvalId?: string };
@@ -252,12 +323,21 @@ export async function executeDeliverableCommand(
         deliverableId: command.deliverableId,
         expectedApprovedId: command.expectedApprovedId,
         dependentKinds: dependentKindsOf(spec.deliverableKind, ctx.specs),
+        brandLevel: spec.level === 'brand',
       });
       if (!result.ok) {
         if (result.reason === 'stale') return reject('stale', COMMAND_MESSAGES.approveStale);
         if (result.reason === 'not_candidate') return reject('not_allowed', COMMAND_MESSAGES.approveNotCandidate);
         return reject('not_found', COMMAND_MESSAGES.approveNotCandidate);
       }
+      return accept(false, { approvalId: result.approvalId });
+    }
+
+    case 'use_own': {
+      const result = await useOwnVersion(ctx, {
+        conversationId: command.conversationId, spec, text: command.value, expectedApprovedId: view.approvedDeliverableId,
+      });
+      if (!result.ok) return reject(result.reason, result.message, result.reason === 'stale' ? undefined : states);
       return accept(false, { approvalId: result.approvalId });
     }
 

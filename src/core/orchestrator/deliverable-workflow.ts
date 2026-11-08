@@ -57,6 +57,11 @@ export interface WorkflowCandidate {
   readonly approvable?: boolean;
   /** The artifact's recorded metadata; provenance (KAN-29) is picked from it. Null/absent when none. */
   readonly metadata?: Readonly<Record<string, unknown>> | null;
+  /**
+   * Upstream approvals of the task that made this candidate, for a candidate whose task is not among
+   * the conversation's tasks (a brand-level result approved in another conversation, KAN-89).
+   */
+  readonly upstreamApprovals?: Readonly<Record<string, string>> | null;
 }
 
 export interface CreateTaskInput {

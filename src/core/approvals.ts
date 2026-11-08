@@ -50,7 +50,29 @@ export interface ApproveInput {
    * marks nothing. Must not contain `deliverableKind` itself.
    */
   readonly dependentKinds: ReadonlyArray<string>;
+  /**
+   * The kind is brand-level (KAN-89): the approval also becomes the brand's result, and
+   * `expectedApprovedId` is compared with it. Derived from the Agent Card, never from the client.
+   */
+  readonly brandLevel?: boolean;
 }
+
+/** What a user-brought version is made of (KAN-89): the typed text, or the brand's uploaded logo. */
+export type OwnSource = { readonly kind: 'text'; readonly value: string } | { readonly kind: 'brand_logo' };
+
+export interface ApproveOwnInput {
+  readonly conversationId: string;
+  readonly agentId: string;
+  readonly agentCardVersion: string;
+  readonly deliverableKind: string;
+  readonly source: OwnSource;
+  /** The approved deliverable the client saw (the brand's result when there is one), or null. */
+  readonly expectedApprovedId: string | null;
+  readonly dependentKinds: ReadonlyArray<string>;
+}
+
+/** `missing_source`: the source does not exist (no uploaded brand logo). */
+export type ApproveOwnResult = ApproveResult | { ok: false; reason: 'missing_source' };
 
 export interface ApprovedRecord {
   readonly deliverableKind: string;
@@ -62,7 +84,15 @@ export interface ApprovedRecord {
 export interface IApprovalStore {
   /** Approve and mark `dependentKinds` stale, atomically. */
   approve(input: ApproveInput): Promise<ApproveResult>;
-  /** Current approval per kind. */
+  /**
+   * Store a version the user brought («Usar mi …», F12 / KAN-89) and approve it, origin `user`, with no
+   * generation and no cost. Absent on stores that cannot do it (the command is then refused).
+   */
+  approveOwn?(input: ApproveOwnInput): Promise<ApproveOwnResult>;
+  /**
+   * Current approval per kind. In a conversation of a brand, the brand's result wins for brand-level
+   * kinds (KAN-89), even when it was approved in another conversation.
+   */
   getApproved(conversationId: string): Promise<ReadonlyArray<ApprovedRecord>>;
   /**
    * Kinds whose newest stale mark is newer than their newest approval. The

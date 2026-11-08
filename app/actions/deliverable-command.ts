@@ -34,7 +34,7 @@ import { usageLimitMessage } from '../../src/services/usage/policy';
 
 const log = loggerFor('controller.deliverable-command');
 
-const COMMAND_KINDS: ReadonlyArray<DeliverableCommandKind> = ['generate', 'iterate', 'approve', 'retry', 'cancel'];
+const COMMAND_KINDS: ReadonlyArray<DeliverableCommandKind> = ['generate', 'iterate', 'approve', 'use_own', 'retry', 'cancel'];
 /** Commands that start a generation (KAN-43 preflight). */
 const GENERATING_COMMANDS: ReadonlyArray<DeliverableCommandKind> = ['generate', 'iterate', 'retry'];
 /** Agents whose generation is one LLM call (KAN-31, KAN-32); every other live agent generates an image. */
@@ -77,6 +77,8 @@ export interface DeliverableCommandInput {
   readonly taskId?: string;
   readonly failedTaskId?: string;
   readonly observation?: string;
+  /** The text of «Usar mi nombre / lema». */
+  readonly value?: string;
 }
 
 const MESSAGES = {
@@ -173,7 +175,7 @@ type Parsed =
 /** The only keys a command may carry; anything else (a forged actor, tenant, brief field…) is refused (KAN-44). */
 const COMMAND_KEYS = [
   'commandId', 'conversationId', 'agentId', 'kind', 'expectedState', 'stateToken',
-  'deliverableId', 'expectedApprovedId', 'taskId', 'failedTaskId', 'observation',
+  'deliverableId', 'expectedApprovedId', 'taskId', 'failedTaskId', 'observation', 'value',
 ] as const;
 
 function parseCommand(input: DeliverableCommandInput): Parsed {
@@ -211,6 +213,12 @@ function parseCommand(input: DeliverableCommandInput): Parsed {
         ok: true,
         command: { ...base, kind: 'approve', deliverableId: input.deliverableId, expectedApprovedId },
       };
+    }
+    case 'use_own': {
+      const value = input.value;
+      if (value !== undefined && typeof value !== 'string') return invalid;
+      // Length and content are checked by the core (`useOwnVersion`), the one place that knows the limit.
+      return { ok: true, command: { ...base, kind: 'use_own', ...(value !== undefined ? { value } : {}) } };
     }
     case 'iterate': {
       const deliverableId = input.deliverableId ?? undefined;

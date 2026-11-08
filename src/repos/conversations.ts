@@ -151,6 +151,7 @@ async function loadSnapshot(
     conversationId,
     tenantId: row.tenant_id,
     agentStates: merged,
+    links: { hasBrand: Boolean(row.brand_id), hasProduct: Boolean(row.product_id) },
     updatedAt: row.started_at.toISOString(),
   };
 }

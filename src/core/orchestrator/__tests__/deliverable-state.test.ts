@@ -631,6 +631,7 @@ describe('KAN-35 — staleness from recorded inputs (RF-07)', () => {
     it('provenance: recorded versions, model and inputs, plus the approved name the task used; never the raw prompt', () => {
       const [old, current] = stateOf(brief(BRIEF), specs, f).candidates;
       expect(current.provenance).toEqual({
+        origin: 'generated',
         promptVersion: 'logo-agent.v1',
         agentCardVersion: '0.1.0',
         provider: 'fal',
@@ -641,7 +642,7 @@ describe('KAN-35 — staleness from recorded inputs (RF-07)', () => {
       expect(JSON.stringify(current.provenance)).not.toContain('Diseña');
       // A row that recorded nothing: empty, not invented.
       expect(old.provenance).toEqual({
-        promptVersion: null, agentCardVersion: null, provider: null, model: null, inputs: [],
+        origin: 'generated', promptVersion: null, agentCardVersion: null, provider: null, model: null, inputs: [],
         upstream: [{ kind: 'business_name', deliverableId: 'nA', value: 'Panadería Sol' }],
       });
     });
@@ -782,5 +783,29 @@ describe('determinism and the state token', () => {
   it('the token ignores irrelevant facts (snapshot timestamp)', () => {
     const token = stateOf(LOGO_READY, [LOGO_SPEC], base).stateToken;
     expect(stateOf({ ...LOGO_READY, updatedAt: '2030-01-01T00:00:00.000Z' }, [LOGO_SPEC], base).stateToken).toBe(token);
+  });
+});
+
+describe('KAN-89 — brand-level kinds and «Usar mi …»', () => {
+  const NAME_OWN: DeliverableSpec = { ...NAME_SPEC, requiredFields: [], level: 'brand', ownSource: 'text' };
+  const none = { tasks: [], candidates: [], approvals: [], markedStaleKinds: [] } as DeliverableWorkflowFacts;
+  const snap = (hasProduct: boolean): ConversationSnapshot => ({
+    ...snapshot({ 'name-agent': agentState({}) }),
+    links: { hasBrand: true, hasProduct } as never,
+  });
+
+  it('offers use_own next to generate in the brand chat', () => {
+    const view = stateOf(snap(false), [NAME_OWN], none, 'name-agent');
+    expect(view).toMatchObject({ state: 'enabled', level: 'brand', inheritedFromBrand: false });
+    expect(view.allowedCommands).toEqual(['generate', 'use_own']);
+  });
+
+  it('a product chat never generates a brand-level kind: blocked, no commands, until the brand approves it', () => {
+    const view = stateOf(snap(true), [NAME_OWN], none, 'name-agent');
+    expect(view).toMatchObject({ state: 'blocked', inheritedFromBrand: true, allowedCommands: [] });
+  });
+
+  it('a kind without ownSource never offers use_own', () => {
+    expect(stateOf(snap(false), [{ ...NAME_OWN, ownSource: undefined }], none, 'name-agent').allowedCommands).toEqual(['generate']);
   });
 });

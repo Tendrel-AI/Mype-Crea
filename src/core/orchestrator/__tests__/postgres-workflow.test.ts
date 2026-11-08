@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ listByConversation: vi.fn(), listTasks: vi.fn() }));
+const mocks = vi.hoisted(() => ({ listByConversation: vi.fn(), listTasks: vi.fn(), listBrandApprovedElsewhere: vi.fn().mockResolvedValue([]) }));
 vi.mock('../../../repos', () => ({
-  repos: () => ({ deliverables: { listByConversation: mocks.listByConversation } }),
+  repos: () => ({ deliverables: { listByConversation: mocks.listByConversation, listBrandApprovedElsewhere: mocks.listBrandApprovedElsewhere } }),
   systemRepos: () => ({ agentTasks: { listByConversation: mocks.listTasks } }),
 }));
 

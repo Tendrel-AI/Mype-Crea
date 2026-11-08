@@ -24,6 +24,8 @@
  * approves; a tenant admin can read the trail but never write it (owner decision 2026-10-25).
  * All access goes through `withTenantTransaction(tenant, user)`.
  */
+import { applyAttributePatch, entityName, validateAttributes } from '../core/brand-catalog';
+import { BRIEF_RECORD_MAPPINGS } from '../core/brief-records';
 import type { ConversationId, UUID } from '../core/contracts';
 import { withTenantTransaction, type Tenant, type TxClient, type User } from '../db/with-transaction';
 import { loggerFor } from '../services/logger';
@@ -61,6 +63,13 @@ export interface ApproveInput {
    * idempotent re-approval. Unknown kinds, or the approved kind itself, throw before any write.
    */
   readonly dependentKinds: ReadonlyArray<string>;
+  /**
+   * KAN-89: the kind is brand-level. In a conversation of a brand the approval also becomes the
+   * brand's current result (`brand_approvals`), serialized by a lock on the brand row, and
+   * `expectedApprovedId` is compared with the brand's result. Legacy conversations (no brand) behave
+   * as without it; product conversations never approve brand-level kinds (`not_candidate`).
+   */
+  readonly brandLevel?: boolean;
 }
 
 export type ApproveRejection = 'stale' | 'not_candidate' | 'not_found';
@@ -161,21 +170,70 @@ const APPROVAL_COLUMNS = `id, conversation_id, user_id, deliverable_kind, delive
   replaced_deliverable_id, approved_by, approved_at, event_seq`;
 
 /**
- * Lock the conversation row visible to the current owner. Returns its owner id, or null when
- * the conversation does not exist, belongs to another tenant, or to another user.
+ * Lock the conversation row visible to the current owner. Returns its owner and links, or null
+ * when the conversation does not exist, belongs to another tenant, or to another user.
  */
 async function lockOwnConversation(
   tx: TxClient,
   tenant: Tenant,
   conversationId: string,
-): Promise<UUID | null> {
-  const res = await tx.query<{ user_id: UUID }>(
-    `SELECT user_id FROM conversations
+): Promise<{ ownerId: UUID; brandId: UUID | null; productId: UUID | null } | null> {
+  const res = await tx.query<{ user_id: UUID; brand_id: UUID | null; product_id: UUID | null }>(
+    `SELECT user_id, brand_id, product_id FROM conversations
       WHERE tenant_id = $1 AND id = $2
       FOR UPDATE`,
     [tenant.id, conversationId],
   );
-  return res.rows[0]?.user_id ?? null;
+  const row = res.rows[0];
+  return row ? { ownerId: row.user_id, brandId: row.brand_id, productId: row.product_id } : null;
+}
+
+/**
+ * KAN-89: the brand's own record follows an approved brand-level kind that maps to a brand
+ * attribute (today the Nombre -> `business_name`, D24). Never fails the approval: a value the
+ * catalog refuses (e.g. a brand without its required fields) is skipped and logged.
+ */
+async function syncBrandRecord(
+  tx: TxClient,
+  tenant: Tenant,
+  ownerId: UUID,
+  brandId: UUID,
+  kind: DeliverableKind,
+  deliverableId: string,
+): Promise<void> {
+  const mapping = Object.hasOwn(BRIEF_RECORD_MAPPINGS, kind) ? BRIEF_RECORD_MAPPINGS[kind] : undefined;
+  if (mapping?.level !== 'brand') return;
+  await tx.query('SAVEPOINT brand_record_sync');
+  try {
+    const res = await tx.query<{ value: unknown }>(
+      `SELECT content_inline->>'value' AS value FROM deliverables WHERE tenant_id = $1 AND id = $2`,
+      [tenant.id, deliverableId],
+    );
+    const value = res.rows[0]?.value;
+    const patch = typeof value === 'string' ? validateAttributes('brand', mapping.fromBrief(value, {}), { partial: true }) : null;
+    if (!patch?.ok) {
+      log.warn({ brandId, kind, deliverableId }, 'brand_identity.record_sync_skipped');
+    } else {
+      // Like the KAN-88 write-back: only this patch is validated (partial), so a brand still missing
+      // its other required attributes keeps the approved name.
+      const brand = await tx.query<{ attributes: Record<string, unknown> }>(
+        `SELECT attributes FROM brands WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active' FOR UPDATE`,
+        [brandId, tenant.id, ownerId],
+      );
+      if (brand.rows[0]) {
+        const merged = applyAttributePatch(brand.rows[0].attributes, patch);
+        await tx.query(
+          `UPDATE brands SET name = COALESCE($4, name), attributes = $5::jsonb, updated_at = now()
+            WHERE id = $1 AND tenant_id = $2 AND user_id = $3`,
+          [brandId, tenant.id, ownerId, entityName('brand', merged), JSON.stringify(merged)],
+        );
+      }
+    }
+    await tx.query('RELEASE SAVEPOINT brand_record_sync');
+  } catch (err) {
+    log.error({ brandId, kind, err }, 'brand_identity.record_sync_failed');
+    await tx.query('ROLLBACK TO SAVEPOINT brand_record_sync');
+  }
 }
 
 /** Distinct dependent kinds; throws on unknown kinds (a programming error, never user input). */
@@ -251,11 +309,31 @@ export function approvalsRepo(tenant: Tenant, user: User) {
 
       try {
         const outcome = await withTenantTransaction(tenant, user, async (tx): Promise<ApproveOutcome> => {
-          const ownerId = await lockOwnConversation(tx, tenant, input.conversationId);
+          const conversation = await lockOwnConversation(tx, tenant, input.conversationId);
           // Every rejection happens before any write, so returning (and committing) is safe.
-          if (ownerId === null) return rejected('not_found');
+          if (conversation === null) return rejected('not_found');
+          const { ownerId } = conversation;
           if (!isDeliverableKind(input.deliverableKind)) return rejected('not_candidate');
           const kind = input.deliverableKind;
+          // KAN-89: a brand-level kind belongs to the brand chat; a product chat only reads it.
+          if (input.brandLevel && conversation.productId) return rejected('not_candidate');
+          const brandId = input.brandLevel ? conversation.brandId : null;
+
+          // The brand's current result. The brand row lock queues two conversations approving at once;
+          // the loser re-reads the committed pointer and is rejected as `stale`.
+          let pointerId: string | null = null;
+          if (brandId) {
+            const brand = await tx.query(
+              `SELECT 1 FROM brands WHERE tenant_id = $1 AND id = $2 AND user_id = $3 AND status = 'active' FOR UPDATE`,
+              [tenant.id, brandId, ownerId],
+            );
+            if (brand.rows.length === 0) return rejected('not_found');
+            const pointer = await tx.query<{ deliverable_id: UUID }>(
+              `SELECT deliverable_id FROM brand_approvals WHERE tenant_id = $1 AND brand_id = $2 AND kind = $3`,
+              [tenant.id, brandId, kind],
+            );
+            pointerId = pointer.rows[0]?.deliverable_id ?? null;
+          }
 
           const current = await tx.query<{ id: UUID }>(
             `SELECT id FROM deliverables
@@ -265,7 +343,9 @@ export function approvalsRepo(tenant: Tenant, user: User) {
             [tenant.id, input.conversationId, kind],
           );
           const currentId = current.rows[0]?.id ?? null;
-          if (expected !== currentId) return rejected('stale');
+          // What the user saw as approved: the brand's result when there is one, else this conversation's.
+          const visibleId = pointerId ?? currentId;
+          if (expected !== visibleId) return rejected('stale');
 
           const candidate = await tx.query<{
             conversation_id: UUID;
@@ -289,6 +369,7 @@ export function approvalsRepo(tenant: Tenant, user: User) {
             return rejected('not_candidate');
           }
 
+          let approval: ApprovalRowDb | null = null;
           if (currentId === deliverableId) {
             const latest = await tx.query<ApprovalRowDb>(
               `SELECT ${APPROVAL_COLUMNS} FROM deliverable_approvals
@@ -297,7 +378,11 @@ export function approvalsRepo(tenant: Tenant, user: User) {
               [tenant.id, input.conversationId, kind],
             );
             if (latest.rows[0]?.deliverable_id === deliverableId) {
-              return { kind: 'unchanged', approval: approvalToDomain(latest.rows[0]) };
+              if (pointerId === deliverableId || !brandId) {
+                return { kind: 'unchanged', approval: approvalToDomain(latest.rows[0]) };
+              }
+              // Selected here already, but another conversation holds the brand's result: only the pointer moves.
+              approval = latest.rows[0];
             }
             // A selection without a matching trail row predates KAN-34: record it once.
           } else if (currentId !== null) {
@@ -307,20 +392,34 @@ export function approvalsRepo(tenant: Tenant, user: User) {
               [tenant.id, currentId, deliverableId],
             );
           }
-          await tx.query(
-            `UPDATE deliverables SET selected_at = now(), superseded_by = NULL
-              WHERE tenant_id = $1 AND id = $2`,
-            [tenant.id, deliverableId],
-          );
-          const replaced = currentId === deliverableId ? null : currentId;
-          const inserted = await tx.query<ApprovalRowDb>(
-            `INSERT INTO deliverable_approvals
-               (tenant_id, conversation_id, user_id, deliverable_kind, deliverable_id,
-                replaced_deliverable_id, approved_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             RETURNING ${APPROVAL_COLUMNS}`,
-            [tenant.id, input.conversationId, ownerId, kind, deliverableId, replaced, user.id],
-          );
+          if (!approval) {
+            await tx.query(
+              `UPDATE deliverables SET selected_at = now(), superseded_by = NULL
+                WHERE tenant_id = $1 AND id = $2`,
+              [tenant.id, deliverableId],
+            );
+            const inserted = await tx.query<ApprovalRowDb>(
+              `INSERT INTO deliverable_approvals
+                 (tenant_id, conversation_id, user_id, deliverable_kind, deliverable_id,
+                  replaced_deliverable_id, approved_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               RETURNING ${APPROVAL_COLUMNS}`,
+              [tenant.id, input.conversationId, ownerId, kind, deliverableId, currentId === deliverableId ? null : currentId, user.id],
+            );
+            approval = inserted.rows[0];
+          }
+          if (brandId) {
+            await tx.query(
+              `INSERT INTO brand_approvals (tenant_id, user_id, brand_id, kind, deliverable_id, conversation_id)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT (tenant_id, brand_id, kind) DO UPDATE
+                 SET deliverable_id = EXCLUDED.deliverable_id,
+                     conversation_id = EXCLUDED.conversation_id,
+                     approved_at = now()`,
+              [tenant.id, ownerId, brandId, kind, deliverableId, input.conversationId],
+            );
+            await syncBrandRecord(tx, tenant, ownerId, brandId, kind, deliverableId);
+          }
           // Same transaction: the marks get a higher event_seq than the approval row, and a
           // failure here rolls the approval back (KAN-34).
           const staleMarks = await insertStaleMarks(
@@ -328,8 +427,8 @@ export function approvalsRepo(tenant: Tenant, user: User) {
           );
           return {
             kind: 'approved',
-            approval: approvalToDomain(inserted.rows[0]),
-            replacedDeliverableId: replaced,
+            approval: approvalToDomain(approval),
+            replacedDeliverableId: visibleId === deliverableId ? null : visibleId,
             staleMarks,
           };
         });
@@ -358,21 +457,31 @@ export function approvalsRepo(tenant: Tenant, user: User) {
       }
     },
 
-    /** Current approved deliverable per kind (from `deliverables.selected_at`). */
+    /**
+     * Current approved deliverable per kind: this conversation's `deliverables.selected_at`, and for a
+     * conversation of a brand the brand's current result of every brand-level kind (KAN-89), which wins
+     * over the conversation's own approval of that kind. Only brand-level kinds have a brand pointer.
+     */
     async getApproved(conversationId: string): Promise<ApprovedDeliverable[]> {
       if (!isUuid(conversationId)) return [];
       return withTenantTransaction(tenant, user, async (tx) => {
         const res = await tx.query<{ kind: DeliverableKind; id: UUID; selected_at: Date }>(
-          `SELECT kind, id, selected_at FROM deliverables
+          `SELECT kind, id, selected_at, 0 AS from_brand FROM deliverables
             WHERE tenant_id = $1 AND conversation_id = $2 AND selected_at IS NOT NULL
-            ORDER BY kind`,
+           UNION ALL
+           SELECT ba.kind, ba.deliverable_id, ba.approved_at, 1
+             FROM brand_approvals ba
+             JOIN conversations c ON c.tenant_id = ba.tenant_id AND c.brand_id = ba.brand_id
+            WHERE c.tenant_id = $1 AND c.id = $2
+            ORDER BY from_brand`,
           [tenant.id, conversationId],
         );
-        return res.rows.map((r) => ({
-          deliverableKind: r.kind,
-          deliverableId: r.id,
-          approvedAt: r.selected_at.toISOString(),
-        }));
+        // Brand rows are last (ORDER BY from_brand), so they overwrite the conversation's own row of that kind.
+        const byKind = new Map<DeliverableKind, ApprovedDeliverable>();
+        for (const r of res.rows) {
+          byKind.set(r.kind, { deliverableKind: r.kind, deliverableId: r.id, approvedAt: r.selected_at.toISOString() });
+        }
+        return [...byKind.values()].sort((a, b) => (a.deliverableKind < b.deliverableKind ? -1 : 1));
       });
     },
 
@@ -409,9 +518,9 @@ export function approvalsRepo(tenant: Tenant, user: User) {
         throw new Error('approvals.markStale: conversation not found');
       }
       return withTenantTransaction(tenant, user, async (tx) => {
-        const ownerId = await lockOwnConversation(tx, tenant, input.conversationId);
-        if (ownerId === null) throw new Error('approvals.markStale: conversation not found');
-        const marks = await insertStaleMarks(tx, tenant, user, input.conversationId, ownerId, kinds);
+        const conversation = await lockOwnConversation(tx, tenant, input.conversationId);
+        if (conversation === null) throw new Error('approvals.markStale: conversation not found');
+        const marks = await insertStaleMarks(tx, tenant, user, input.conversationId, conversation.ownerId, kinds);
         log.info(
           { op: 'markStale', tenantId: tenant.id, conversationId: input.conversationId, kinds },
           'deliverable kinds marked stale',

@@ -56,6 +56,13 @@ export interface AgentCard {
   readonly 'mypes:deliverable'?: {
     readonly kind: string;
     readonly dependsOn: ReadonlyArray<string>;
+    /**
+     * KAN-89: `brand` kinds are approved once per brand and reused by every conversation of it (default
+     * `product`). `ownSource` says what «Usar mi …» takes for this kind: typed `text`, or the brand's
+     * uploaded logo. Absent: the user cannot bring their own version.
+     */
+    readonly level?: 'brand' | 'product';
+    readonly ownSource?: 'text' | 'brand_logo';
   };
   readonly supportedInterfaces: ReadonlyArray<
     | { readonly protocol: 'local'; readonly module: string }
@@ -77,6 +84,9 @@ export interface DeliverableSpec {
   readonly deliverableKind: string;
   readonly requiredFields: ReadonlyArray<string>;
   readonly dependsOn: ReadonlyArray<string>;
+  /** Absent means `product` (KAN-89). */
+  readonly level?: 'brand' | 'product';
+  readonly ownSource?: 'text' | 'brand_logo';
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +159,8 @@ export class AgentRegistry {
           deliverableKind: declared?.kind ?? entry.card.name,
           requiredFields: entry.card['mypes:requirements'].required.map((f) => f.name),
           dependsOn: [...(declared?.dependsOn ?? [])].sort(),
+          level: declared?.level ?? 'product',
+          ...(declared?.ownSource ? { ownSource: declared.ownSource } : {}),
         };
       })
       .sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0));

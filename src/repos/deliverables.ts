@@ -54,6 +54,9 @@ function toDomain(row: DeliverableRowDb): DeliverableRow {
   };
 }
 
+/** An approved brand-level deliverable made in another conversation, with the snapshot its task ran under. */
+export type BrandApprovedRow = DeliverableRow & { readonly requirementsSnapshot: Record<string, unknown> | null };
+
 export function deliverablesRepo(tenant: Tenant, user: User) {
   return {
     /**
@@ -114,6 +117,27 @@ export function deliverablesRepo(tenant: Tenant, user: User) {
           [conversationId],
         );
         return res.rows.map(toDomain);
+      });
+    },
+
+    /**
+     * KAN-89: the brand's current approved result of each brand-level kind when it was approved in ANOTHER
+     * conversation of the same brand, so this conversation can show it and feed it to its dependents. The
+     * ones approved here are already in `listByConversation`.
+     */
+    async listBrandApprovedElsewhere(conversationId: ConversationId): Promise<BrandApprovedRow[]> {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<DeliverableRowDb & { requirements_snapshot: Record<string, unknown> | null }>(
+          `SELECT d.*, t.requirements_snapshot
+             FROM conversations c
+             JOIN brand_approvals ba ON ba.tenant_id = c.tenant_id AND ba.brand_id = c.brand_id
+             JOIN deliverables d ON d.tenant_id = ba.tenant_id AND d.id = ba.deliverable_id
+             JOIN agent_tasks t ON t.tenant_id = d.tenant_id AND t.id = d.agent_task_id
+            WHERE c.tenant_id = $1 AND c.id = $2 AND ba.conversation_id <> c.id
+            ORDER BY d.created_at ASC`,
+          [tenant.id, conversationId],
+        );
+        return res.rows.map((row) => ({ ...toDomain(row), requirementsSnapshot: row.requirements_snapshot }));
       });
     },
 

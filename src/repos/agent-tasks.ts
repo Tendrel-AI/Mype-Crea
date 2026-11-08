@@ -500,7 +500,7 @@ export function agentTasksRepo(tenant: Tenant) {
       });
       const id = randomUUID();
       child.debug({ id, idempotencyKey: input.idempotencyKey }, 'inserting root agent_task');
-      return withTenantTransaction(tenant, undefined, async (tx) => {
+      return withTenantTransaction(tenant, input.owner, async (tx) => {
         await assertJsonbTenantSafe(tx, input.requirementsSnapshot);
         const res = await tx.query<AgentTaskRowDb>(
           `INSERT INTO agent_tasks

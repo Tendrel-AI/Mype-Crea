@@ -32,7 +32,9 @@
   },
   "mypes:deliverable": {
     "kind": "tagline",
-    "dependsOn": ["business_name"]
+    "dependsOn": ["business_name"],
+    "level": "brand",
+    "ownSource": "text"
   },
   "supportedInterfaces": [
     { "protocol": "local", "module": "agents/tagline-agent/handler.ts" }

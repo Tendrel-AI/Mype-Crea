@@ -189,7 +189,7 @@ describe('tagline-agent flow (KAN-32)', () => {
     const names = await approveFirstName(runtime);
     const [first, second] = names;
 
-    expect(await viewOf('tagline-agent')).toMatchObject({ state: 'enabled', allowedCommands: ['generate'] });
+    expect(await viewOf('tagline-agent')).toMatchObject({ state: 'enabled', allowedCommands: ['generate', 'use_own'] });
     expect(await command('tagline-agent', 'generate')).toMatchObject({ ok: true });
     // KAN-43: a tagline generation is preflighted as an LLM call.
     expect(mocks.preflight).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'llm' }));
