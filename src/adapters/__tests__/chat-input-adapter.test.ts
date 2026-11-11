@@ -229,6 +229,8 @@ describe('ChatInputAdapter', () => {
 
     const prompt = provider.captured[0].systemPrompt;
     expect(prompt).toContain('Preguntas pendientes (el usuario');
+    expect(prompt).toContain('todo campo pendiente que el mensaje no aborde se devuelve con el valor literal "No aplica"');
+    expect(prompt).toContain('Si el mensaje NO responde a esas preguntas');
     expect(prompt).toContain('  1. c_field: Hint C\n  2. a_field: Hint A\n  3. b_field: Hint B');
     expect(delta.fields['fixture-a']?.b_field).toMatchObject({ value: 'Sin preferencia', confidence: 1 });
 
