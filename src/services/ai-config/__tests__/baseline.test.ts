@@ -21,6 +21,14 @@ describe('baseline draft capture', () => {
       .toMatchObject({ required: true, agents: ['logo-agent', 'name-agent', 'tagline-agent'] });
   });
 
+  it('captures extractor profiles with maxTokens 2048 and logo hints without the "no aplica" suffix', async () => {
+    const manifest = await createBaselineDraft();
+    const extractorProfiles = manifest.models.filter((m) => m.purpose === 'extractor');
+    expect(extractorProfiles.length).toBeGreaterThan(0);
+    for (const m of extractorProfiles) expect(m.settings.maxTokens).toBe(2048);
+    expect(JSON.stringify(logoCard)).not.toMatch(/Si no aplica/);
+  });
+
   it('captures source/dependency fingerprints without including credential values', async () => {
     const identity = await captureSourceIdentity();
     expect(identity.codeFingerprint).toMatch(/^[a-f0-9]{64}$/);

@@ -34,11 +34,8 @@ function describe(decision: PlannerDecision, context: ChatContext | null | undef
       if (decision.fields.length <= 2) {
         return ['Para avanzar necesito esto:', ...decision.fields.map((f) => `- ${f.promptHint}`)].join('\n');
       }
-      return [
-        'Para avanzar necesito algunos datos:',
-        ...decision.fields.map((f, i) => `${i + 1}. ${f.promptHint}`),
-        'Puedes responder todo en un solo mensaje usando los números; para cualquier ítem puedes decir «no aplica» o «sin preferencia».',
-      ].join('\n');
+      // D29: no per-field list; one open invitation. The Extractor maps the answer and marks the rest «No aplica».
+      return 'Para avanzar, cuéntame en un solo mensaje lo que tengas claro: qué quieres lograr, qué te inspira, el estilo que imaginas y lo que no quieres ver o no puedes usar.';
     }
     case 'confirm_field':
       return `Tengo este valor pendiente: «${String(decision.pendingValue)}». ¿Es correcto?`;

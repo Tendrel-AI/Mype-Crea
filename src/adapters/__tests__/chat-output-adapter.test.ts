@@ -132,8 +132,9 @@ describe('ChatOutputAdapter', () => {
     });
     const prompt = provider.captured[0].systemPrompt;
     expect(prompt).toContain('  1. logo_goal: "Hint goal"\n  2. competitors: "Hint competitors"\n  3. logo_keep: "Hint keep"');
-    expect(prompt).toContain('UNA sola lista numerada');
-    expect(prompt).toContain('sin preferencia');
+    expect(prompt).toContain('agrupe los campos de arriba por afinidad');
+    expect(prompt).toContain('NO numeres');
+    expect(prompt).not.toMatch(/no aplica|sin preferencia|lista numerada/i);
     expect(prompt).not.toContain('AMBOS campos');
     expect(prompt).not.toContain('undefined');
   });
@@ -477,7 +478,7 @@ describe('ChatOutputAdapter', () => {
   });
 
   it('bumps the responder prompt version for the command guidance', () => {
-    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v9');
+    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v10');
   });
 
   it('a release frozen before v6 still renders offer_generation through the fragment fallbacks', async () => {
@@ -512,7 +513,7 @@ describe('ChatOutputAdapter', () => {
 
     await adapter.render(base);
     await adapter.render({ ...base, promptVersions: { responder: 'responder.chat-step1.v6' } });
-    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v9', 'responder.chat-step1.v6']);
+    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v10', 'responder.chat-step1.v6']);
   });
 
   it('falls back to the active version when the pinned one no longer exists', async () => {
@@ -524,7 +525,7 @@ describe('ChatOutputAdapter', () => {
       decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
       promptVersions: { responder: 'responder.chat-step1.v0' },
     });
-    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v9');
+    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v10');
   });
 
   describe('KAN-93 conversation context', () => {

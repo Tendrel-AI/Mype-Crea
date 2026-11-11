@@ -14,97 +14,97 @@
       {
         "name": "business_category",
         "type": "string",
-        "promptHint": "¿Qué productos o servicios ofreces hoy y cuáles podrías ofrecer más adelante? Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Qué productos o servicios ofreces hoy y cuáles podrías ofrecer más adelante?"
       },
       {
         "name": "market_proposition",
         "type": "string",
-        "promptHint": "¿Cuál es tu propuesta de mercado? (qué ofreces y por qué te eligen) Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Cuál es tu propuesta de mercado? (qué ofreces y por qué te eligen)"
       },
       {
         "name": "target_audience",
         "type": "string",
-        "promptHint": "¿Quién es tu público y en qué situaciones te conoce o te compra? Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Quién es tu público y en qué situaciones te conoce o te compra?"
       },
       {
         "name": "differentiator",
         "type": "string",
-        "promptHint": "¿Qué te diferencia de otros negocios similares? Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Qué te diferencia de otros negocios similares?"
       },
       {
         "name": "personality",
         "type": "string",
-        "promptHint": "¿Qué personalidad o sensaciones quieres que transmita tu marca? Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Qué personalidad o sensaciones quieres que transmita tu marca?"
       },
       {
         "name": "brand_story",
         "type": "string",
-        "promptHint": "¿Hay una historia o inspiración detrás de tu marca que el logo deba reflejar? Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Hay una historia o inspiración detrás de tu marca que el logo deba reflejar?"
       },
       {
         "name": "language_references",
         "type": "string",
-        "promptHint": "¿Qué idiomas o referencias culturales o artísticas deben influir en el logo? Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Qué idiomas o referencias culturales o artísticas deben influir en el logo?"
       },
       {
         "name": "color_palette",
         "type": "string",
-        "promptHint": "¿Qué colores quieres usar, permitir o evitar en el logo? Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Qué colores quieres usar, permitir o evitar en el logo?"
       },
       {
         "name": "logo_goal",
         "type": "string",
-        "promptHint": "¿Qué problema debe resolver tu logo? (por ejemplo: verse más profesional, destacar en el mercado) Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Qué problema debe resolver tu logo? (por ejemplo: verse más profesional, destacar en el mercado)"
       },
       {
         "name": "logo_avoid",
         "type": "string",
-        "promptHint": "¿Qué asociaciones o interpretaciones debe evitar el logo? Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Qué asociaciones o interpretaciones debe evitar el logo?"
       },
       {
         "name": "competitors",
         "type": "string",
-        "promptHint": "¿Quiénes son tus competidores y qué motivos visuales usan que no quieres repetir? Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Quiénes son tus competidores y qué motivos visuales usan que no quieres repetir?"
       },
       {
         "name": "visual_references",
         "type": "string",
-        "promptHint": "¿Qué marcas o imágenes te gustan como referencia, y qué te gusta o no de cada una? Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Qué marcas o imágenes te gustan como referencia, y qué te gusta o no de cada una?"
       },
       {
         "name": "logo_composition",
         "type": "string",
-        "promptHint": "¿Qué composición prefieres? (solo nombre, nombre y símbolo, monograma, o que el diseñador recomiende) Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Qué composición prefieres? (solo nombre, nombre y símbolo, monograma, o que el diseñador recomiende)"
       },
       {
         "name": "logo_shapes",
         "type": "string",
-        "promptHint": "¿Cómo imaginas las formas del logo? (geometría, curvas o ángulos, grosor y nivel de detalle) Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Cómo imaginas las formas del logo? (geometría, curvas o ángulos, grosor y nivel de detalle)"
       },
       {
         "name": "logo_typography",
         "type": "string",
-        "promptHint": "¿Cómo quieres la tipografía? (mayúsculas o minúsculas, espaciado, carácter de las letras) Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Cómo quieres la tipografía? (mayúsculas o minúsculas, espaciado, carácter de las letras)"
       },
       {
         "name": "logo_keep",
         "type": "string",
-        "promptHint": "¿Hay elementos actuales de tu marca que tus clientes ya reconocen y quieres conservar? Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Hay elementos actuales de tu marca que tus clientes ya reconocen y quieres conservar?"
       },
       {
         "name": "logo_applications",
         "type": "string",
-        "promptHint": "¿Dónde aparecerá tu logo, ordenado por importancia? (empaque, redes sociales, letrero, etc.) Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Dónde aparecerá tu logo, ordenado por importancia? (empaque, redes sociales, letrero, etc.)"
       },
       {
         "name": "logo_production_limits",
         "type": "string",
-        "promptHint": "¿Qué límites de producción hay? (tamaño mínimo, fondos, impresión, bordado, grabado) Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Qué límites de producción hay? (tamaño mínimo, fondos, impresión, bordado, grabado)"
       },
       {
         "name": "logo_restrictions",
         "type": "string",
-        "promptHint": "¿Hay elementos obligatorios o prohibidos en el logo? Si no aplica, responde «no aplica» o «sin preferencia»."
+        "promptHint": "¿Hay elementos obligatorios o prohibidos en el logo?"
       }
     ],
     "optional": [

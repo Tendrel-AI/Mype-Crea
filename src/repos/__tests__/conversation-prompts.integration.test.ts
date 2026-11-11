@@ -48,7 +48,7 @@ SUITE('conversationPrompts.pin (integration)', () => {
     const pins = repos(tenant, ownerUser).conversationPrompts;
     const first = { extractor: 'extractor.v5', 'logo-agent': 'logo-agent.v1' };
     expect(await pins.pin(conversationId as never, first)).toEqual(first);
-    expect(await pins.pin(conversationId as never, { extractor: 'extractor.v6' })).toEqual(first);
+    expect(await pins.pin(conversationId as never, { extractor: 'extractor.v7' })).toEqual(first);
     const row = await owner.query(`SELECT prompt_versions FROM conversations WHERE id = $1`, [conversationId]);
     expect(row.rows[0].prompt_versions).toEqual(first);
   });

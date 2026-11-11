@@ -46,8 +46,8 @@ describe('renderWelcome', () => {
   it('renders one template per decision kind', () => {
     expect(renderWelcome([decisions.one], brand, registry)).toContain('- Cuéntame el nombre');
     const list = renderWelcome([decisions.many], brand, registry);
-    expect(list).toContain('1. Uno\n2. Dos\n3. Tres');
-    expect(list).toContain('«no aplica» o «sin preferencia»');
+    expect(list).toContain('qué quieres lograr, qué te inspira');
+    expect(list).not.toMatch(/1\. Uno|no aplica|sin preferencia/);
     expect(renderWelcome([decisions.confirm], brand, registry)).toContain('«Brisa». ¿Es correcto?');
     expect(renderWelcome([decisions.offer], brand, registry)).toContain('Cuando quieras, toca el botón Generar.');
     expect(renderWelcome([decisions.failed], brand, registry)).toContain('botón Reintentar');

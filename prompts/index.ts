@@ -2,14 +2,16 @@
 import lock from './lock.json';
 import f0 from './extractor/extractor.v5.json';
 import f1 from './extractor/extractor.v6.json';
-import f2 from './logo-agent/logo-agent.v1.json';
-import f3 from './logo-agent/logo-agent.v2.json';
-import f4 from './name-agent/name-agent.v1.json';
-import f5 from './responder/responder.chat-step1.v6.json';
-import f6 from './responder/responder.chat-step1.v7.json';
-import f7 from './responder/responder.chat-step1.v8.json';
-import f8 from './responder/responder.chat-step1.v9.json';
-import f9 from './tagline-agent/tagline-agent.v1.json';
+import f2 from './extractor/extractor.v7.json';
+import f3 from './logo-agent/logo-agent.v1.json';
+import f4 from './logo-agent/logo-agent.v2.json';
+import f5 from './name-agent/name-agent.v1.json';
+import f6 from './responder/responder.chat-step1.v10.json';
+import f7 from './responder/responder.chat-step1.v6.json';
+import f8 from './responder/responder.chat-step1.v7.json';
+import f9 from './responder/responder.chat-step1.v8.json';
+import f10 from './responder/responder.chat-step1.v9.json';
+import f11 from './tagline-agent/tagline-agent.v1.json';
 
-export const frozenFiles = [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9];
+export const frozenFiles = [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11];
 export { lock };
