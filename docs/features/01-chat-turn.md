@@ -64,7 +64,7 @@ most two missing items at a time, and, once the brief is complete, invites the o
    images (KAN-93: it also receives the conversation's `ConversationContext`, loaded by
    `app/actions/chat.ts`, and the prompt names the brand, or the product and its brand; none for a
    legacy conversation). `offer_generation` is rendered as "tap Generar", never as "I started it". The prompt
-   versions (`extractor.v4`, `responder.chat-step1.v9`) and frozen prompt fragments live in
+   versions (`extractor.v7`, `responder.chat-step1.v10`) and frozen prompt fragments live in
    `src/services/ai-config/adapter-behavior.ts`.
 8. **Commit.** `completeTurn` stores the reply; the browser (`components/CreaMype.tsx`,
    `components/crea-mype/ChatPanel.tsx`) shows it.
