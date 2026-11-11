@@ -62,6 +62,6 @@ describe('brief catalog (KAN-26)', () => {
     expect(brief.find((f) => f.name === 'style_keywords')).toMatchObject({ status: 'pending_confirmation', source: 'chat-es' });
     // Slots written before KAN-26 have no source.
     expect(brief.find((f) => f.name === 'color_palette')).toMatchObject({ value: 'rojo', source: null });
-    expect(brief.find((f) => f.name === 'manufacturer')).toMatchObject({ status: 'empty', value: null, source: null });
+    expect(brief.find((f) => f.name === 'location')).toMatchObject({ status: 'empty', value: null, source: null });
   });
 });

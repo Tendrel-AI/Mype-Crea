@@ -188,7 +188,9 @@ function describeDecision(
         fieldCountDescription: single ? 'UN campo' : `${decision.fields.length} campos`,
         agentId: decision.agentId,
         fieldLines: lines.join('\n'),
-        actionLine: single ? fragments.requestFieldsSingleAction : fragments.requestFieldsMultiAction,
+        actionLine: single
+          ? fragments.requestFieldsSingleAction
+          : decision.fields.length > 2 ? fragments.requestFieldsListAction : fragments.requestFieldsMultiAction,
       });
     }
     case 'confirm_field':

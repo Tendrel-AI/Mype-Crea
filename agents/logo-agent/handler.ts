@@ -1,8 +1,8 @@
 /**
  * Logo agent handler.
  *
- * Reads `business_name`, `style_keywords`, and optional `color_palette` from
- * the dispatched A2AMessage's requirements, builds a Spanish prompt, and asks
+ * Reads the logo brief (`INPUT_FIELDS`) from the dispatched A2AMessage's
+ * requirements, renders the frozen Spanish template, and asks
  * the centralized image generator (src/services/image) for a PNG URL. Returns
  * one image artifact. No DB writes, no R2 upload, no versioning — those are
  * downstream concerns left to a future PR.
@@ -41,62 +41,109 @@ import { agentPrompt } from '../../src/services/prompts';
 
 const log = loggerFor('agent.logo-agent');
 
-/** Recorded on every logo (KAN-29 provenance). Bump it when `buildLogoPrompt` wording changes. */
-export const LOGO_PROMPT_VERSION = 'logo-agent.v1';
-
-/** Brief fields `buildLogoPrompt` reads. */
-const INPUT_FIELDS = ['business_name', 'style_keywords', 'color_palette'] as const;
-
-interface LogoRequirements {
-  readonly business_name: string;
-  readonly style_keywords: string;
-  readonly color_palette?: string;
-}
+/** Recorded on every logo (KAN-29 provenance). Bump it when `LOGO_PROMPT_TEMPLATE` wording changes. */
+export const LOGO_PROMPT_VERSION = 'logo-agent.v2';
 
 /**
- * Build the image prompt. For an «Iterar» task (KAN-28 / KAN-65 R2) the
- * user's anchored observations are appended as a quoted, flattened note.
- * They are untrusted text: only quoted as visual guidance, never parsed.
+ * The working logo prompt; `npm run prompt:freeze` writes it to `prompts/logo-agent/`. Placeholders:
+ *   - `{{field}}`   the brief value of `field`.
+ *   - `{{a|b|c}}`   the non-empty values of a, b, c joined with "; " (one line may combine fields).
+ * Rendering is per line: a line is dropped when ALL its placeholders are empty (so an unanswered
+ * optional field leaves no hole); lines without placeholders always stay. Each field appears on ONE line,
+ * and every field used here must be listed in `INPUT_FIELDS`.
  */
-export function buildLogoPrompt(
-  reqs: LogoRequirements,
-  refinement?: { readonly observations?: ReadonlyArray<string> },
-): string {
-  const parts = [
-    `Diseña un logo profesional para el negocio "${reqs.business_name}".`,
-    `Estilo: ${reqs.style_keywords}.`,
-  ];
-  if (reqs.color_palette) {
-    parts.push(`Paleta de colores: ${reqs.color_palette}.`);
-  }
-  const notes = (refinement?.observations ?? []).map(flattenObservation).filter((note) => note.length > 0);
-  if (notes.length > 0) {
-    parts.push(`Ajustes pedidos sobre la versión anterior: ${notes.map((note) => `"${note}"`).join('; ')}.`);
-  }
-  parts.push('Limpio, vectorizado, alta resolución, sin texto adicional.');
-  return parts.join(' ');
-}
+export const LOGO_PROMPT_TEMPLATE = [
+  'Actúa como diseñador de identidad visual. Diseña una propuesta de logo para la marca descrita en el brief.',
+  '',
+  'OBJETIVO',
+  'Resuelve el problema de comunicación indicado por el cliente. Fundamenta las decisiones visuales en su negocio, público, referencias y aplicaciones. No sustituyas esos datos por interpretaciones genéricas de palabras como “bonito”, “moderno”, “premium” o “único”.',
+  '',
+  'BRIEF',
+  '- Nombre exacto: {{business_name}}',
+  '- Eslogan y reglas de uso: {{existing_tagline}}',
+  '- Productos, servicios y alcance futuro: {{business_category|market_proposition}}',
+  '- Problema que debe resolver el logo: {{logo_goal}}',
+  '- Público y situaciones de contacto: {{target_audience}}',
+  '- Posicionamiento y motivos de elección: {{differentiator}}',
+  '- Asociaciones deseadas: {{personality}}',
+  '- Interpretaciones que deben evitarse: {{logo_avoid}}',
+  '- Competidores y riesgos de confusión: {{competitors}}',
+  '- Historia e inspiración vinculadas a la marca: {{brand_story}}',
+  '- Referencias y características que se valoran o rechazan: {{visual_references}}',
+  '- Composición preferida o decisión delegada al diseñador: {{logo_composition}}',
+  '- Características de formas y trazos: {{logo_shapes|style_keywords|visual_behavior}}',
+  '- Preferencias y restricciones tipográficas: {{logo_typography}}',
+  '- Colores requeridos, permitidos y excluidos: {{color_palette|color_description}}',
+  '- Elementos existentes que deben conservarse: {{logo_keep}}',
+  '- Contexto cultural e idiomas: {{language_references|location}}',
+  '- Aplicaciones prioritarias: {{logo_applications}}',
+  '- Tamaño mínimo y métodos de producción: {{logo_production_limits}}',
+  '- Elementos obligatorios y prohibidos: {{logo_restrictions}}',
+  '',
+  'DECISIONES DE DISEÑO',
+  '1. Prioriza los requisitos obligatorios y las aplicaciones principales. Si hay una contradicción, resuélvela a favor de ellos.',
+  '2. Cuando una preferencia esté sin definir o indicada como «sin preferencia» o «no aplica», elige una solución basada en el resto del brief. No inventes hechos sobre la marca.',
+  '3. Elige un concepto visual central. No intentes representar todos los productos, historias o valores dentro de un solo símbolo.',
+  '4. No reproduzcas símbolos, lettering ni composiciones de las marcas de referencia. Usa únicamente las características descritas como orientación.',
+  '5. Evita los motivos identificados como repetidos en los competidores.',
+  '',
+  'EJECUCIÓN',
+  '- Reproduce el nombre con la escritura exacta.',
+  '- Si el brief incluye un eslogan, inclúyelo con la escritura exacta.',
+  '- Si hay símbolo y nombre, establece una relación equilibrada entre sus tamaños, separación y alineación.',
+  '- Cuida el espaciado entre letras y la lectura del nombre.',
+  '- Mantén contornos definidos, curvas continuas, uniones controladas y espacios interiores suficientemente abiertos.',
+  '- Ajusta el detalle y el grosor de los trazos al tamaño mínimo indicado.',
+  '- Usa el color según el brief y conserva una estructura reconocible cuando el conjunto se reproduzca en una sola tinta.',
+  '- No añadas adornos que no contribuyan al concepto o a la lectura.',
+  '',
+  'PRESENTACIÓN',
+  'Presenta una sola propuesta de logo completo, centrada, sin recortes y con espacio libre alrededor. Usa un fondo uniforme que permita evaluar sus formas y colores.',
+  '',
+  'No incluyas mockups, objetos, escenarios, textos explicativos ni marcas de agua. No añadas sombras, volumen, texturas o degradados, salvo que estén expresamente justificados en el brief.',
+].join('\n');
+
+/** Brief fields the template reads (the `{{...}}` names above). */
+export const INPUT_FIELDS = [
+  'business_name', 'existing_tagline', 'business_category', 'market_proposition', 'logo_goal', 'target_audience',
+  'differentiator', 'personality', 'logo_avoid', 'competitors', 'brand_story', 'visual_references', 'logo_composition',
+  'logo_shapes', 'style_keywords', 'visual_behavior', 'logo_typography', 'color_palette', 'color_description',
+  'logo_keep', 'language_references', 'location', 'logo_applications', 'logo_production_limits', 'logo_restrictions',
+] as const;
+
+type LogoRequirements = Readonly<Partial<Record<string, string>>>;
+
+const PLACEHOLDER = /\{\{([\w|]+)\}\}/g;
 
 /**
- * Render a frozen logo template (D22). Sentences are split on the template, before substitution:
- * a sentence whose `{{field}}` is empty is dropped (optional palette), and the «Iterar» note goes
- * before the closing sentence. Equals `buildLogoPrompt` for the current template (tested).
- * shortcut: the note position is "before the last sentence", so a template that closes differently needs a slot.
+ * Render a frozen logo template (D22) with the brief, plus the «Iterar» observations (KAN-28 / KAN-65 R2)
+ * as their own closing section: quoted, flattened guidance, never parsed (untrusted text).
+ * Syntax: see `LOGO_PROMPT_TEMPLATE`. A single-line template (frozen `logo-agent.v1`, pinned by older
+ * conversations) keeps its sentence rule: split on ". ", drop sentences with an empty `{{field}}`, note before the last one.
  */
 export function renderLogoPrompt(
   template: string,
   reqs: LogoRequirements,
   refinement?: { readonly observations?: ReadonlyArray<string> },
 ): string {
-  const values: Record<string, string | undefined> = { ...reqs };
-  const sentences = template.split(/(?<=\.) /).filter((sentence) =>
-    [...sentence.matchAll(/\{\{(\w+)\}\}/g)].every(([, name]) => values[name]),
-  ).map((sentence) => sentence.replace(/\{\{(\w+)\}\}/g, (_, name: string) => values[name] ?? ''));
   const notes = (refinement?.observations ?? []).map(flattenObservation).filter((note) => note.length > 0);
-  if (notes.length > 0) {
-    sentences.splice(-1, 0, `Ajustes pedidos sobre la versión anterior: ${notes.map((note) => `"${note}"`).join('; ')}.`);
+  const note = `Ajustes pedidos sobre la versión anterior: ${notes.map((n) => `"${n}"`).join('; ')}.`;
+  if (!template.includes('\n')) {
+    const sentences = template.split(/(?<=\.) /)
+      .filter((sentence) => [...sentence.matchAll(PLACEHOLDER)].every(([, name]) => reqs[name]))
+      .map((sentence) => sentence.replace(PLACEHOLDER, (_, name: string) => reqs[name] ?? ''));
+    if (notes.length > 0) sentences.splice(-1, 0, note);
+    return sentences.join(' ');
   }
-  return sentences.join(' ');
+  const lines = template.split('\n').flatMap((line) => {
+    const names = [...line.matchAll(PLACEHOLDER)];
+    if (names.length === 0) return [line];
+    const rendered = line.replace(PLACEHOLDER, (_, group: string) =>
+      group.split('|').map((name) => reqs[name]?.trim()).filter(Boolean).join('; '));
+    return names.some(([, group]) => group.split('|').some((name) => reqs[name]?.trim())) ? [rendered] : [];
+  });
+  if (notes.length > 0) lines.push('', 'AJUSTES SOBRE LA VERSIÓN ANTERIOR', note);
+  return lines.join('\n');
 }
 
 /** One line, no double quotes, so a note cannot break out of its quotes. */
@@ -128,8 +175,6 @@ export const handler: AgentHandler<undefined> = async (message) => {
     {
       requirementKeys: Object.keys(message.requirements),
       hasBusinessName: Boolean(reqs.business_name),
-      hasStyleKeywords: Boolean(reqs.style_keywords),
-      hasColorPalette: Boolean(reqs.color_palette),
     },
     'agent.logo.start',
   );

@@ -14,6 +14,8 @@ export interface AgentFieldSchema {
   readonly displayOrder: number;
   readonly requiredFields: ReadonlyArray<FieldName>;
   readonly optionalFields: ReadonlyArray<FieldName>;
+  /** Card-declared cap of fields asked in one `request_fields`; absent = `MAX_FIELD_BATCH_SIZE`. */
+  readonly askBatchSize?: number;
 }
 
 export interface IConversationStore {

@@ -60,6 +60,7 @@ const EXTRACTOR_PROMPT_TEMPLATE = [
   ``,
   `Campos disponibles:`,
   `{{fieldLines}}`,
+  `{{askedBlock}}`,
   ``,
   `Reglas:`,
   `- Si el campo NO está expresado o implicado en el mensaje, pasa null en ese campo.`,
@@ -68,7 +69,8 @@ const EXTRACTOR_PROMPT_TEMPLATE = [
   `    0.9  - claramente implicado por el mensaje`,
   `    0.7  - probable pero ambiguo`,
   `    <0.6 - no estás seguro: pasa null en ese campo`,
-  `- NO inventes valores. NO uses contexto fuera del mensaje del usuario.`,
+  `- NO inventes valores. NO uses contexto fuera del mensaje del usuario, salvo la lista de preguntas pendientes (si aparece arriba) para interpretar respuestas numeradas.`,
+  `- Si aparece "Preguntas pendientes", el usuario puede responder por número ("1. ..., 2. ..."): asigna cada respuesta al campo de ese número. Si para un ítem pendiente dice explícitamente "no aplica", "no sé", "sin preferencia", "ninguno" o equivalente, guarda el valor literal "Sin preferencia" (o "No aplica" si dijo eso) con confidence 1.0. Si no menciona un ítem, pasa null en ese campo.`,
   `- Si formulas texto, usa español neutro latinoamericano, trata al usuario de tú y nunca uses voseo, aunque el usuario lo use. Conserva literalmente nombres propios y valores expresados.`,
   `- Llama a la función exactamente una vez. No incluyas texto adicional.`,
 ].join('\n');
@@ -100,6 +102,8 @@ const RESPONDER_PROMPT_TEMPLATE = `{{persona}}\n\n{{stateHeading}}\n{{decisionsB
  * They are deliberately NOT part of the required-fragment validation below.
  */
 const RESPONDER_COMMAND_FRAGMENTS = {
+  // responder.chat-step1.v7: more than 2 fields are asked as ONE numbered list (same fallback rule).
+  requestFieldsListAction: `Acción obligatoria: presenta TODOS los campos como UNA sola lista numerada, en EXACTAMENTE el orden de arriba (el número N de tu lista es el campo N de arriba). Una línea corta por ítem, en lenguaje sencillo, basada en la pista entre comillas; NUNCA escribas el nombre técnico del campo. Antes de la lista, una frase breve de introducción. Después de la lista, dile que puede responder todo en un solo mensaje usando los números, y que para cualquier ítem puede decir "no aplica" o "sin preferencia". Esta instrucción tiene prioridad sobre el límite de oraciones.`,
   offerGenerationDecision: `{{kind}}\nDecisión: el entregable "{{deliverableLabel}}" del agente "{{agentId}}" ya tiene todo lo necesario. La generación NO empieza sola: el usuario debe tocar el botón Generar del panel.\nAcción obligatoria: en UNA sola frase, dile que ya tiene todo listo y que, cuando quiera, toque el botón Generar (por ejemplo "Ya tienes todo listo para tu logo. Cuando quieras, toca el botón Generar."). PROHIBIDO decir que ya empezaste a generar o que estás generando.`,
   commandGuidanceGuardrail: `- Generar, Iterar, Aprobar, Reintentar y Cancelar son botones del panel. Tú NO puedes ejecutarlos desde el chat: nunca digas que ya generaste, cambiaste, aprobaste o cancelaste algo. Si el usuario pide en el chat un cambio, otra versión o una aprobación de un entregable, guíalo al botón correspondiente, por ejemplo: "Para ajustar este logo, toca el botón Iterar y escribe qué quieres cambiar." o "Si te gusta, toca el botón Aprobar.".`,
 } as const;
@@ -123,7 +127,7 @@ const RESPONDER_PROMPT_FRAGMENTS: Readonly<Record<string, string>> = {
   announceCompletionEmptyDecision: `{{kind}}\nDecisión: anunciar que el agente "{{agentId}}" terminó.\nAcción obligatoria: en UNA sola frase, indica que terminó este paso e invita al siguiente.`,
   guardrails: [
     `Reglas para tu respuesta (estrictas, sin excepciones):`,
-    `- Responde SIEMPRE en español, en máximo 2 oraciones.`,
+    `- Responde SIEMPRE en español, en máximo 2 oraciones (la única excepción es la lista numerada que pida una decisión de varios campos).`,
     `- Usa español neutro latinoamericano y trata al usuario de "tú". NUNCA uses voseo ("vos", "querés", "tenés", "contame") aunque el usuario lo use, ni variantes de España ("vosotros", "vale").`,
     `- Tu respuesta DEBE corresponder exactamente a las decisiones indicadas arriba, en el orden listado. NO improvises temas adicionales.`,
     `- NO uses saludos. NUNCA escribas "Hola", "¡Hola!", "Buenas", "Qué tal", "Hey", ni similares. La conversación ya empezó.`,
@@ -146,9 +150,10 @@ export function createCurrentAdapterBehaviorSnapshot(
   return {
     schemaVersion: 'adapter-behavior.v1',
     extractor: {
-      // v5 (KAN-26): the field list adds the brief catalog's brand/product fields
+      // v6: `{{askedBlock}}` lists the pending request_fields (number -> field) and «no aplica» answers
+      // are stored as «Sin preferencia». v5 (KAN-26): the field list adds the brief catalog's brand/product fields
       // (logo-agent optional fields). Template unchanged; real eval pending.
-      promptVersion: 'extractor.v5',
+      promptVersion: 'extractor.v6',
       promptTemplate: EXTRACTOR_PROMPT_TEMPLATE,
       rendererVersion: 'extractor.renderer.v1',
       parserVersion: 'extractor.parser.v1',
@@ -165,9 +170,9 @@ export function createCurrentAdapterBehaviorSnapshot(
       historyPolicyVersion: 'none',
     },
     responder: {
-      // v6 (KAN-28): offer_generation, button guidance guardrail, Aprobar/Iterar
-      // invitation on visual completion. Real eval pending owner confirmation.
-      promptVersion: 'responder.chat-step1.v6',
+      // v7: request_fields with more than 2 fields is a numbered list. v6 (KAN-28): offer_generation,
+      // button guidance guardrail, Aprobar/Iterar invitation on visual completion. Real eval pending.
+      promptVersion: 'responder.chat-step1.v7',
       promptTemplate: RESPONDER_PROMPT_TEMPLATE,
       rendererVersion: 'responder.renderer.v1',
       parserVersion: 'responder.text.v1',

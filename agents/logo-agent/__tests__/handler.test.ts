@@ -3,12 +3,12 @@
  * setImageGenerator so we never call fal. Verify:
  *   - returned A2ATaskResult is completed with one image artifact
  *   - artifact metadata includes provider, model, prompt, purpose
- *   - prompt construction includes business_name + style_keywords + color_palette when present
- *   - color_palette is omitted from the prompt when not supplied
+ *   - the frozen v2 template renders per line (empty lines dropped, multi-field lines joined)
+ *   - the tagline line only shows when existing_tagline is present; «Iterar» notes are appended
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { LOGO_PROMPT_VERSION, buildLogoPrompt, handler, renderLogoPrompt } from '../handler';
+import { INPUT_FIELDS, LOGO_PROMPT_TEMPLATE, LOGO_PROMPT_VERSION, handler, renderLogoPrompt } from '../handler';
 import { getFrozenPrompt } from '../../../src/services/prompts';
 import { resetImageGenerator, setImageGenerator } from '../../../src/services/image';
 import type { ImageRequest, ImageResult } from '../../../src/services/image';
@@ -84,6 +84,7 @@ describe('logo-agent handler', () => {
       agentCardVersion: '0.1.0',
     });
     expect(artifact.metadata?.prompt).toContain('Café Andino');
+    expect(artifact.metadata?.prompt).toContain('tierra y verde');
     // KAN-35: the fields the prompt used, with the shared sha256 fingerprint.
     expect(artifact.metadata?.inputs).toEqual({
       business_name: { value: 'Café Andino', version: inputVersion('Café Andino') },
@@ -118,29 +119,6 @@ describe('logo-agent handler', () => {
     expect(sent.prompt).toContain('tierra y verde');
   });
 
-  it('omits the palette sentence from the prompt when color_palette is not supplied', () => {
-    const withPalette = buildLogoPrompt({
-      business_name: 'X',
-      style_keywords: 'y',
-      color_palette: 'azul',
-    });
-    const withoutPalette = buildLogoPrompt({
-      business_name: 'X',
-      style_keywords: 'y',
-    });
-    expect(withPalette).toContain('Paleta de colores: azul');
-    expect(withoutPalette).not.toContain('Paleta de colores');
-  });
-
-  it('appends Iterar observations as a quoted, single-line note (KAN-28)', () => {
-    const prompt = buildLogoPrompt(
-      { business_name: 'X', style_keywords: 'y' },
-      { observations: ['Hazlo más "azul"\n y moderno', '   '] },
-    );
-    expect(prompt).toContain(`Ajustes pedidos sobre la versión anterior: "Hazlo más 'azul' y moderno".`);
-    expect(buildLogoPrompt({ business_name: 'X', style_keywords: 'y' }, { observations: [] })).not.toContain('Ajustes');
-  });
-
   it.each([
     ['content_policy', new TaskError('content_policy', 'blocked by safety filter')],
     ['config_missing', new TaskError('config_missing', 'FAL_KEY is not set')],
@@ -162,32 +140,83 @@ describe('logo-agent handler', () => {
   });
 });
 
-describe('frozen logo template (D22)', () => {
+describe('frozen logo template v2 (D22)', () => {
   const frozen = getFrozenPrompt('logo-agent', LOGO_PROMPT_VERSION)!;
-  const full = { business_name: 'Café "Andino". Sur', style_keywords: 'minimalista, andino', color_palette: 'tierra y verde' };
-  const noPalette = { business_name: 'X', style_keywords: 'y' };
-  const iteration = { observations: ['más  grande', 'sin "sombras"', '  '] };
+  const sparse = { business_name: 'Café "Andino". Sur' };
+  const full = {
+    business_name: 'Café Andino', existing_tagline: 'Sabor de altura', business_category: 'Café', market_proposition: 'Café de origen',
+    logo_goal: 'Verse profesional', target_audience: 'Jóvenes', differentiator: 'Tostado local', personality: 'Cálida',
+    logo_avoid: 'Sin Sin preferencia', competitors: 'Marca X', brand_story: 'Abuela cafetalera', visual_references: 'Ref A',
+    logo_composition: 'Nombre y símbolo', logo_shapes: 'Curvas', style_keywords: 'minimalista', visual_behavior: 'Sobrio',
+    logo_typography: 'Mayúsculas', color_palette: '#112233', color_description: 'tierra', logo_keep: 'La taza',
+    language_references: 'Quechua', location: 'Cusco', logo_applications: 'Empaque', logo_production_limits: '2 cm',
+    logo_restrictions: 'Sin rojo',
+  };
 
-  it.each([
-    ['all fields', full, undefined],
-    ['without palette', noPalette, undefined],
-    ['with iteration notes', full, iteration],
-    ['without palette and with iteration notes', noPalette, iteration],
-  ])('renders exactly what buildLogoPrompt builds: %s', (_label, reqs, refinement) => {
-    expect(renderLogoPrompt(frozen.text, reqs, refinement)).toBe(buildLogoPrompt(reqs, refinement));
+  it('is the frozen text of the working template', () => {
+    expect(frozen.text).toBe(LOGO_PROMPT_TEMPLATE);
   });
 
-  it('uses the prompt attached to the message and records its version', async () => {
+  it('INPUT_FIELDS covers every placeholder of the template', () => {
+    const used = [...frozen.text.matchAll(/\{\{([\w|]+)\}\}/g)].flatMap(([, group]) => group.split('|'));
+    expect([...new Set(used)].sort()).toEqual([...INPUT_FIELDS].sort());
+  });
+
+  it('drops every brief line whose fields are empty and keeps static lines', () => {
+    const out = renderLogoPrompt(frozen.text, sparse);
+    expect(out).toContain('- Nombre exacto: Café "Andino". Sur');
+    expect(out).not.toContain('Eslogan y reglas de uso');
+    expect(out).not.toContain('Competidores y riesgos');
+    expect(out).not.toContain('{{');
+    expect(out).toContain('DECISIONES DE DISEÑO');
+    expect(out).not.toMatch(/REVISIÓN ANTES|pide una aclaración|\{versiones\}|\{criterios\}/);
+  });
+
+  it('joins several fields on one line and drops it only when all are empty', () => {
+    expect(renderLogoPrompt(frozen.text, { ...sparse, market_proposition: 'Café de origen' }))
+      .toContain('- Productos, servicios y alcance futuro: Café de origen\n');
+    const out = renderLogoPrompt(frozen.text, { ...sparse, logo_shapes: 'Curvas', visual_behavior: 'Sobrio' });
+    expect(out).toContain('- Características de formas y trazos: Curvas; Sobrio\n');
+    expect(out).not.toContain('Colores requeridos');
+  });
+
+  it('shows the tagline line only when existing_tagline is present', () => {
+    expect(renderLogoPrompt(frozen.text, full)).toContain('- Eslogan y reglas de uso: Sabor de altura');
+    expect(renderLogoPrompt(frozen.text, { ...full, existing_tagline: '  ' })).not.toContain('Eslogan y reglas de uso');
+  });
+
+  it('renders a full brief with every field once', () => {
+    const out = renderLogoPrompt(frozen.text, full);
+    for (const value of Object.values(full)) expect(out.split(value).length - 1).toBeGreaterThanOrEqual(1);
+    expect(out).toContain('- Productos, servicios y alcance futuro: Café; Café de origen');
+    expect(out).toContain('- Contexto cultural e idiomas: Quechua; Cusco');
+    expect(out.split('Café de origen').length - 1).toBe(1);
+  });
+
+  it('appends Iterar observations as their own quoted, single-line section (KAN-28)', () => {
+    const out = renderLogoPrompt(frozen.text, sparse, { observations: ['Hazlo más "azul"\n y moderno', '   '] });
+    expect(out.endsWith('AJUSTES SOBRE LA VERSIÓN ANTERIOR\nAjustes pedidos sobre la versión anterior: "Hazlo más \'azul\' y moderno".')).toBe(true);
+    expect(renderLogoPrompt(frozen.text, sparse, { observations: [] })).not.toContain('AJUSTES');
+  });
+
+  it('keeps rendering a pinned single-line v1 template', () => {
+    const v1 = getFrozenPrompt('logo-agent', 'logo-agent.v1')!;
+    expect(renderLogoPrompt(v1.text, { business_name: 'X', style_keywords: 'y' }, { observations: ['más grande'] })).toBe(
+      'Diseña un logo profesional para el negocio "X". Estilo: y. Ajustes pedidos sobre la versión anterior: "más grande". Limpio, vectorizado, alta resolución, sin texto adicional.',
+    );
+  });
+
+  it('records only the filled fields the prompt read, and the attached prompt wins', async () => {
     const captured: ImageRequest[] = [];
     setImageGenerator(fakeGenerator(captured));
     try {
-      const message = { ...makeMessage(full), prompt: { version: 'logo-agent.v0', text: 'Logo para "{{business_name}}". Cierre.' } };
+      const message = { ...makeMessage({ business_name: 'Café', logo_goal: 'Verse pro', product_name: 'ignorado' }), prompt: { version: 'logo-agent.v0', text: 'Logo para "{{business_name}}". Cierre.' } };
       const result = await handler(message, undefined);
-      expect(captured[0].prompt).toBe('Logo para "Café "Andino". Sur". Cierre.');
+      expect(captured[0].prompt).toBe('Logo para "Café". Cierre.');
+      expect(result.status === 'completed' && Object.keys(result.artifacts[0].metadata?.inputs as object)).toEqual(['business_name', 'logo_goal']);
       expect(result.status === 'completed' && result.artifacts[0].metadata?.promptVersion).toBe('logo-agent.v0');
     } finally {
       resetImageGenerator();
     }
   });
 });
-

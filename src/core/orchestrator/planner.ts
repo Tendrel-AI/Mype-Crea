@@ -26,8 +26,12 @@
  *      in-flight (`lastDispatchedTaskId` unset), and (c) has not been
  *      dispatched before in this conversation (`iterationCount === 0`)
  *      -> `[request_fields]` carrying the lex-first up to
- *         `MAX_FIELD_BATCH_SIZE` missing required field names from that
- *         agent.
+ *         `MAX_FIELD_BATCH_SIZE` (or the card's own `askBatchSize`) missing
+ *         required field names from that agent.
+ *      When the caller passes derived deliverable states, an agent whose
+ *      deliverable is not `blocked` (approved, own-provided, generating,
+ *      in review, failed) or is inherited read-only from the brand (product
+ *      conversation) is never asked: its brief would not be used.
  *
  *   3. A deliverable is ready to generate — lex-first agent whose derived
  *      state is `enabled` (KAN-64: preconditions met, nothing generated, no
@@ -90,7 +94,9 @@ const log = loggerFor('orchestrator.planner');
 /** Optional, already-derived inputs. Plain data; reading them keeps the planner pure. */
 export interface PlannerContext {
   /** Output of `deriveDeliverableStates` for the same snapshot. */
-  readonly deliverableStates?: ReadonlyArray<Pick<DeliverableStateView, 'agentId' | 'deliverableKind' | 'state'>>;
+  readonly deliverableStates?: ReadonlyArray<
+    Pick<DeliverableStateView, 'agentId' | 'deliverableKind' | 'state'> & Partial<Pick<DeliverableStateView, 'inheritedFromBrand'>>
+  >;
 }
 
 export function planNextDecision(
@@ -182,7 +188,7 @@ export function planNextDecision(
   // Rule 2: pick a focus agent and batch up to MAX_FIELD_BATCH_SIZE missing
   // required fields from it. Stays on one agent per turn so the user is
   // answering questions about a single concern at a time.
-  const focusAgentId = pickFocusAgent(snapshot, schemas);
+  const focusAgentId = pickFocusAgent(snapshot, schemas, context);
   if (focusAgentId) {
     const schema = schemas.find((s) => s.agentId === focusAgentId)!;
     const agentState = snapshot.agentStates[focusAgentId];
@@ -192,7 +198,7 @@ export function planNextDecision(
         return !slot || slot.status === 'empty';
       })
       .sort()
-      .slice(0, MAX_FIELD_BATCH_SIZE);
+      .slice(0, schema.askBatchSize ?? MAX_FIELD_BATCH_SIZE);
 
     const fields: RequestFieldEntry[] = missing.map((fieldName) => ({
       fieldName,
@@ -289,6 +295,7 @@ export function findAgentReadyToGenerate(
 function pickFocusAgent(
   snapshot: ConversationSnapshot,
   schemas: ReadonlyArray<{ readonly agentId: AgentId; readonly requiredFields: ReadonlyArray<string> }>,
+  context: PlannerContext,
 ): AgentId | null {
   const candidates: AgentId[] = [];
   for (const schema of schemas) {
@@ -296,6 +303,9 @@ function pickFocusAgent(
     const agentState = snapshot.agentStates[schema.agentId];
     if (agentState?.lastDispatchedTaskId) continue;
     if ((agentState?.iterationCount ?? 0) > 0) continue;
+    // Only a `blocked`, non-inherited deliverable still needs its brief asked.
+    const view = context.deliverableStates?.find((v) => v.agentId === schema.agentId);
+    if (view && (view.state !== 'blocked' || view.inheritedFromBrand)) continue;
     const hasMissing = schema.requiredFields.some((f) => {
       const slot = agentState?.requiredFields[f];
       return !slot || slot.status === 'empty';

@@ -1,15 +1,18 @@
 {
   "extractor": {
-    "extractor.v5": "e9392ddcd446eb4ac4dbcc9f843fbd225f5b17f77ddade9067314c9d2acd7b7c"
+    "extractor.v5": "e9392ddcd446eb4ac4dbcc9f843fbd225f5b17f77ddade9067314c9d2acd7b7c",
+    "extractor.v6": "fe475c877fb855903a7d6422227501d3732449849e4897c0443e8e8659023110"
   },
   "logo-agent": {
-    "logo-agent.v1": "5a99c2e3b0d04a07f04c1ac3ee6979e73f05fa9941c069e71d3c372df46b7837"
+    "logo-agent.v1": "5a99c2e3b0d04a07f04c1ac3ee6979e73f05fa9941c069e71d3c372df46b7837",
+    "logo-agent.v2": "17487fc2fae61b28d9fb823746b8f67a0ffec1d2efd1dbf462f986c5fa2cd5b3"
   },
   "name-agent": {
     "name-agent.v1": "533b29e49e6c1f81c29171e4e688ba36f8f3d0aff0d1170f4deb7f4b84eeefbf"
   },
   "responder": {
-    "responder.chat-step1.v6": "e3f3eeeaaadb026458081a0007c9ecfc4dde0b4e9c207c20fe37fc55e0d050ca"
+    "responder.chat-step1.v6": "e3f3eeeaaadb026458081a0007c9ecfc4dde0b4e9c207c20fe37fc55e0d050ca",
+    "responder.chat-step1.v7": "274c61e4e40a6a34c334ceba47bdf0a3b03df8d18a28fc60d120f92433609864"
   },
   "tagline-agent": {
     "tagline-agent.v1": "e6069602bc9439bad775d4683c377826c151f6eaeadb50482ae7738df6435a94"

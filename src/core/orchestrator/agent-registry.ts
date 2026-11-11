@@ -39,6 +39,8 @@ export interface AgentCard {
   readonly 'mypes:requirements': {
     readonly required: ReadonlyArray<RequirementField>;
     readonly optional: ReadonlyArray<RequirementField>;
+    /** How many missing required fields the planner may ask in one turn; absent = `MAX_FIELD_BATCH_SIZE`. */
+    readonly askBatchSize?: number;
   };
   readonly 'mypes:ui': {
     readonly tabLabel: string;
@@ -143,6 +145,9 @@ export class AgentRegistry {
       requiredFields: entry.card['mypes:requirements'].required.map((f) => f.name),
       optionalFields: entry.card['mypes:requirements'].optional.map((f) => f.name),
       displayOrder: entry.card['mypes:ui'].displayOrder,
+      ...(entry.card['mypes:requirements'].askBatchSize
+        ? { askBatchSize: entry.card['mypes:requirements'].askBatchSize }
+        : {}),
     }));
   }
 
