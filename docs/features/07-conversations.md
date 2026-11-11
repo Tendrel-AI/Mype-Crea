@@ -7,7 +7,7 @@
 Opening the app takes the owner back to their most recent conversation instead of starting
 over. «Mis conversaciones», in the chat header next to **Nuevo**, lists the latest 20 by last
 activity (labelled with the business name and date) and offers **Nueva conversación**. Starting
-a new conversation keeps the old one. An id that is not yours shows «No encontramos esta
+a new conversation keeps the old one. The brand-level item is «Nueva conversación de marca»; the product-level one is «Nueva conversación» (KAN-93). An id that is not yours shows «No encontramos esta
 conversación.» with **Ir a mi última conversación**.
 
 ## How it works
@@ -86,3 +86,14 @@ conversación.» with **Ir a mi última conversación**.
 - [01-chat-turn.md](01-chat-turn.md) — what happens inside a conversation
 - [05-auth-tenancy-isolation.md](05-auth-tenancy-isolation.md) — ownership checks
 - [08-consent.md](08-consent.md) — the check that runs before any conversation is selected
+
+## Opening message (KAN-93)
+
+A conversation with no turns shows a state-based welcome, never a fixed text and never an LLM call.
+`src/conversations/selection.ts:welcomeFor` takes the orchestrator's `peekNextDecision` (queued
+announcements are not consumed) and `src/adapters/chat-welcome.ts:renderWelcome` renders it with fixed
+Spanish templates, led by «Este es el chat de tu marca «X».» or «Este es el chat de tu producto «Y» de la
+marca «X».» (none for legacy conversations). It travels as `ConversationHistory.welcome` /
+`NewOwnedConversation.welcome`, is shown as the `welcome` system bubble and is not persisted. If computing
+it fails, a warning is logged and the context line plus «Cuéntame en qué quieres trabajar hoy.» is used.
+The header no longer shows a «Paso N de 5» counter.

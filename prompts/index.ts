@@ -8,7 +8,8 @@ import f4 from './name-agent/name-agent.v1.json';
 import f5 from './responder/responder.chat-step1.v6.json';
 import f6 from './responder/responder.chat-step1.v7.json';
 import f7 from './responder/responder.chat-step1.v8.json';
-import f8 from './tagline-agent/tagline-agent.v1.json';
+import f8 from './responder/responder.chat-step1.v9.json';
+import f9 from './tagline-agent/tagline-agent.v1.json';
 
-export const frozenFiles = [f0, f1, f2, f3, f4, f5, f6, f7, f8];
+export const frozenFiles = [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9];
 export { lock };

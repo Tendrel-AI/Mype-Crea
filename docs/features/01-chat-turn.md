@@ -61,8 +61,10 @@ most two missing items at a time, and, once the brief is complete, invites the o
    announcement reaches exactly one turn.
 7. **Responder (LLM).** `src/adapters/chat-output-adapter.ts:ChatOutputAdapter` turns the
    decisions plus the last 10 messages into Spanish prose. Text only: no tools, no names, no
-   images. `offer_generation` is rendered as "tap Generar", never as "I started it". The prompt
-   versions (`extractor.v4`, `responder.chat-step1.v6`) and frozen prompt fragments live in
+   images (KAN-93: it also receives the conversation's `ConversationContext`, loaded by
+   `app/actions/chat.ts`, and the prompt names the brand, or the product and its brand; none for a
+   legacy conversation). `offer_generation` is rendered as "tap Generar", never as "I started it". The prompt
+   versions (`extractor.v4`, `responder.chat-step1.v9`) and frozen prompt fragments live in
    `src/services/ai-config/adapter-behavior.ts`.
 8. **Commit.** `completeTurn` stores the reply; the browser (`components/CreaMype.tsx`,
    `components/crea-mype/ChatPanel.tsx`) shows it.

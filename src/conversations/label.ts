@@ -7,6 +7,8 @@
 export const CONVERSATION_LABEL_TIME_ZONE = 'America/Lima';
 
 export const UNNAMED_CONVERSATION_LABEL = 'Nueva conversación';
+export const UNNAMED_BRAND_LABEL = 'Marca sin nombre';
+export const UNNAMED_PRODUCT_LABEL = 'Producto sin nombre';
 
 const shortDate = new Intl.DateTimeFormat('es-PE', {
   day: 'numeric',

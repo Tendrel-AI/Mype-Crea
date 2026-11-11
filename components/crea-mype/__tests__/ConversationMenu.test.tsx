@@ -51,7 +51,7 @@ describe('«Mis conversaciones» menu (KAN-25)', () => {
       <ConversationMenuItems brands={BRANDS} conversations={ENTRIES} currentConversationId={A} onCreateBrand={noop} onNewConversation={noop} />,
     );
     const items = [...markup.matchAll(/role="menuitem"[^>]*>(.*?)<\/(?:a|button)>/g)].map((m) => m[1].replace(/<[^>]+>/g, '').trim());
-    expect(items).toEqual(['Crear marca', 'Ya tengo una marca', 'Café Andino · 24 oct', 'Nuevo producto', 'Editar marca', 'Nueva conversación', 'Archivar marca', 'Nueva conversación · 20 oct']);
+    expect(items).toEqual(['Crear marca', 'Ya tengo una marca', 'Café Andino · 24 oct', 'Nuevo producto', 'Editar marca', 'Nueva conversación de marca', 'Archivar marca', 'Nueva conversación · 20 oct']);
     expect(markup).toContain('aria-label="Conversaciones anteriores"');
     expect(markup).toContain('aria-label="Mis conversaciones"');
   });
@@ -100,10 +100,10 @@ describe('«Mis conversaciones» menu (KAN-25)', () => {
     expect(markup.slice(0, markup.indexOf('aria-label="Producto: Café molido"'))).not.toContain('Café molido · 25 oct');
   });
 
-  it('«Nueva conversación» of a brand passes that brand id', () => {
+  it('«Nueva conversación de marca» of a brand passes that brand id', () => {
     const onNewConversation = vi.fn();
     const tree = ConversationMenuItems({ brands: BRANDS, conversations: ENTRIES, currentConversationId: A, onCreateBrand: noop, onNewConversation });
-    const [button] = findAll(tree, (el) => el.type === 'button' && textOf(el.props.children) === 'Nueva conversación');
+    const [button] = findAll(tree, (el) => el.type === 'button' && textOf(el.props.children) === 'Nueva conversación de marca');
     button.props.onClick?.();
     expect(onNewConversation).toHaveBeenCalledWith(BRAND);
   });
@@ -144,7 +144,6 @@ describe('ChatPanel with the conversation menu and the not-found state (KAN-25)'
     processingAgents: new Set<string>(),
     conversationId: A,
     handleExportConversation: noop,
-    step: 1,
     onCreateBrand: noop,
     onImportBrand: noop,
     messages: [],

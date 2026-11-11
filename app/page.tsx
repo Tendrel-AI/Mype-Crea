@@ -59,6 +59,7 @@ export default async function Home({
           initialConversations={result.conversations}
           initialBrands={result.brands}
           initialContext={result.history.context}
+          initialWelcome={result.history.welcome}
         />
       );
     case 'empty':

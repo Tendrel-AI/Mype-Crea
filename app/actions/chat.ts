@@ -229,10 +229,11 @@ export async function chatAction(params: {
     const snapshot = await orchestrator.getSnapshot(conversationId);
     // Most recent 10 (DESC), back to chronological order for the Responder.
     const recentMessages = (await repository.messages.listByConversation(conversationId, { limit: 10, orderDescending: true })).reverse();
+    const context = (await repository.conversations.context(conversationId)) ?? null;
     const rendered = await configRuntime.runPurpose(
       identity,
       { conversationId, turnId: turn.id, ownerToken: claim.ownerToken, purpose: 'responder' },
-      (execution) => outputAdapter.render({ decisions, recentMessages, snapshot, llmContext, execution, promptVersions }),
+      (execution) => outputAdapter.render({ decisions, recentMessages, snapshot, llmContext, execution, promptVersions, context }),
     );
     const completed = await repository.aiTurns.completeTurn({ turnId: turn.id, ownerToken: claim.ownerToken, responseContent: rendered.value.content });
     log.info({ conversationId, turnId: turn.id, decisionKinds: decisions.map((decision) => decision.kind) }, 'chatAction.complete');

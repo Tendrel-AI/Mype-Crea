@@ -122,13 +122,12 @@ describe('dashboard pending/processing states (KAN-74)', () => {
 });
 
 describe('chat panel states (KAN-74)', () => {
-  const welcome: Message = { id: 'welcome', role: 'model', text: '**Paso 1: Nombre del Negocio**', isSystem: true };
+  const welcome: Message = { id: 'welcome', role: 'model', text: '**Este es el chat de tu marca «Brisa Ron».**', isSystem: true };
   const base = {
     assets: EMPTY,
     processingAgents: new Set<string>(),
     conversationId: 'c1',
     handleExportConversation: noop,
-    step: 1,
     onCreateBrand: noop,
     onImportBrand: noop,
     messages: [welcome],
@@ -147,18 +146,17 @@ describe('chat panel states (KAN-74)', () => {
   it('renders header controls, Markdown welcome, composer and footer copy', () => {
     const markup = renderToStaticMarkup(<ChatPanel {...base} />);
     expect(markup).toContain('Exportar');
-    expect(markup).toContain('Paso 1 de 5');
+    expect(markup).not.toMatch(/Paso \d de 5/);
     expect(markup).toContain('Nuevo');
-    expect(markup).toContain('<strong>Paso 1: Nombre del Negocio</strong>');
+    expect(markup).toContain('<strong>Este es el chat de tu marca «Brisa Ron».</strong>');
     expect(markup).toContain('placeholder="Escribe tu mensaje aquí..."');
     expect(markup).toContain('La IA puede cometer errores. Verifica la información importante.');
     expect(markup).not.toContain('Pensando...');
   });
 
-  it('hides export without a conversation and clamps the step label to 5', () => {
-    const markup = renderToStaticMarkup(<ChatPanel {...base} conversationId="" step={6} />);
+  it('hides export without a conversation', () => {
+    const markup = renderToStaticMarkup(<ChatPanel {...base} conversationId="" />);
     expect(markup).not.toContain('Exportar');
-    expect(markup).toContain('Paso 5 de 5');
   });
 
   it('shows thinking, error status, retry and uncertain-turn states with the composer disabled', () => {

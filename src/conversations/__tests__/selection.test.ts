@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => ({
   listByConversation: vi.fn(),
   startConversation: vi.fn(async () => undefined),
   getDeliverableStates: vi.fn(async (): Promise<unknown[]> => []),
+  peekNextDecision: vi.fn(async (): Promise<unknown[]> => [{ kind: 'announce_all_complete' }]),
   executeCommand: vi.fn(),
   resolveIdentity: vi.fn(),
 }));
@@ -56,6 +57,7 @@ vi.mock('../../core/orchestrator/runtime', () => ({
   getOrchestrator: () => ({
     startConversation: mocks.startConversation,
     getDeliverableStates: mocks.getDeliverableStates,
+    peekNextDecision: mocks.peekNextDecision,
     executeCommand: mocks.executeCommand,
   }),
 }));
@@ -313,6 +315,15 @@ describe('brand and product creation (KAN-87)', () => {
     });
     expect(mocks.startConversation).toHaveBeenCalledTimes(1);
     expect(mocks.brandCreate).toHaveBeenLastCalledWith(OWN.tenant, OWN.user, expect.objectContaining({ name: 'Café Andino', attributes: BRAND_ATTRIBUTES }));
+  });
+
+  it('KAN-93: created and loaded conversations carry the state-based welcome; a throwing peek yields the fallback', async () => {
+    const created = await createOwnedBrand(OWN as never, { attributes: BRAND_ATTRIBUTES });
+    expect(created).toMatchObject({ ok: true, welcome: expect.stringContaining('Este es el chat de tu marca «Café Andino».') });
+    expect(created.ok && created.welcome).toContain('Tu marca está lista');
+    mocks.peekNextDecision.mockRejectedValueOnce(new Error('boom'));
+    const loaded = await resolveHomeConversation(ids.older);
+    expect(loaded).toMatchObject({ kind: 'open', history: { welcome: 'Este es el chat de tu marca «Café Andino».\n\nCuéntame en qué quieres trabajar hoy.' } });
   });
 
   it('import mode stores imported=true on the server; a client-sent imported flag is ignored', async () => {

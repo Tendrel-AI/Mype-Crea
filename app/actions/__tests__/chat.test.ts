@@ -31,8 +31,9 @@ const mocks = vi.hoisted(() => {
   const hasAccepted = vi.fn(async (version: string) => acceptedVersions.has(version));
   const preflight = vi.fn<(request: unknown) => Promise<any>>(async () => ({ allowed: true, reservationId: null }));
   const pin = vi.fn(async (_id: string, versions: Record<string, string>) => versions);
+  const context = { brandId: 'b1', brandName: 'Brisa Ron', productId: null, productName: null };
   const repository = {
-    conversations: { ensurePinnedConversation }, conversationPrompts: { pin }, aiTurns, messages, usage: { preflight },
+    conversations: { ensurePinnedConversation, context: vi.fn(async () => context) }, conversationPrompts: { pin }, aiTurns, messages, usage: { preflight },
     termsAcceptances: { hasAccepted },
     aiConfig: { getPinnedRelease: vi.fn(async () => undefined), getProviderAvailability: vi.fn(async () => ({ enabled: true, version: 0 })) },
   };
@@ -159,6 +160,8 @@ describe('chatAction durable turn boundary', () => {
     expect(mocks.pin.mock.invocationCallOrder[0]).toBeLessThan(mocks.extract.mock.invocationCallOrder[0]);
     expect(mocks.extract).toHaveBeenCalledWith(expect.objectContaining({ promptVersions: stored }));
     expect(mocks.render).toHaveBeenCalledWith(expect.objectContaining({ promptVersions: stored }));
+    // KAN-93: the Responder gets the brand/product names of the conversation.
+    expect(mocks.render).toHaveBeenCalledWith(expect.objectContaining({ context: expect.objectContaining({ brandName: 'Brisa Ron' }) }));
   });
 
   describe('KAN-43 usage preflight', () => {

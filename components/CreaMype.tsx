@@ -59,18 +59,16 @@ interface CreaMypeProps {
   initialBrands?: ReadonlyArray<BrandListEntry>;
   /** KAN-87: brand/product of the open conversation, for the header line. */
   initialContext?: ConversationContext | null;
+  /** KAN-93: server-rendered opening message for a conversation with no turns yet. */
+  initialWelcome?: string;
   /** KAN-27: the terms gate could not be read; no brand can be created. */
   creationBlocked?: boolean;
   /** KAN-25: the requested id is foreign, missing or malformed (one identical outcome). */
   conversationNotFound?: boolean;
 }
 
-const WELCOME_MESSAGE: Message = {
-  id: 'welcome',
-  role: 'model',
-  text: '¡Hola! Soy tu estratega de marca y diseñador de IA. Vamos a crear tu marca y lanzar tu producto en 5 pasos.\n\n**Paso 1: Nombre del Negocio**\nPara empezar, cuéntame un poco sobre tu idea: ¿En qué industria estás? ¿Cuáles son tus valores principales? ¿A quién va dirigido tu producto?',
-  isSystem: true,
-};
+/** KAN-93: the opening message is composed by the server from the plan (not persisted). */
+const welcomeMessage = (text: string): Message => ({ id: 'welcome', role: 'model', text, isSystem: true });
 
 const NAME_AGENT_ID = 'name-agent';
 const TAGLINE_AGENT_ID = 'tagline-agent';
@@ -97,7 +95,7 @@ const EMPTY_ASSETS: BrandAssets = {
   marketingPlan: '',
 };
 
-export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialBrief = [], initialStates = [], landingPageContent, initialError, initialConversations = [], initialBrands = [], initialContext = null, creationBlocked = false, conversationNotFound = false }: CreaMypeProps) {
+export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialBrief = [], initialStates = [], landingPageContent, initialError, initialConversations = [], initialBrands = [], initialContext = null, initialWelcome = '', creationBlocked = false, conversationNotFound = false }: CreaMypeProps) {
   const [activeTab, setActiveTab] = useState<'create' | 'gallery' | 'landing'>('create');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
@@ -115,7 +113,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
           id: `${turn.requestId}:notice:${noticeIndex}`, role: 'model' as const, text: notice.content!, isNotice: true,
         })),
       ])
-    : [WELCOME_MESSAGE]);
+    : [welcomeMessage(initialWelcome)]);
   const incompleteTurn = [...initialTurns].reverse().find((turn) => turn.stage !== 'responded');
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -505,7 +503,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   /** Open a freshly created conversation: reset every per-conversation state and move the URL. */
   const openConversation = (result: Extract<NewOwnedConversation, { ok: true }>) => {
     setAssets(EMPTY_ASSETS);
-    setMessages([WELCOME_MESSAGE]);
+    setMessages([welcomeMessage(result.welcome)]);
     currentConversationRef.current = result.conversationId;
     setConversationId(result.conversationId);
     setIsLoading(false);
@@ -661,7 +659,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       )}
       {activeTab === 'create' && (
         <>
-          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} step={step} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} context={context} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || logoView || nameView || taglineView ? (
+          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} context={context} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || logoView || nameView || taglineView ? (
             <>
               {briefFields.length > 0 && (
                 <details className="mb-2">
