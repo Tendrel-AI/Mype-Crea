@@ -56,7 +56,7 @@ const mocks = vi.hoisted(() => {
     calls, pin, identity, turn, snapshot, delta, decision, ensurePinnedConversation, claimTurn,
     ensureUserMessage, checkpointTurn, failTurn, completeTurn, listNotices, listTurns,
     repository, repos, startConversation, applyDelta, peekNextDecision, acknowledgeDecisions,
-    getSnapshot, extract, render, runPurpose, childInfo, acceptedVersions, hasAccepted, preflight,
+    getSnapshot, messages, extract, render, runPurpose, childInfo, acceptedVersions, hasAccepted, preflight,
   };
 });
 
@@ -135,6 +135,15 @@ describe('chatAction durable turn boundary', () => {
     expect(mocks.ensureUserMessage).toHaveBeenCalledWith(expect.objectContaining({ content: 'Quiero un logo' }));
     expect(mocks.checkpointTurn.mock.calls.map(([value]) => value.stage)).toEqual(['extracted', 'effects_started', 'effects_committed']);
     expect(mocks.completeTurn).toHaveBeenCalledWith(expect.objectContaining({ responseContent: '¡Listo!' }));
+  });
+
+  it('gives the responder the most recent messages in chronological order (KAN-91)', async () => {
+    mocks.messages.listByConversation.mockResolvedValueOnce([
+      { role: 'assistant', content: 'newest' }, { role: 'user', content: 'older' },
+    ] as never);
+    await chatAction(input);
+    expect(mocks.messages.listByConversation).toHaveBeenCalledWith(expect.anything(), { limit: 10, orderDescending: true });
+    expect((mocks.render.mock.calls[0] as unknown as [{ recentMessages: { content: string }[] }])[0].recentMessages.map((m) => m.content)).toEqual(['older', 'newest']);
   });
 
   it('pins the active prompt versions after authorizing and hands the stored map to both adapters (D22)', async () => {

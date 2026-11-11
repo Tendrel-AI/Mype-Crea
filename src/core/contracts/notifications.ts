@@ -123,6 +123,7 @@ const PLANNER_DECISION_KINDS: ReadonlyArray<PlannerDecision['kind']> = [
   'offer_generation',
   'announce_dispatch',
   'announce_completion',
+  'report_deliverable_status',
   'announce_all_complete',
 ];
 
