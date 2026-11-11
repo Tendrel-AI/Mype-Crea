@@ -47,8 +47,12 @@ most two missing items at a time, and, once the brief is complete, invites the o
    `PlannerDecision[]` (`src/core/contracts/decisions.ts:PlannerDecision`). First match wins:
    a pending slot → `confirm_field` (alone); else the lexically first agent with missing required
    fields → `request_fields` with up to `MAX_FIELD_BATCH_SIZE` (2) fields; else an agent whose
-   deliverable state is `enabled` and never dispatched → `offer_generation`; else
-   `announce_all_complete`. Ties break lexically by agent id, then field name.
+   deliverable state is `enabled` and never dispatched → `offer_generation`; else a
+   non-inherited deliverable that is `failed`, `in_review` or `generating` (in that priority) →
+   `report_deliverable_status` with its allowed panel commands (KAN-91); else
+   `announce_all_complete`, which the Responder words per conversation kind (brand: «Nuevo
+   producto»; product: data saved) and never as a question. Ties break lexically by agent id,
+   then field name.
 6. **Core wiring.** `src/core/orchestrator/orchestrator-core.ts:OrchestratorCoreImpl` runs
    `applyDelta` (merge only, never dispatches) and `peekNextDecision`, which reads the deliverable
    states (I/O through ports), passes them to the pure planner as data, and puts any queued

@@ -22,6 +22,7 @@
 
 import type {
   ConversationSnapshot,
+  DeliverableCommandKind,
   FieldSlot,
   PlannerDecision,
 } from '../core/contracts';
@@ -132,7 +133,7 @@ function buildResponderSystemPrompt(
   // Releases frozen before responder v6 lack the KAN-28 command fragments.
   const fragments = { ...RESPONDER_FRAGMENT_FALLBACKS, ...frozenFragments };
   const statusSummary = describeFieldStatus(snapshot);
-  const decisionsBlock = describeDecisions(decisions, registry, fragments);
+  const decisionsBlock = describeDecisions(decisions, registry, fragments, snapshot);
   const guardrails = buildGuardrails(decisions, fragments);
 
   return template
@@ -150,6 +151,7 @@ function describeDecisions(
   decisions: ReadonlyArray<PlannerDecision>,
   registry: AgentRegistry,
   fragments: Readonly<Record<string, string>>,
+  snapshot: ConversationSnapshot,
 ): string {
   if (decisions.length === 0) {
     // Should not happen — the planner always returns at least one decision —
@@ -158,11 +160,11 @@ function describeDecisions(
   }
 
   if (decisions.length === 1) {
-    return describeDecision(decisions[0], registry, fragments);
+    return describeDecision(decisions[0], registry, fragments, snapshot);
   }
 
   return decisions
-    .map((d, i) => `Decisión ${i + 1}:\n${describeDecision(d, registry, fragments)}`)
+    .map((d, i) => `Decisión ${i + 1}:\n${describeDecision(d, registry, fragments, snapshot)}`)
     .join('\n\n');
 }
 
@@ -170,6 +172,7 @@ function describeDecision(
   decision: PlannerDecision,
   registry: AgentRegistry,
   fragments: Readonly<Record<string, string>>,
+  snapshot: ConversationSnapshot,
 ): string {
   // Each block leads with `kind=...` as a machine-readable tag so the
   // responder can ground on the literal decision name from PlannerDecision,
@@ -214,8 +217,24 @@ function describeDecision(
       });
     case 'announce_completion':
       return describeAnnounceCompletion(kindTag, decision.agentId, decision.artifacts, fragments);
+    case 'report_deliverable_status': {
+      const template = {
+        in_review: fragments.reportStatusInReviewDecision,
+        failed: fragments.reportStatusFailedDecision,
+        generating: fragments.reportStatusGeneratingDecision,
+      }[decision.state];
+      return applyPromptTemplate(template, {
+        kind: kindTag,
+        agentId: decision.agentId,
+        deliverableLabel: deliverableLabelFor(decision.agentId, decision.deliverableKind, registry),
+        commandsLine: decision.allowedCommands.map((c) => COMMAND_BUTTON_LABELS[c]).join(', ') || 'ninguno',
+      });
+    }
     case 'announce_all_complete':
-      return applyPromptTemplate(fragments.announceAllCompleteDecision, { kind: kindTag });
+      return applyPromptTemplate(
+        snapshot.links?.hasProduct === true ? fragments.announceAllCompleteProductDecision : fragments.announceAllCompleteBrandDecision,
+        { kind: kindTag },
+      );
   }
 }
 
@@ -235,8 +254,20 @@ function buildGuardrails(
   if (hasDispatch && hasRequestFields) lines.push(fragments.dispatchRequestGuardrail);
   // KAN-28: chat never starts, changes or approves a deliverable.
   lines.push(fragments.commandGuidanceGuardrail);
+  // KAN-91: never end on a question the system cannot act on.
+  lines.push(fragments.noDeadEndGuardrail);
   return lines.join('\n');
 }
+
+/** Spanish panel button names (see components/crea-mype/DeliverableCommands.tsx). */
+const COMMAND_BUTTON_LABELS: Readonly<Record<DeliverableCommandKind, string>> = {
+  generate: 'Generar',
+  iterate: 'Iterar',
+  approve: 'Aprobar',
+  retry: 'Reintentar',
+  cancel: 'Cancelar',
+  use_own: 'Usar mi …',
+};
 
 /** Human label for a deliverable: the Agent Card's tab label, else its kind. */
 function deliverableLabelFor(agentId: string, deliverableKind: string, registry: AgentRegistry): string {
@@ -281,7 +312,7 @@ function describeAnnounceCompletion(
   }
 
   // No artifacts at all — degrade to a minimal completion message.
-  return applyPromptTemplate(fragments.announceCompletionEmptyDecision, { kind: kindTag, agentId });
+  return applyPromptTemplate(fragments.announceCompletionEmptyNoNextDecision, { kind: kindTag, agentId });
 }
 
 function applyPromptTemplate(template: string, values: Readonly<Record<string, string>>): string {

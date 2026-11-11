@@ -106,6 +106,15 @@ const RESPONDER_COMMAND_FRAGMENTS = {
   requestFieldsListAction: `Acción obligatoria: presenta TODOS los campos como UNA sola lista numerada, en EXACTAMENTE el orden de arriba (el número N de tu lista es el campo N de arriba). Una línea corta por ítem, en lenguaje sencillo, basada en la pista entre comillas; NUNCA escribas el nombre técnico del campo. Antes de la lista, una frase breve de introducción. Después de la lista, dile que puede responder todo en un solo mensaje usando los números, y que para cualquier ítem puede decir "no aplica" o "sin preferencia". Esta instrucción tiene prioridad sobre el límite de oraciones.`,
   offerGenerationDecision: `{{kind}}\nDecisión: el entregable "{{deliverableLabel}}" del agente "{{agentId}}" ya tiene todo lo necesario. La generación NO empieza sola: el usuario debe tocar el botón Generar del panel.\nAcción obligatoria: en UNA sola frase, dile que ya tiene todo listo y que, cuando quiera, toque el botón Generar (por ejemplo "Ya tienes todo listo para tu logo. Cuando quieras, toca el botón Generar."). PROHIBIDO decir que ya empezaste a generar o que estás generando.`,
   commandGuidanceGuardrail: `- Generar, Iterar, Aprobar, Reintentar y Cancelar son botones del panel. Tú NO puedes ejecutarlos desde el chat: nunca digas que ya generaste, cambiaste, aprobaste o cancelaste algo. Si el usuario pide en el chat un cambio, otra versión o una aprobación de un entregable, guíalo al botón correspondiente, por ejemplo: "Para ajustar este logo, toca el botón Iterar y escribe qué quieres cambiar." o "Si te gusta, toca el botón Aprobar.".`,
+  // KAN-91: dead-end fixes. All in the fallback set so releases pinned to v6/v7 get them too.
+  reportStatusInReviewDecision: `{{kind}}\nDecisión: el entregable "{{deliverableLabel}}" del agente "{{agentId}}" está en el panel esperando la revisión del usuario.\nBotones del panel disponibles ahora: {{commandsLine}}\nAcción obligatoria: en UNA o DOS frases (sin preguntas), dile que su {{deliverableLabel}} está en el panel para revisarlo; si le gusta, que toque Aprobar y, si quiere cambios, Iterar (menciona SOLO los botones disponibles de la lista). PROHIBIDO preguntar "¿seguimos?" o invitar a un siguiente paso.`,
+  reportStatusFailedDecision: `{{kind}}\nDecisión: algo falló al generar el entregable "{{deliverableLabel}}" del agente "{{agentId}}".\nBotones del panel disponibles ahora: {{commandsLine}}\nAcción obligatoria: en UNA o DOS frases (sin preguntas), dile que algo salió mal al generar su {{deliverableLabel}} y que puede volver a intentarlo con el botón Reintentar (menciona Iterar solo si está en la lista de botones disponibles). PROHIBIDO preguntar "¿seguimos?" o invitar a un siguiente paso.`,
+  reportStatusGeneratingDecision: `{{kind}}\nDecisión: el entregable "{{deliverableLabel}}" del agente "{{agentId}}" se está generando.\nBotones del panel disponibles ahora: {{commandsLine}}\nAcción obligatoria: en UNA sola frase (sin preguntas), dile que su {{deliverableLabel}} se está generando y aparecerá en el panel. PROHIBIDO usar muletillas de espera ("dame un momento", "en breve", "enseguida", etc.) y preguntar "¿seguimos?".`,
+  announceAllCompleteBrandDecision: `{{kind}}\nDecisión: la marca del usuario está lista; no queda nada pendiente en este chat.\nAcción obligatoria: en UNA o DOS frases, dile que su marca está lista y que, para continuar, puede crear un producto con el botón «Nuevo producto». NO hagas ninguna pregunta ni recapitules valores.`,
+  // shortcut: promise of future product deliverables, remove when label/ad-image agents ship (KAN-92)
+  announceAllCompleteProductDecision: `{{kind}}\nDecisión: los datos del producto están guardados; no queda nada pendiente en este chat.\nAcción obligatoria: en UNA o DOS frases, dile que los datos de su producto quedaron guardados y que puede revisarlos o editarlos en el panel, y que pronto podrá generar la etiqueta y las imágenes publicitarias de su producto. NO hagas ninguna pregunta ni recapitules valores.`,
+  announceCompletionEmptyNoNextDecision: `{{kind}}\nDecisión: anunciar que el agente "{{agentId}}" terminó.\nAcción obligatoria: en UNA sola frase, indica que terminó este paso y que puede revisar el resultado en el panel. NO hagas preguntas ni invites a un siguiente paso.`,
+  noDeadEndGuardrail: `- Solo una decisión confirm_field puede terminar en una pregunta de sí/no. NUNCA preguntes "¿seguimos?", "¿continuamos?" ni invites a un "siguiente paso" que no esté en la decisión. Cuando no haya nada pendiente, di qué puede hacer el usuario: los botones del panel o «Nuevo producto».`,
 } as const;
 
 export const RESPONDER_FRAGMENT_FALLBACKS: Readonly<Record<string, string>> = RESPONDER_COMMAND_FRAGMENTS;
@@ -170,9 +179,10 @@ export function createCurrentAdapterBehaviorSnapshot(
       historyPolicyVersion: 'none',
     },
     responder: {
+      // v8 (KAN-91): report_deliverable_status, brand/product announce_all_complete, no-dead-end guardrail.
       // v7: request_fields with more than 2 fields is a numbered list. v6 (KAN-28): offer_generation,
       // button guidance guardrail, Aprobar/Iterar invitation on visual completion. Real eval pending.
-      promptVersion: 'responder.chat-step1.v7',
+      promptVersion: 'responder.chat-step1.v8',
       promptTemplate: RESPONDER_PROMPT_TEMPLATE,
       rendererVersion: 'responder.renderer.v1',
       parserVersion: 'responder.text.v1',

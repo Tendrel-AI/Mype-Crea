@@ -227,7 +227,8 @@ export async function chatAction(params: {
     }
     const decisions = decisionArray(payload['decisions']);
     const snapshot = await orchestrator.getSnapshot(conversationId);
-    const recentMessages = await repository.messages.listByConversation(conversationId, { limit: 10 });
+    // Most recent 10 (DESC), back to chronological order for the Responder.
+    const recentMessages = (await repository.messages.listByConversation(conversationId, { limit: 10, orderDescending: true })).reverse();
     const rendered = await configRuntime.runPurpose(
       identity,
       { conversationId, turnId: turn.id, ownerToken: claim.ownerToken, purpose: 'responder' },

@@ -477,7 +477,7 @@ describe('ChatOutputAdapter', () => {
   });
 
   it('bumps the responder prompt version for the command guidance', () => {
-    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v7');
+    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v8');
   });
 
   it('a release frozen before v6 still renders offer_generation through the fragment fallbacks', async () => {
@@ -512,7 +512,7 @@ describe('ChatOutputAdapter', () => {
 
     await adapter.render(base);
     await adapter.render({ ...base, promptVersions: { responder: 'responder.chat-step1.v6' } });
-    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v7', 'responder.chat-step1.v6']);
+    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v8', 'responder.chat-step1.v6']);
   });
 
   it('falls back to the active version when the pinned one no longer exists', async () => {
@@ -524,6 +524,56 @@ describe('ChatOutputAdapter', () => {
       decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
       promptVersions: { responder: 'responder.chat-step1.v0' },
     });
-    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v7');
+    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v8');
+  });
+
+  describe('KAN-91 dead-end fixes', () => {
+    const renderPrompt = async (decision: PlannerDecision, snapshot = emptySnapshot, promptVersions?: never) => {
+      setProvider(provider = makeResponderProvider('ok'));
+      await new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry).render({
+        decisions: [decision], recentMessages: [], snapshot, llmContext: ctx, promptVersions,
+      });
+      return provider.captured[0].systemPrompt as string;
+    };
+    const status = (state: 'generating' | 'in_review' | 'failed', allowedCommands: ReadonlyArray<'approve' | 'iterate' | 'retry' | 'cancel'>): PlannerDecision =>
+      ({ kind: 'report_deliverable_status', agentId: 'test-fixture-agent', deliverableKind: 'logo', state, allowedCommands });
+
+    it('renders each state with the label and only the allowed button names', async () => {
+      const review = await renderPrompt(status('in_review', ['approve', 'iterate']));
+      expect(review).toContain('kind=report_deliverable_status');
+      expect(review).toContain('Botones del panel disponibles ahora: Aprobar, Iterar');
+      const failed = await renderPrompt(status('failed', ['retry']));
+      expect(failed).toContain('algo salió mal');
+      expect(failed).toContain('Botones del panel disponibles ahora: Reintentar');
+      expect(failed).not.toContain('disponibles ahora: Reintentar, Iterar');
+      expect(await renderPrompt(status('generating', ['cancel']))).toContain('se está generando');
+    });
+
+    it('picks the brand or product fragment for announce_all_complete by links.hasProduct', async () => {
+      const brand = await renderPrompt({ kind: 'announce_all_complete' });
+      expect(brand).toContain('«Nuevo producto»');
+      const product = await renderPrompt({ kind: 'announce_all_complete' }, buildSnapshot({ links: { hasBrand: true, hasProduct: true } }));
+      expect(product).toContain('etiqueta');
+      expect(product).not.toContain('«Nuevo producto» NO');
+    });
+
+    it('always carries the no-dead-end guardrail', async () => {
+      expect(await renderPrompt({ kind: 'announce_all_complete' })).toContain('NUNCA preguntes "¿seguimos?"');
+    });
+
+    it('an older frozen release without the new keys still renders via fallbacks', async () => {
+      const current = createCurrentAdapterBehaviorSnapshot();
+      const keys = ['reportStatusInReviewDecision', 'reportStatusFailedDecision', 'reportStatusGeneratingDecision', 'announceAllCompleteBrandDecision', 'announceAllCompleteProductDecision', 'noDeadEndGuardrail', 'announceCompletionEmptyNoNextDecision'];
+      const old = structuredClone(current);
+      for (const k of keys) delete (old.responder.promptFragments as Record<string, string>)[k];
+      setProvider(provider = makeResponderProvider('ok'));
+      await new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry).render({
+        decisions: [status('in_review', ['approve', 'iterate'])], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
+        execution: { model: { ...provider.resolve('responder'), provider: 'openrouter' }, behavior: old },
+      });
+      const prompt = provider.captured[0].systemPrompt as string;
+      expect(prompt).toContain('Aprobar, Iterar');
+      expect(prompt).toContain('NUNCA preguntes "¿seguimos?"');
+    });
   });
 });

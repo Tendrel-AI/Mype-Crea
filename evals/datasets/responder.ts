@@ -274,6 +274,17 @@ export const responderCases: ReadonlyArray<ResponderCase> = [
     expected: { mustMention: ['Iterar'], mustNotMention: ['ya lo cambié', 'ya cambié'] },
   },
   {
+    // KAN-91: real eval pending.
+    id: 'report-status-in-review',
+    tags: ['report_deliverable_status', 'commands'],
+    inputs: {
+      decisions: [{ kind: 'report_deliverable_status', agentId: 'logo-agent', deliverableKind: 'logo', state: 'in_review', allowedCommands: ['approve', 'iterate'] }],
+      recentMessages: [{ role: 'user', content: 'Listo, ¿y ahora?' }],
+      logoState: allFilled,
+    },
+    expected: { mustMention: ['Aprobar', 'Iterar'], mustNotMention: ['¿Seguimos', 'siguiente'] },
+  },
+  {
     id: 'all-complete',
     tags: ['announce_all_complete'],
     inputs: {

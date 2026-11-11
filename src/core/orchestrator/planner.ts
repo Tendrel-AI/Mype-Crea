@@ -41,11 +41,17 @@
  *         typed «Generar» command (`DeliverableCommandPort`). This decision
  *         only lets the Responder point the user at the button.
  *
- *   4. Otherwise — every agent is filled and generated (or generating, or
- *      waiting for an upstream approval), and there is nothing to ask.
+ *   4. A non-inherited deliverable is `failed`, `in_review` or `generating`
+ *      (KAN-91; only with `context.deliverableStates`) — the user has a panel
+ *      action to take or to wait for. Priority failed > in_review >
+ *      generating, then lex `agentId`.
+ *      -> `[report_deliverable_status]` carrying that view's allowedCommands.
+ *
+ *   5. Otherwise — every agent is filled and generated (or waiting for an
+ *      upstream approval), and there is nothing to ask.
  *      -> `[announce_all_complete]`.
  *
- * Rule 3 reads the per-deliverable states the caller derived with the pure
+ * Rules 3 and 4 read the per-deliverable states the caller derived with the pure
  * `deriveDeliverableStates` (passed in `context.deliverableStates`). Without
  * that context (unit tests, legacy callers) it falls back to the snapshot
  * predicate `findAgentReadyToGenerate`. Both inputs are plain data: same
@@ -95,7 +101,7 @@ const log = loggerFor('orchestrator.planner');
 export interface PlannerContext {
   /** Output of `deriveDeliverableStates` for the same snapshot. */
   readonly deliverableStates?: ReadonlyArray<
-    Pick<DeliverableStateView, 'agentId' | 'deliverableKind' | 'state'> & Partial<Pick<DeliverableStateView, 'inheritedFromBrand'>>
+    Pick<DeliverableStateView, 'agentId' | 'deliverableKind' | 'state' | 'allowedCommands'> & Partial<Pick<DeliverableStateView, 'inheritedFromBrand'>>
   >;
 }
 
@@ -221,8 +227,22 @@ export function planNextDecision(
     );
   }
 
-  // Rule 4: nothing pending, no focus agent, nothing to offer — every agent
-  // is generated, generating, or waiting on an upstream approval.
+  // Rule 4 (KAN-91): a deliverable needs the user's panel action or is in flight.
+  const status = pickStatusReport(context);
+  if (status) {
+    return decide(
+      [{
+        kind: 'report_deliverable_status',
+        agentId: status.agentId,
+        deliverableKind: status.deliverableKind,
+        state: status.state as 'generating' | 'in_review' | 'failed',
+        allowedCommands: status.allowedCommands,
+      }],
+      'report_deliverable_status',
+    );
+  }
+
+  // Rule 5: nothing pending, no focus agent, nothing to offer or report.
   return decide([{ kind: 'announce_all_complete' }], 'all_complete');
 }
 
@@ -243,6 +263,17 @@ function pickGenerationOffer(
   if (!agentId) return null;
   const spec = registry.getDeliverableSpecs().find((s) => s.agentId === agentId);
   return { agentId, deliverableKind: spec?.deliverableKind ?? agentId };
+}
+
+const STATUS_PRIORITY: Readonly<Record<string, number>> = { failed: 0, in_review: 1, generating: 2 };
+
+function pickStatusReport(context: PlannerContext) {
+  const candidates = (context.deliverableStates ?? [])
+    .filter((v) => v.state in STATUS_PRIORITY && !v.inheritedFromBrand)
+    .sort((a, b) =>
+      STATUS_PRIORITY[a.state] - STATUS_PRIORITY[b.state] ||
+      (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0));
+  return candidates[0] ?? null;
 }
 
 /**

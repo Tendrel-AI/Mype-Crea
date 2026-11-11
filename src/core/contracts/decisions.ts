@@ -15,6 +15,7 @@
  */
 
 import type { A2AArtifact } from '../agent-types';
+import type { DeliverableCommandKind } from './deliverables';
 import type { AgentId, DeliverableId, FieldName, TaskId } from './ids';
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,7 @@ export type PlannerDecision =
   | OfferGenerationDecision
   | AnnounceDispatchDecision
   | AnnounceCompletionDecision
+  | ReportDeliverableStatusDecision
   | AnnounceAllCompleteDecision;
 
 /**
@@ -115,6 +117,20 @@ export interface AnnounceCompletionDecision {
 }
 
 /**
+ * A deliverable is waiting on the user or on the system (generating, in review,
+ * failed) and there is nothing to ask. The Responder tells the user what to do
+ * in the panel; it never asks a question the system cannot act on (KAN-91).
+ */
+export interface ReportDeliverableStatusDecision {
+  readonly kind: 'report_deliverable_status';
+  readonly agentId: AgentId;
+  readonly deliverableKind: string;
+  readonly state: 'generating' | 'in_review' | 'failed';
+  /** Panel commands the user can use now (from the derived state), in DELIVERABLE_COMMAND_ORDER. */
+  readonly allowedCommands: ReadonlyArray<DeliverableCommandKind>;
+}
+
+/**
  * Terminal state: every required field for every registered agent has been
  * collected and every agent has either been dispatched or completed. The
  * Responder closes the wizard step and invites the user to the next phase.
@@ -156,6 +172,9 @@ export function isAnnounceDispatch(d: PlannerDecision): d is AnnounceDispatchDec
 }
 export function isAnnounceCompletion(d: PlannerDecision): d is AnnounceCompletionDecision {
   return d.kind === 'announce_completion';
+}
+export function isReportDeliverableStatus(d: PlannerDecision): d is ReportDeliverableStatusDecision {
+  return d.kind === 'report_deliverable_status';
 }
 export function isAnnounceAllComplete(d: PlannerDecision): d is AnnounceAllCompleteDecision {
   return d.kind === 'announce_all_complete';

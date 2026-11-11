@@ -249,17 +249,54 @@ describe('planNextDecision', () => {
       const snapshot = snapshotWith(filledA);
       expect(
         planNextDecision(snapshot, registry, {
-          deliverableStates: [{ agentId: 'agent-a', deliverableKind: 'agent-a', state: 'in_review' }],
+          deliverableStates: [{ agentId: 'agent-a', deliverableKind: 'agent-a', state: 'in_review', allowedCommands: [] }],
         }),
-      ).toEqual([{ kind: 'announce_all_complete' }]);
+      ).toEqual([{ kind: 'report_deliverable_status', agentId: 'agent-a', deliverableKind: 'agent-a', state: 'in_review', allowedCommands: [] }]);
       expect(
         planNextDecision(snapshot, registry, {
           deliverableStates: [
-            { agentId: 'agent-z', deliverableKind: 'z', state: 'enabled' },
-            { agentId: 'agent-a', deliverableKind: 'a', state: 'enabled' },
+            { agentId: 'agent-z', deliverableKind: 'z', state: 'enabled', allowedCommands: [] },
+            { agentId: 'agent-a', deliverableKind: 'a', state: 'enabled', allowedCommands: [] },
           ],
         }),
       ).toEqual([{ kind: 'offer_generation', agentId: 'agent-a', deliverableKind: 'a' }]);
+    });
+
+    describe('report_deliverable_status (KAN-91)', () => {
+      const registry = makeRegistry([buildFixtureCard({ id: 'agent-a', required: [{ name: 'a_field' }] })]);
+      const snap = snapshotWith(filledA);
+      const view = (agentId: string, state: 'failed' | 'in_review' | 'generating' | 'enabled' | 'approved', extra: object = {}) =>
+        ({ agentId, deliverableKind: agentId, state, allowedCommands: ['approve', 'iterate'] as const, ...extra });
+      const plan = (deliverableStates: ReturnType<typeof view>[]) => planNextDecision(snap, registry, { deliverableStates: deliverableStates as never });
+
+      it('reports an in_review deliverable with its allowed commands', () => {
+        expect(plan([view('agent-a', 'in_review')])).toEqual([
+          { kind: 'report_deliverable_status', agentId: 'agent-a', deliverableKind: 'agent-a', state: 'in_review', allowedCommands: ['approve', 'iterate'] },
+        ]);
+      });
+
+      it('priority: failed > in_review > generating, then lex agentId', () => {
+        expect(plan([view('a', 'in_review'), view('b', 'failed')])[0]).toMatchObject({ agentId: 'b', state: 'failed' });
+        expect(plan([view('a', 'generating'), view('b', 'in_review')])[0]).toMatchObject({ agentId: 'b', state: 'in_review' });
+        expect(plan([view('z', 'in_review'), view('m', 'in_review')])[0]).toMatchObject({ agentId: 'm' });
+      });
+
+      it('ignores inheritedFromBrand views and approved ones', () => {
+        expect(plan([view('a', 'in_review', { inheritedFromBrand: true }), view('b', 'approved')])).toEqual([{ kind: 'announce_all_complete' }]);
+      });
+
+      it('offer_generation still wins', () => {
+        expect(plan([view('b', 'failed'), view('c', 'enabled')])[0].kind).toBe('offer_generation');
+      });
+
+      it('is deterministic', () => {
+        const states = [view('a', 'generating'), view('b', 'generating')];
+        expect(plan(states)).toEqual(plan(states));
+      });
+
+      it('without derived states the old behavior stays', () => {
+        expect(planNextDecision(snap, registry, {})[0].kind).not.toBe('report_deliverable_status');
+      });
     });
 
     it('does not offer an agent that is blocked on an upstream approval', () => {
@@ -268,7 +305,7 @@ describe('planNextDecision', () => {
       ]);
       expect(
         planNextDecision(snapshotWith(filledA), registry, {
-          deliverableStates: [{ agentId: 'agent-a', deliverableKind: 'agent-a', state: 'blocked' }],
+          deliverableStates: [{ agentId: 'agent-a', deliverableKind: 'agent-a', state: 'blocked', allowedCommands: [] }],
         }),
       ).toEqual([{ kind: 'announce_all_complete' }]);
     });
@@ -281,7 +318,7 @@ describe('planNextDecision', () => {
       const plan = planNextDecision(
         snapshotWith({ ...filledA, 'agent-b': { requiredFields: {}, optionalFields: {}, iterationCount: 0 } }),
         registry,
-        { deliverableStates: [{ agentId: 'agent-a', deliverableKind: 'agent-a', state: 'enabled' }] },
+        { deliverableStates: [{ agentId: 'agent-a', deliverableKind: 'agent-a', state: 'enabled', allowedCommands: [] }] },
       );
       expect(plan[0].kind).toBe('request_fields');
     });
@@ -290,7 +327,7 @@ describe('planNextDecision', () => {
       const registry = makeRegistry([
         buildFixtureCard({ id: 'agent-a', required: [{ name: 'a_field' }] }),
       ]);
-      const context = { deliverableStates: [{ agentId: 'agent-a', deliverableKind: 'agent-a', state: 'enabled' as const }] };
+      const context = { deliverableStates: [{ agentId: 'agent-a', deliverableKind: 'agent-a', state: 'enabled' as const, allowedCommands: [] }] };
       expect(planNextDecision(snapshotWith(filledA), registry, context)).toEqual(
         planNextDecision(snapshotWith(filledA), registry, context),
       );
