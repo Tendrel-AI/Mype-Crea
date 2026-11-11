@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, FolderInput, MessagesSquare, PlusCircle } from 'lucide-react';
 import type { BrandListEntry, ConversationListEntry } from '../../src/conversations/selection';
+import { UNNAMED_BRAND_LABEL, UNNAMED_PRODUCT_LABEL } from '../../src/conversations/label';
 
 /** KAN-25: opening a conversation is a plain navigation; the server re-checks ownership. */
 export function conversationHref(conversationId: string): string {
@@ -14,8 +15,7 @@ export type LoadConversations = () => Promise<
   | { readonly ok: false; readonly message: string }
 >;
 
-export const UNNAMED_BRAND_LABEL = 'Marca sin nombre';
-export const UNNAMED_PRODUCT_LABEL = 'Producto sin nombre';
+export { UNNAMED_BRAND_LABEL, UNNAMED_PRODUCT_LABEL };
 
 const itemClass = 'w-full flex items-center gap-2 px-3 py-2 text-left text-sm font-medium text-orange-600 hover:bg-orange-50';
 
@@ -116,7 +116,7 @@ export function ConversationMenuItems({
             Editar marca
           </button>
           <button type="button" role="menuitem" onClick={() => onNewConversation(brand.brandId)} className={itemClass}>
-            Nueva conversación
+            Nueva conversación de marca
           </button>
           {confirmingBrandId === brand.brandId ? (
             <div className="px-3 py-2 text-xs text-neutral-700">

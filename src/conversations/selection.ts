@@ -16,6 +16,7 @@ import type { ConversationId, DeliverableStateView, UUID } from '../core/contrac
 import { clientDeliverableUrl } from '../core/deliverable-url';
 import { IMPORTED_KEY, entityName, validateAttributes } from '../core/brand-catalog';
 import { loggerFor } from '../services/logger';
+import { renderWelcome, welcomeContextLine, WELCOME_FALLBACK_TEXT } from '../adapters/chat-welcome';
 import { adoptImportedBrand } from './imported-identity';
 import { conversationListLabel } from './label';
 import { briefPanelFields, type BriefPanelField } from './brief-panel';
@@ -80,6 +81,8 @@ export interface ConversationHistory {
   readonly conversationId: ConversationId;
   /** KAN-87: brand/product of the conversation; null when it could not be read. */
   readonly context: ConversationContext | null;
+  /** KAN-93: state-based opening message (never persisted); shown when the conversation has no turns yet. */
+  readonly welcome: string;
   readonly turns: ReadonlyArray<{
     readonly requestId: UUID;
     readonly userMessage: string | null;
@@ -114,7 +117,7 @@ export type OwnedConversationLoad =
   | { readonly state: 'legacy_unversioned' };
 
 export type NewOwnedConversation =
-  | { readonly ok: true; readonly conversationId: ConversationId; readonly brandId: UUID; readonly productId: UUID | null; readonly context: ConversationContext }
+  | { readonly ok: true; readonly conversationId: ConversationId; readonly brandId: UUID; readonly productId: UUID | null; readonly context: ConversationContext; readonly welcome: string }
   | {
       readonly ok: false;
       readonly code: 'brand_limit_reached' | 'product_limit_reached' | 'brand_not_found' | 'product_not_found' | 'invalid_input' | 'configuration_unavailable';
@@ -200,6 +203,7 @@ export async function loadOwnedConversation(
     history: {
       conversationId,
       context,
+      welcome: await welcomeFor(conversationId, context),
       turns: await Promise.all(turns.map(async (turn) => ({
         requestId: turn.requestId,
         userMessage: turn.inputContent,
@@ -236,6 +240,20 @@ async function deliverableStates(identity: ResolvedIdentity, conversationId: Con
   }
 }
 
+/**
+ * KAN-93: the opening message from the planner's current plan. `peekNextDecision` never consumes queued
+ * announcements. Opening a conversation must never fail because of it: any error falls back to a fixed text.
+ */
+async function welcomeFor(conversationId: ConversationId, context: ConversationContext | null): Promise<string> {
+  try {
+    const decisions = await getOrchestrator().peekNextDecision(conversationId);
+    return renderWelcome(decisions, context, buildDefaultRegistry());
+  } catch (error) {
+    log.warn({ conversationId, err: error }, 'selection.welcome_failed');
+    return [welcomeContextLine(context), WELCOME_FALLBACK_TEXT].filter(Boolean).join('\n\n');
+  }
+}
+
 /** Start the orchestrator for a conversation that was just pinned. */
 async function startPinned(identity: ResolvedIdentity, conversationId: ConversationId): Promise<void> {
   await getOrchestrator().startConversation(conversationId, identity.tenant.id as UUID, identity.user.id as UUID);
@@ -264,7 +282,7 @@ async function startedConversation(
   await startPinned(identity, conversationId);
   const context = (await repository(identity).conversations.context(conversationId))
     ?? { brandId, brandName: null, productId, productName: null };
-  return { ok: true, conversationId, brandId, productId, context };
+  return { ok: true, conversationId, brandId, productId, context, welcome: await welcomeFor(conversationId, context) };
 }
 
 /**

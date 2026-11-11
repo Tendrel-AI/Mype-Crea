@@ -477,7 +477,7 @@ describe('ChatOutputAdapter', () => {
   });
 
   it('bumps the responder prompt version for the command guidance', () => {
-    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v8');
+    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v9');
   });
 
   it('a release frozen before v6 still renders offer_generation through the fragment fallbacks', async () => {
@@ -512,7 +512,7 @@ describe('ChatOutputAdapter', () => {
 
     await adapter.render(base);
     await adapter.render({ ...base, promptVersions: { responder: 'responder.chat-step1.v6' } });
-    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v8', 'responder.chat-step1.v6']);
+    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v9', 'responder.chat-step1.v6']);
   });
 
   it('falls back to the active version when the pinned one no longer exists', async () => {
@@ -524,7 +524,43 @@ describe('ChatOutputAdapter', () => {
       decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
       promptVersions: { responder: 'responder.chat-step1.v0' },
     });
-    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v8');
+    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v9');
+  });
+
+  describe('KAN-93 conversation context', () => {
+    const run = async (context: unknown, frozen?: boolean) => {
+      setProvider(provider = makeResponderProvider('ok'));
+      let execution;
+      if (frozen) {
+        const behavior = createCurrentAdapterBehaviorSnapshot();
+        const { personaContextual: _a, brandChatContext: _b, productChatContext: _c, ...older } = behavior.responder.promptFragments;
+        execution = { model: { ...provider.resolve('responder'), provider: 'openrouter' as const }, behavior: { ...behavior, responder: { ...behavior.responder, promptFragments: older } } };
+      }
+      await new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry).render({
+        decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx, context: context as never, execution,
+      });
+      return provider.captured[0].systemPrompt as string;
+    };
+    const brand = { brandId: 'b1', brandName: 'Brisa Ron', productId: null, productName: null };
+
+    it('adds the brand chat line, and the contextual persona', async () => {
+      const prompt = await run(brand);
+      expect(prompt).toContain('Conversación: chat de la marca "Brisa Ron".');
+      expect(prompt).toContain('trabajan en su marca y en sus productos');
+      expect(prompt).not.toContain('paso a paso');
+    });
+    it('adds the product chat line', async () => {
+      expect(await run({ ...brand, productId: 'p1', productName: 'Ron añejo' })).toContain('Conversación: chat del producto "Ron añejo" de la marca "Brisa Ron".');
+    });
+    it('adds no context line for a legacy conversation', async () => {
+      expect(await run({ brandId: null, brandName: null, productId: null, productName: null })).not.toContain('Conversación:');
+      expect(await run(undefined)).not.toContain('Conversación:');
+    });
+    it('an older frozen release still gets the new fragments through the fallbacks', async () => {
+      const prompt = await run(brand, true);
+      expect(prompt).toContain('Conversación: chat de la marca "Brisa Ron".');
+      expect(prompt).not.toContain('undefined');
+    });
   });
 
   describe('KAN-91 dead-end fixes', () => {

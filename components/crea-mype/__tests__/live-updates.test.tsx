@@ -43,7 +43,6 @@ describe('ChatPanel live connection banner (KAN-30)', () => {
         processingAgents={new Set(['logo-agent'])}
         conversationId="11111111-1111-4111-8111-111111111111"
         handleExportConversation={vi.fn()}
-        step={1}
         onCreateBrand={vi.fn()}
         onImportBrand={vi.fn()}
         messages={[]}

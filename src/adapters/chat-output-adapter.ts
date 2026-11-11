@@ -39,6 +39,8 @@ import { resolveAdapterBehavior } from '../services/prompts/adapter-behavior';
 import type { PromptVersions } from '../services/prompts';
 import { withLlmLogging, type LlmLoggingContext } from '../services/llm-logger';
 import { loggerFor } from '../services/logger';
+import type { ChatContext } from './chat-welcome';
+import { UNNAMED_BRAND_LABEL, UNNAMED_PRODUCT_LABEL } from '../conversations/label';
 
 const log = loggerFor('adapter.chat-output');
 
@@ -51,13 +53,15 @@ export interface RenderInput {
   readonly execution?: AdapterExecution;
   /** The conversation's pinned prompt versions (D22); omitted = the active versions. */
   readonly promptVersions?: PromptVersions;
+  /** KAN-93: brand/product names of the conversation; null/omitted = legacy conversation or unknown. */
+  readonly context?: ChatContext | null;
 }
 
 export class ChatOutputAdapter {
   constructor(private readonly registry: AgentRegistry) {}
 
   async render(input: RenderInput): Promise<{ content: string }> {
-    const { decisions, recentMessages, snapshot, llmContext, execution, promptVersions } = input;
+    const { decisions, recentMessages, snapshot, llmContext, execution, promptVersions, context } = input;
     const behavior = resolveAdapterBehavior('responder', promptVersions, [], execution);
     if (execution) assertResolvedModelPurpose(execution.model, 'responder');
     const child = log.child({
@@ -73,6 +77,7 @@ export class ChatOutputAdapter {
       this.registry,
       behavior.responder.promptTemplate,
       behavior.responder.promptFragments,
+      context,
     );
     const recent = (behavior.responder.historyLimit === 0
       ? []
@@ -129,15 +134,16 @@ function buildResponderSystemPrompt(
   registry: AgentRegistry,
   template: string,
   frozenFragments: Readonly<Record<string, string>>,
+  context?: ChatContext | null,
 ): string {
   // Releases frozen before responder v6 lack the KAN-28 command fragments.
   const fragments = { ...RESPONDER_FRAGMENT_FALLBACKS, ...frozenFragments };
   const statusSummary = describeFieldStatus(snapshot);
-  const decisionsBlock = describeDecisions(decisions, registry, fragments, snapshot);
+  const decisionsBlock = [contextLine(context, fragments), describeDecisions(decisions, registry, fragments, snapshot)].filter(Boolean).join('\n\n');
   const guardrails = buildGuardrails(decisions, fragments);
 
   return template
-    .replaceAll('{{persona}}', fragments.persona)
+    .replaceAll('{{persona}}', fragments.personaContextual)
     .replaceAll('{{stateHeading}}', fragments.systemHeading)
     .replaceAll('{{decisionsBlock}}', decisionsBlock)
     .replaceAll(
@@ -145,6 +151,14 @@ function buildResponderSystemPrompt(
       statusSummary ? `\n${fragments.progressHeading}\n${statusSummary}` : '',
     )
     .replaceAll('{{guardrails}}', guardrails);
+}
+
+/** KAN-93: «chat de la marca X» / «chat del producto Y de la marca X»; none for a legacy conversation. */
+function contextLine(context: ChatContext | null | undefined, fragments: Readonly<Record<string, string>>): string {
+  if (!context?.brandId) return '';
+  const brandName = context.brandName?.trim() || UNNAMED_BRAND_LABEL;
+  if (!context.productId) return applyPromptTemplate(fragments.brandChatContext, { brandName });
+  return applyPromptTemplate(fragments.productChatContext, { brandName, productName: context.productName?.trim() || UNNAMED_PRODUCT_LABEL });
 }
 
 function describeDecisions(
@@ -260,7 +274,7 @@ function buildGuardrails(
 }
 
 /** Spanish panel button names (see components/crea-mype/DeliverableCommands.tsx). */
-const COMMAND_BUTTON_LABELS: Readonly<Record<DeliverableCommandKind, string>> = {
+export const COMMAND_BUTTON_LABELS: Readonly<Record<DeliverableCommandKind, string>> = {
   generate: 'Generar',
   iterate: 'Iterar',
   approve: 'Aprobar',
@@ -270,7 +284,7 @@ const COMMAND_BUTTON_LABELS: Readonly<Record<DeliverableCommandKind, string>> = 
 };
 
 /** Human label for a deliverable: the Agent Card's tab label, else its kind. */
-function deliverableLabelFor(agentId: string, deliverableKind: string, registry: AgentRegistry): string {
+export function deliverableLabelFor(agentId: string, deliverableKind: string, registry: AgentRegistry): string {
   try {
     return registry.get(agentId).card['mypes:ui']?.tabLabel ?? deliverableKind;
   } catch {
