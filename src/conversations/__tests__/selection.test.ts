@@ -235,7 +235,7 @@ describe('resolveHomeConversation (KAN-25)', () => {
     const brief = result.kind === 'open' ? result.history.brief : [];
     expect(brief.find((field) => field.name === 'business_name')).toMatchObject({ status: 'filled', value: 'Café Andino', source: 'chat' });
     expect(brief.find((field) => field.name === 'color_palette')).toMatchObject({ status: 'filled', value: 'verde y crema', source: 'panel' });
-    expect(brief.find((field) => field.name === 'manufacturer')).toMatchObject({ status: 'empty', value: null });
+    expect(brief.find((field) => field.name === 'location')).toMatchObject({ status: 'empty', value: null });
   });
 
   it('gives foreign-user, foreign-tenant, missing, malformed and legacy ids one identical not-found result', async () => {

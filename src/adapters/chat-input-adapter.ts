@@ -60,6 +60,7 @@ import {
   type InputAdapter,
   type OrchestratorCore,
   type PlannerDecision,
+  type RequestFieldsDecision,
   type AdapterSubmitResult,
   type FieldValueWithConfidence,
   type UserIntent,
@@ -441,6 +442,7 @@ export class ChatInputAdapter implements InputAdapter {
       behavior.extractor.promptTemplate,
       behavior.extractor.toolName,
       fieldEntries,
+      priorDecision?.kind === 'request_fields' ? priorDecision : undefined,
     );
     const resolved = execution?.model ?? getProvider().resolve('extractor');
 
@@ -609,7 +611,14 @@ function renderExtractorSystemPrompt(
   template: string,
   toolName: string,
   fields: ReadonlyArray<AdapterFieldBehavior>,
+  asked?: RequestFieldsDecision,
 ): string {
+  // Same order as the Responder's numbered list: number i = fields[i-1].
+  const askedBlock = asked
+    ? `\nPreguntas pendientes (el usuario puede responder por número):\n${asked.fields
+        .map((f, i) => `  ${i + 1}. ${f.fieldName}: ${f.promptHint}`)
+        .join('\n')}`
+    : '';
   const fieldLines = fields
     .map(
       (f) =>
@@ -617,7 +626,10 @@ function renderExtractorSystemPrompt(
     )
     .join('\n');
 
-  return template.replaceAll('{{toolName}}', toolName).replaceAll('{{fieldLines}}', fieldLines);
+  return template
+    .replaceAll('{{toolName}}', toolName)
+    .replaceAll('{{fieldLines}}', fieldLines)
+    .replaceAll('{{askedBlock}}', askedBlock);
 }
 
 function adapterFieldsFromOwnership(ownership: Map<string, FieldOwnership>): AdapterFieldBehavior[] {

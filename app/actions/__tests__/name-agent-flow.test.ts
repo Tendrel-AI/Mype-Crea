@@ -49,6 +49,11 @@ import { TEST_TENANT_ID, TEST_USER_ID } from '../../../src/core/__tests__/_fixtu
 import type { A2AMessage } from '../../../src/core/agent-types';
 import type { ConversationId, DeliverableStateView, TaskId } from '../../../src/core/contracts';
 
+import logoCard from '../../../agents/logo-agent/agent-card.json';
+
+/** The logo card's required fields: the whole logo brief the gate waits for. */
+const LOGO_REQUIRED: ReadonlyArray<string> = logoCard['mypes:requirements'].required.map((f) => f.name);
+
 const CONVERSATION = '6a1c2a4e-9b7d-4c2e-8f10-0a1b2c3d4e5f' as ConversationId;
 
 const NAMES = ['Dulce Andino', 'Sabor de Altura', 'Mermeladas Killa', 'Frutos del Valle', 'Aguaymanto & Co.'];
@@ -190,7 +195,7 @@ describe('name-agent flow (KAN-31)', () => {
     const image = vi.fn(async () => ({ url: 'https://cdn.test/logo.png', providerId: 'fake', modelId: 'fake/img', latencyMs: 1, safety: { verdict: 'passed' as const, category: null, classifier: 'fake', model: 'fake/img', policyVersion: 'test', checkedAt: '2026-11-03T00:00:00.000Z' } }));
     setImageGenerator({ generate: image });
     await runtime.core.startConversation(CONVERSATION, TEST_TENANT_ID, TEST_USER_ID);
-    for (const [fieldName, value] of [['business_category', 'alimentos'], ['style_keywords', 'rústico'], ['business_name', 'Dulce Andino']]) {
+    for (const [fieldName, value] of [['business_category', 'alimentos'], ['style_keywords', 'rústico'], ['business_name', 'Dulce Andino'], ...LOGO_REQUIRED.filter((n) => !['business_category', 'business_name'].includes(n)).map((n) => [n, 'Sin preferencia'])]) {
       await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName, value });
     }
 
@@ -218,7 +223,7 @@ describe('name-agent flow (KAN-31)', () => {
     expect(logo.candidates[0]).toMatchObject({
       iteration: 1,
       provenance: {
-        promptVersion: 'logo-agent.v1',
+        promptVersion: 'logo-agent.v2',
         agentCardVersion: expect.any(String),
         provider: 'fake',
         model: 'fake/img',
@@ -226,7 +231,7 @@ describe('name-agent flow (KAN-31)', () => {
         upstream: [{ kind: 'business_name', deliverableId: first.deliverableId, value: expect.any(String) }],
       },
     });
-    expect(JSON.stringify(logo.candidates[0].provenance)).not.toContain('Diseña');
+    expect(JSON.stringify(logo.candidates[0].provenance)).not.toContain('Actúa como');
     expect(runtime.dispatched).toHaveLength(2);
     expect(image).toHaveBeenCalledTimes(1);
     expect((await nameView()).stale).toBe(false);
@@ -240,7 +245,7 @@ describe('name-agent flow (KAN-31)', () => {
     expect((await nameView('logo-agent')).stale).toBe(false);
 
     // A brief field the logo did not use leaves it alone; one it used flags it.
-    await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'manufacturer', value: 'Cooperativa Andina' });
+    await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'product_name', value: 'Mermelada' });
     expect((await nameView('logo-agent')).stale).toBe(false);
     await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'style_keywords', value: 'moderno' });
     expect((await nameView('logo-agent')).stale).toBe(true);

@@ -109,6 +109,35 @@ describe('ChatOutputAdapter', () => {
     expect(provider.captured[0].systemPrompt).not.toContain('café orgánico de Cajamarca');
   });
 
+  it.each([
+    ['the active release', undefined],
+    ['a release pinned before v7 (fragment fallback)', { responder: 'responder.chat-step1.v6' }],
+  ])('asks more than 2 fields as ONE numbered list in decision order, never the raw name (%s)', async (_label, promptVersions) => {
+    setProvider(provider = makeResponderProvider('ok'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+    await adapter.render({
+      decisions: [{
+        kind: 'request_fields',
+        agentId: 'test-fixture-agent',
+        fields: [
+          { fieldName: 'logo_goal', promptHint: 'Hint goal' },
+          { fieldName: 'competitors', promptHint: 'Hint competitors' },
+          { fieldName: 'logo_keep', promptHint: 'Hint keep' },
+        ],
+      }],
+      recentMessages: [],
+      snapshot: emptySnapshot,
+      llmContext: ctx,
+      promptVersions,
+    });
+    const prompt = provider.captured[0].systemPrompt;
+    expect(prompt).toContain('  1. logo_goal: "Hint goal"\n  2. competitors: "Hint competitors"\n  3. logo_keep: "Hint keep"');
+    expect(prompt).toContain('UNA sola lista numerada');
+    expect(prompt).toContain('sin preferencia');
+    expect(prompt).not.toContain('AMBOS campos');
+    expect(prompt).not.toContain('undefined');
+  });
+
   it('renders a single-field request_fields with the singular instruction', async () => {
     setProvider(provider = makeResponderProvider('¿Cómo se llama tu negocio?'));
     const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
@@ -448,7 +477,7 @@ describe('ChatOutputAdapter', () => {
   });
 
   it('bumps the responder prompt version for the command guidance', () => {
-    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v6');
+    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v7');
   });
 
   it('a release frozen before v6 still renders offer_generation through the fragment fallbacks', async () => {
@@ -483,7 +512,7 @@ describe('ChatOutputAdapter', () => {
 
     await adapter.render(base);
     await adapter.render({ ...base, promptVersions: { responder: 'responder.chat-step1.v6' } });
-    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v6', 'responder.chat-step1.v6']);
+    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v7', 'responder.chat-step1.v6']);
   });
 
   it('falls back to the active version when the pinned one no longer exists', async () => {
@@ -495,6 +524,6 @@ describe('ChatOutputAdapter', () => {
       decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
       promptVersions: { responder: 'responder.chat-step1.v0' },
     });
-    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v6');
+    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v7');
   });
 });

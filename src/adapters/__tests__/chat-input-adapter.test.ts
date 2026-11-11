@@ -203,6 +203,39 @@ describe('ChatInputAdapter', () => {
     expect(recordSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('lists the asked fields (number -> field -> hint) in the system prompt after a request_fields, and stores «Sin preferencia» as given', async () => {
+    const provider = makeExtractorProvider(
+      JSON.stringify({ fields: { a_field: { value: 'Azul', confidence: 1 }, b_field: { value: 'Sin preferencia', confidence: 1 }, c_field: null } }),
+    );
+    setProvider(provider);
+    const registry = new AgentRegistry();
+    registry.register(
+      buildFixtureCard({ id: 'fixture-a', required: [{ name: 'a_field', promptHint: 'Hint A' }, { name: 'b_field', promptHint: 'Hint B' }, { name: 'c_field', promptHint: 'Hint C' }] }),
+      fixtureEchoHandler,
+      undefined,
+    );
+    const adapter = new ChatInputAdapter(buildFakeCore(), registry);
+    const prior: PlannerDecision = {
+      kind: 'request_fields',
+      agentId: 'fixture-a' as never,
+      fields: [
+        { fieldName: 'c_field' as never, promptHint: 'Hint C' },
+        { fieldName: 'a_field' as never, promptHint: 'Hint A' },
+        { fieldName: 'b_field' as never, promptHint: 'Hint B' },
+      ],
+    };
+
+    const delta = await adapter.extract({ conversationId, userMessage: '2. Azul, 3. no aplica', priorDecision: prior, llmContext: ctx });
+
+    const prompt = provider.captured[0].systemPrompt;
+    expect(prompt).toContain('Preguntas pendientes (el usuario');
+    expect(prompt).toContain('  1. c_field: Hint C\n  2. a_field: Hint A\n  3. b_field: Hint B');
+    expect(delta.fields['fixture-a']?.b_field).toMatchObject({ value: 'Sin preferencia', confidence: 1 });
+
+    await adapter.extract({ conversationId, userMessage: 'hola', llmContext: ctx });
+    expect(provider.captured[1].systemPrompt).not.toContain('Preguntas pendientes (el usuario');
+  });
+
   it('returns an empty FieldDelta when the LLM grounds nothing (all nulls)', async () => {
     // Schema requires every declared field; null = field not expressed.
     setProvider(

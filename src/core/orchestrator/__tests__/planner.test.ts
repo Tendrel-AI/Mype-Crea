@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ConversationSnapshot } from '../../contracts';
 import { planNextDecision } from '../planner';
+import { deriveDeliverableStates, EMPTY_WORKFLOW_FACTS } from '../deliverable-state';
 import {
   AgentRegistry,
   type AgentCard,
@@ -293,6 +294,49 @@ describe('planNextDecision', () => {
       expect(planNextDecision(snapshotWith(filledA), registry, context)).toEqual(
         planNextDecision(snapshotWith(filledA), registry, context),
       );
+    });
+  });
+
+  describe('per-card ask batch size', () => {
+    const names = Array.from({ length: 6 }, (_, i) => ({ name: `f_${i}` }));
+
+    it('asks every missing required field in ONE decision when the card sets askBatchSize', () => {
+      const registry = makeRegistry([buildFixtureCard({ id: 'agent-a', required: names, askBatchSize: 6 })]);
+      const [decision] = planNextDecision(snapshotWith({ 'agent-a': { requiredFields: { f_3: { status: 'filled', value: 'x', confidence: 1 } }, optionalFields: {}, iterationCount: 0 } }), registry);
+      expect(decision.kind === 'request_fields' && decision.fields.map((f) => f.fieldName)).toEqual(['f_0', 'f_1', 'f_2', 'f_4', 'f_5']);
+    });
+
+    it('keeps MAX_FIELD_BATCH_SIZE (2) for a card without askBatchSize', () => {
+      const registry = makeRegistry([buildFixtureCard({ id: 'agent-b', required: names })]);
+      const [decision] = planNextDecision(snapshotWith({ 'agent-b': { requiredFields: {}, optionalFields: {}, iterationCount: 0 } }), registry);
+      expect(decision.kind === 'request_fields' && decision.fields).toHaveLength(2);
+    });
+  });
+
+  describe('a brand-level brief is asked only when the deliverable still needs it (derived states)', () => {
+    const logo = buildFixtureCard({ id: 'logo', required: [{ name: 'a' }, { name: 'b' }, { name: 'c' }], askBatchSize: 3, level: 'brand', ownSource: 'brand_logo' });
+    const registry = makeRegistry([logo]);
+    const empty = { logo: { requiredFields: {}, optionalFields: {}, iterationCount: 0 } };
+    const plan = (snapshot: ConversationSnapshot, facts = EMPTY_WORKFLOW_FACTS) =>
+      planNextDecision(snapshot, registry, { deliverableStates: deriveDeliverableStates(snapshot, registry.getDeliverableSpecs(), facts) });
+
+    it('asks all missing fields in a brand conversation with no logo yet', () => {
+      const [decision] = plan(snapshotWith(empty));
+      expect(decision.kind === 'request_fields' && decision.fields).toHaveLength(3);
+    });
+
+    it('does not ask when the brand already has an approved (or own, user-origin) logo', () => {
+      const facts = { ...EMPTY_WORKFLOW_FACTS, approvals: [{ deliverableKind: 'logo', deliverableId: 'd1' }] };
+      expect(plan(snapshotWith(empty), facts)).toEqual([{ kind: 'announce_all_complete' }]);
+    });
+
+    it('does not ask in a product conversation (brand level is read-only)', () => {
+      const snapshot = { ...snapshotWith(empty), links: { hasBrand: true, hasProduct: true } } as ConversationSnapshot;
+      expect(plan(snapshot)).toEqual([{ kind: 'announce_all_complete' }]);
+    });
+
+    it('does not ask once the logo was generated or iterated (iterationCount > 0)', () => {
+      expect(plan(snapshotWith({ logo: { ...empty.logo, iterationCount: 1 } }))).toEqual([{ kind: 'announce_all_complete' }]);
     });
   });
 });

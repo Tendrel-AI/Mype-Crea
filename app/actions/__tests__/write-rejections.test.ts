@@ -126,6 +126,11 @@ import type { A2AMessage, IAgentTransport } from '../../../src/core/agent-types'
 import type { ConversationId, DeliverableStateView, FieldDelta } from '../../../src/core/contracts';
 import { BRIEF_CATALOG } from '../../../src/core/brief';
 
+import logoCard from '../../../agents/logo-agent/agent-card.json';
+
+/** The logo card's required fields: the whole logo brief the gate waits for. */
+const LOGO_REQUIRED: ReadonlyArray<string> = logoCard['mypes:requirements'].required.map((f) => f.name);
+
 const OWN = '3f1c2a4e-9b7d-4c2e-8f10-0a1b2c3d4e5f' as ConversationId;
 /** Exists, but owned by another member of this tenant. */
 const OTHER_USERS = '7a2b3c4d-1e2f-4a5b-8c6d-7e8f9a0b1c2d' as ConversationId;
@@ -209,7 +214,7 @@ async function logoView(): Promise<DeliverableStateView> {
 }
 
 async function fillBrief() {
-  for (const [fieldName, value] of [['business_name', 'Dulce Andino'], ['style_keywords', 'rústico']]) {
+  for (const [fieldName, value] of LOGO_REQUIRED.map((name) => [name, name === 'business_name' ? 'Dulce Andino' : 'Sin preferencia'])) {
     expect((await updateBriefFieldAction({ conversationId: OWN, fieldName, value })).ok).toBe(true);
   }
 }

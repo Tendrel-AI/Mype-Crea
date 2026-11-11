@@ -50,6 +50,10 @@ import type { ConfirmFieldDecision, ConversationId, DeliverableStateView } from 
 import { createCurrentAdapterBehaviorSnapshot, type AdapterBehaviorSnapshot } from '../../../src/services/ai-config/adapter-behavior';
 import { TERMS_REQUIRED_MESSAGE } from '../../../src/consent/terms';
 import { BRIEF_CATALOG } from '../../../src/core/brief';
+import logoCard from '../../../agents/logo-agent/agent-card.json';
+
+/** The logo card's required fields: the whole logo brief the gate waits for. */
+const LOGO_REQUIRED: ReadonlyArray<string> = logoCard['mypes:requirements'].required.map((f) => f.name);
 
 const CONVERSATION = '3f1c2a4e-9b7d-4c2e-8f10-0a1b2c3d4e5f' as ConversationId;
 
@@ -159,38 +163,29 @@ describe('brief actions (KAN-26)', () => {
   it('lists every catalog field in order, empty and without a source, for a new conversation', async () => {
     buildRuntime();
     const { fields } = await brief();
-    expect(fields.map((f) => f.label)).toEqual([
-      'Nombre del negocio',
-      'Rubro',
-      'Estilo',
-      'Colores',
-      'Producto',
-      'Composición',
-      'Presentación',
-      'Fabricante',
-    ]);
+    expect(fields.map((f) => f.label)).toEqual(BRIEF_CATALOG.map((f) => f.label));
     expect(fields.every((f) => f.status === 'empty' && f.value === null && f.source === null)).toBe(true);
   });
 
   it('panel channel: a normalized value is filled at once and attributed to the panel', async () => {
     const runtime = buildRuntime();
-    const result = await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'product_name', value: '  Mermelada\nde  aguaymanto ' });
+    const result = await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'location', value: '  Cusco\nsur  andino ' });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(field(result.fields, 'product_name')).toMatchObject({ status: 'filled', value: 'Mermelada de aguaymanto', source: 'panel' });
+    expect(field(result.fields, 'location')).toMatchObject({ status: 'filled', value: 'Cusco sur andino', source: 'panel' });
     const snapshot = await runtime.core.getSnapshot(CONVERSATION);
-    expect(snapshot.agentStates['logo-agent'].optionalFields.product_name).toMatchObject({ source: 'brief-panel', confidence: 1 });
+    expect(snapshot.agentStates['logo-agent'].optionalFields.location).toMatchObject({ source: 'brief-panel', confidence: 1 });
   });
 
   it('chat channel: an extracted value reaches the same brief, attributed to the chat', async () => {
     const runtime = buildRuntime();
     await chatTurn(runtime, 'Mi negocio se llama Dulce Andino y fabricamos mermeladas', {
       business_name: { value: 'Dulce Andino', confidence: 0.95 },
-      manufacturer: { value: 'Dulce Andino', confidence: 0.95 },
+      location: { value: 'Cusco', confidence: 0.95 },
     });
     const { fields } = await brief();
     expect(field(fields, 'business_name')).toMatchObject({ status: 'filled', value: 'Dulce Andino', source: 'chat' });
-    expect(field(fields, 'manufacturer')).toMatchObject({ status: 'filled', value: 'Dulce Andino', source: 'chat' });
+    expect(field(fields, 'location')).toMatchObject({ status: 'filled', value: 'Cusco', source: 'chat' });
   });
 
   it('an ambiguous chat value waits for confirmation; the panel confirms it through the same operation', async () => {
@@ -206,13 +201,13 @@ describe('brief actions (KAN-26)', () => {
     const runtime = buildRuntime();
     await chatTurn(runtime, 'Se llama Dulce Andino', { business_name: { value: 'Dulce Andino', confidence: 0.95 } });
     await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'business_name', value: 'Dulces Andinos' });
-    await chatTurn(runtime, 'Usamos frascos de vidrio de 250 g', { product_presentation: { value: 'Frasco de vidrio de 250 g', confidence: 0.95 } });
+    await chatTurn(runtime, 'Usamos frascos de vidrio de 250 g', { location: { value: 'Cusco', confidence: 0.95 } });
 
     // Reload: a fresh core (new process) over the same persisted store.
     buildRuntime(runtime.store);
     const { fields } = await brief();
     expect(field(fields, 'business_name')).toMatchObject({ status: 'filled', value: 'Dulces Andinos', source: 'panel' });
-    expect(field(fields, 'product_presentation')).toMatchObject({ status: 'filled', value: 'Frasco de vidrio de 250 g', source: 'chat' });
+    expect(field(fields, 'location')).toMatchObject({ status: 'filled', value: 'Cusco', source: 'chat' });
   });
 
   it.each([
@@ -276,7 +271,10 @@ describe('brief actions (KAN-26)', () => {
       const edited = await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'product_name', value: 'Mermelada' });
       expect(edited.ok && field(edited.fields, 'product_name')).toMatchObject({ value: 'Mermelada', source: 'panel' });
 
-      const view = logoState(edited.ok ? edited.states : []);
+      for (const name of LOGO_REQUIRED.filter((n) => n !== 'business_name' && n !== 'style_keywords')) {
+        await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: name, value: 'Sin preferencia' });
+      }
+      const view = logoState((await brief()).states);
       expect(view.allowedCommands).toContain('generate');
       expect((await generate(view)).ok).toBe(true);
       expect(runtime.dispatched).toHaveLength(1);
@@ -332,26 +330,26 @@ describe('brief actions (KAN-26)', () => {
       await chatTurn(runtime, 'dato', fields);
     };
 
+    // Fills every required logo field except `except` through the panel («Sin preferencia» counts as filled).
+    const panelAllExcept = (...except: string[]): Step => async (runtime) => {
+      for (const name of LOGO_REQUIRED.filter((n) => !except.includes(n))) await panel(name, 'Sin preferencia')(runtime);
+    };
     it.each<[string, ReadonlyArray<Step>, ReadonlyArray<string>]>([
-      ['empty brief', [], ['business_name', 'style_keywords']],
-      ['only the name, via panel', [panel('business_name', 'Dulce Andino')], ['style_keywords']],
+      ['empty brief', [], LOGO_REQUIRED],
+      ['only the name, via panel', [panel('business_name', 'Dulce Andino')], LOGO_REQUIRED.filter((n) => n !== 'business_name')],
       [
-        'style still pending confirmation from chat',
-        [panel('business_name', 'Dulce Andino'), chat({ style_keywords: { value: 'rústico', confidence: 0.7 } })],
-        ['style_keywords'],
+        'one logo field still pending confirmation from chat',
+        [panelAllExcept('logo_goal'), chat({ logo_goal: { value: 'verse profesional', confidence: 0.7 } })],
+        ['logo_goal'],
       ],
-      ['optional product facts only', [panel('product_name', 'Mermelada'), panel('manufacturer', 'Dulce Andino')], ['business_name', 'style_keywords']],
+      ['optional facts only', [panel('location', 'Cusco'), panel('style_keywords', 'rústico')], LOGO_REQUIRED],
       [
-        'pending style confirmed in the panel',
-        [panel('business_name', 'Dulce Andino'), chat({ style_keywords: { value: 'rústico', confidence: 0.7 } }), panel('style_keywords', 'rústico')],
+        'pending field confirmed in the panel',
+        [panelAllExcept('logo_goal'), chat({ logo_goal: { value: 'verse profesional', confidence: 0.7 } }), panel('logo_goal', 'verse profesional')],
         [],
       ],
-      [
-        'complete via chat',
-        [chat({ business_name: { value: 'Dulce Andino', confidence: 0.95 }, style_keywords: { value: 'rústico', confidence: 0.95 } })],
-        [],
-      ],
-      ['complete via panel', [panel('business_name', 'Dulce Andino'), panel('style_keywords', 'moderno')], []],
+      ['a «no aplica» answer counts as filled (chat)', [panelAllExcept('logo_avoid'), chat({ logo_avoid: { value: 'Sin preferencia', confidence: 1 } })], []],
+      ['complete via panel', [panelAllExcept()], []],
     ])('%s', async (_name, steps, missing) => {
       const runtime = buildRuntime();
       for (const step of steps) await step(runtime);

@@ -41,6 +41,11 @@ export interface FixtureCardOptions {
   readonly deliverableKind?: string;
   /** `mypes:deliverable.dependsOn` (upstream deliverable kinds). */
   readonly dependsOn?: ReadonlyArray<string>;
+  /** `mypes:requirements.askBatchSize` (per-card ask cap). */
+  readonly askBatchSize?: number;
+  /** `mypes:deliverable.level` / `ownSource` (KAN-89). */
+  readonly level?: 'brand' | 'product';
+  readonly ownSource?: 'text' | 'brand_logo';
 }
 
 export function buildFixtureCard(opts: FixtureCardOptions): AgentCard {
@@ -60,6 +65,7 @@ export function buildFixtureCard(opts: FixtureCardOptions): AgentCard {
         type: 'string',
         promptHint: f.promptHint ?? `enter ${f.name}`,
       })),
+      ...(opts.askBatchSize ? { askBatchSize: opts.askBatchSize } : {}),
     },
     'mypes:ui': {
       tabLabel: opts.tabLabel ?? opts.id,
@@ -68,11 +74,13 @@ export function buildFixtureCard(opts: FixtureCardOptions): AgentCard {
       outputPreview: 'inline',
     },
     supportedInterfaces: [{ protocol: 'local', module: `fixture/${opts.id}` }],
-    ...(opts.deliverableKind || opts.dependsOn
+    ...(opts.deliverableKind || opts.dependsOn || opts.level || opts.ownSource
       ? {
           'mypes:deliverable': {
             kind: opts.deliverableKind ?? opts.id,
             dependsOn: [...(opts.dependsOn ?? [])],
+            ...(opts.level ? { level: opts.level } : {}),
+            ...(opts.ownSource ? { ownSource: opts.ownSource } : {}),
           },
         }
       : {}),

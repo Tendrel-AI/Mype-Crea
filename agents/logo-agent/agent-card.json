@@ -1,9 +1,10 @@
 {
   "name": "logo-agent",
   "description": "Genera el logotipo de la marca.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "skills": [],
   "mypes:requirements": {
+    "askBatchSize": 20,
     "required": [
       {
         "name": "business_name",
@@ -11,41 +12,126 @@
         "promptHint": "¿Qué nombre debe llevar el logo?"
       },
       {
-        "name": "style_keywords",
+        "name": "business_category",
         "type": "string",
-        "promptHint": "Describe el estilo del logo (por ejemplo: minimalista, colorido, tradicional)."
+        "promptHint": "¿Qué productos o servicios ofreces hoy y cuáles podrías ofrecer más adelante? Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "market_proposition",
+        "type": "string",
+        "promptHint": "¿Cuál es tu propuesta de mercado? (qué ofreces y por qué te eligen) Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "target_audience",
+        "type": "string",
+        "promptHint": "¿Quién es tu público y en qué situaciones te conoce o te compra? Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "differentiator",
+        "type": "string",
+        "promptHint": "¿Qué te diferencia de otros negocios similares? Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "personality",
+        "type": "string",
+        "promptHint": "¿Qué personalidad o sensaciones quieres que transmita tu marca? Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "brand_story",
+        "type": "string",
+        "promptHint": "¿Hay una historia o inspiración detrás de tu marca que el logo deba reflejar? Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "language_references",
+        "type": "string",
+        "promptHint": "¿Qué idiomas o referencias culturales o artísticas deben influir en el logo? Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "color_palette",
+        "type": "string",
+        "promptHint": "¿Qué colores quieres usar, permitir o evitar en el logo? Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "logo_goal",
+        "type": "string",
+        "promptHint": "¿Qué problema debe resolver tu logo? (por ejemplo: verse más profesional, destacar en el mercado) Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "logo_avoid",
+        "type": "string",
+        "promptHint": "¿Qué asociaciones o interpretaciones debe evitar el logo? Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "competitors",
+        "type": "string",
+        "promptHint": "¿Quiénes son tus competidores y qué motivos visuales usan que no quieres repetir? Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "visual_references",
+        "type": "string",
+        "promptHint": "¿Qué marcas o imágenes te gustan como referencia, y qué te gusta o no de cada una? Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "logo_composition",
+        "type": "string",
+        "promptHint": "¿Qué composición prefieres? (solo nombre, nombre y símbolo, monograma, o que el diseñador recomiende) Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "logo_shapes",
+        "type": "string",
+        "promptHint": "¿Cómo imaginas las formas del logo? (geometría, curvas o ángulos, grosor y nivel de detalle) Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "logo_typography",
+        "type": "string",
+        "promptHint": "¿Cómo quieres la tipografía? (mayúsculas o minúsculas, espaciado, carácter de las letras) Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "logo_keep",
+        "type": "string",
+        "promptHint": "¿Hay elementos actuales de tu marca que tus clientes ya reconocen y quieres conservar? Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "logo_applications",
+        "type": "string",
+        "promptHint": "¿Dónde aparecerá tu logo, ordenado por importancia? (empaque, redes sociales, letrero, etc.) Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "logo_production_limits",
+        "type": "string",
+        "promptHint": "¿Qué límites de producción hay? (tamaño mínimo, fondos, impresión, bordado, grabado) Si no aplica, responde «no aplica» o «sin preferencia»."
+      },
+      {
+        "name": "logo_restrictions",
+        "type": "string",
+        "promptHint": "¿Hay elementos obligatorios o prohibidos en el logo? Si no aplica, responde «no aplica» o «sin preferencia»."
       }
     ],
     "optional": [
       {
-        "name": "color_palette",
+        "name": "style_keywords",
         "type": "string",
-        "promptHint": "¿Tienes colores preferidos para tu marca?"
+        "promptHint": "Describe el estilo del logo (por ejemplo: minimalista, colorido, tradicional)."
       },
       {
-        "name": "business_category",
+        "name": "visual_behavior",
         "type": "string",
-        "promptHint": "¿A qué rubro pertenece tu negocio? (por ejemplo: alimentos, cosmética, artesanía)"
+        "promptHint": "¿Cómo quieres que se comporte visualmente tu marca?"
       },
       {
-        "name": "product_name",
+        "name": "color_description",
         "type": "string",
-        "promptHint": "¿Qué producto vas a lanzar?"
+        "promptHint": "Describe tus colores con palabras (por ejemplo: verde selva y dorado)."
       },
       {
-        "name": "product_composition",
+        "name": "location",
         "type": "string",
-        "promptHint": "¿De qué está hecho tu producto? (ingredientes o materiales principales)"
+        "promptHint": "¿Dónde está ubicado tu negocio?"
       },
       {
-        "name": "product_presentation",
+        "name": "existing_tagline",
         "type": "string",
-        "promptHint": "¿Cómo se presenta tu producto? (por ejemplo: frasco de 250 g, caja de 6 unidades)"
-      },
-      {
-        "name": "manufacturer",
-        "type": "string",
-        "promptHint": "¿Quién fabrica tu producto? (empresa o productor)"
+        "promptHint": "¿Tienes un lema o eslogan actual?"
       }
     ]
   },
@@ -57,11 +143,16 @@
   },
   "mypes:deliverable": {
     "kind": "logo",
-    "dependsOn": ["business_name"],
+    "dependsOn": [
+      "business_name"
+    ],
     "level": "brand",
     "ownSource": "brand_logo"
   },
   "supportedInterfaces": [
-    { "protocol": "local", "module": "agents/logo-agent/handler.ts" }
+    {
+      "protocol": "local",
+      "module": "agents/logo-agent/handler.ts"
+    }
   ]
 }
