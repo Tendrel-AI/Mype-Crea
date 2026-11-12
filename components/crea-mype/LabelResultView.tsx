@@ -1,5 +1,6 @@
 import React from 'react';
-import { octagonSvg } from '../../src/labeling/octagon-svg';
+import { octagonSizing } from '../../src/labeling/octagon-geometry';
+import { octagonSetLabel, octagonSetSvg } from '../../src/labeling/octagon-svg';
 import type { LabelNotice, LabelResult, OctagonKey } from '../../src/labeling/types';
 
 const ALT: Record<OctagonKey, string> = {
@@ -21,7 +22,7 @@ function Notice({ n }: { n: LabelNotice }) {
 }
 
 export function LabelResultView({ result }: { result: LabelResult }) {
-  const required = result.octagons.filter((o) => o.status === 'required');
+  const required = result.octagons.filter((o) => o.status === 'required').map((o) => o.key);
   const notices = [...result.notices.filter((n) => n.severity === 'warning'), ...result.notices.filter((n) => n.severity === 'info')];
   const unit = result.basis === 'per_100ml' ? 'ml' : 'g';
   const cell = (v: string | null) => v ?? 'No reportado';
@@ -29,11 +30,12 @@ export function LabelResultView({ result }: { result: LabelResult }) {
     <div className="space-y-6 text-slate-900">
       <section aria-label="Octógonos">
         {required.length === 0 ? <p>Tu producto no lleva octógonos según el análisis.</p> : (
-          <ul className="flex flex-wrap gap-4">
-            {required.map((o) => (
-              <li key={o.key}><img src={dataUri(octagonSvg(o.key))} alt={ALT[o.key]} className="h-40 w-auto" /></li>
-            ))}
-          </ul>
+          <figure className="space-y-2">
+            {/* One image for the whole set: several ALTO EN share one legend (octagon-geometry-spec G-SET-07). */}
+            <img src={dataUri(octagonSetSvg(required))} alt={octagonSetLabel(required)} className="h-40 w-auto" />
+            {/* shortcut: no front-face input yet, so the sizing is always SIZE_UNKNOWN; pass the face once the UI collects it. */}
+            <figcaption className="text-sm text-slate-700">{octagonSizing(required).message}</figcaption>
+          </figure>
         )}
       </section>
 
