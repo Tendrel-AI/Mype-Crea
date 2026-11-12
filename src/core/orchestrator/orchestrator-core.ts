@@ -137,6 +137,8 @@ export interface OrchestratorCoreDeps {
    * candidates are read from the workflow store.
    */
   readonly approvalsFor?: (tenantId: UUID, userId: UUID) => IApprovalStore;
+  /** D32: server-read inputs added to a task's requirements at command time (e.g. the product's lab reports). */
+  readonly taskInputsFor?: (tenantId: UUID, userId: UUID) => (conversationId: ConversationId, agentId: string) => Promise<Record<string, unknown>>;
   /**
    * Optional artifact notifier. When provided, onTaskSettled publishes the
    * artifacts produced by a completed task on this channel. The SSE/UI edge
@@ -461,6 +463,12 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
     return this.defaultApprovals;
   }
 
+  private taskInputsForConversation(conversationId: ConversationId): DeliverableCommandContext['taskInputs'] {
+    const tenantId = this.conversationTenants.get(conversationId);
+    const userId = this.conversationUsers.get(conversationId);
+    return this.deps.taskInputsFor && tenantId && userId ? this.deps.taskInputsFor(tenantId, userId) : undefined;
+  }
+
   private commandContext(
     conversationId: ConversationId,
     knownSnapshot?: ConversationSnapshot,
@@ -474,6 +482,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
         return this.getSnapshot(id);
       },
       agentCardVersion: (agentId) => this.deps.registry.get(agentId).card.version,
+      taskInputs: this.taskInputsForConversation(conversationId),
       dispatch: (input) => this.dispatchTask(input),
       onCanceled: async ({ conversationId: id, agentId, taskId }) => {
         this.taskOwnership.delete(taskId);

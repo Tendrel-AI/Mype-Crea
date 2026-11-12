@@ -361,6 +361,7 @@ describe('DeliverableCommands (KAN-28)', () => {
         step={1}
         setActiveTab={noop}
         logoControls={<DeliverableCommands view={view({ allowedCommands: ['generate'] })} label="logo" busy={false} error="" onCommand={noop} />}
+        labelControls={<p>etiqueta</p>}
       />,
     );
     expect(markup).toContain('data-testid="deliverable-commands-logo-agent"');

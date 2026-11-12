@@ -99,12 +99,13 @@ describe('dashboard pending/processing states (KAN-74)', () => {
   it('shows pending cards, then the logo spinner while logo-agent is processing, then the logo', () => {
     const pending = renderToStaticMarkup(<Dashboard assets={EMPTY} processingAgents={new Set()} step={1} setActiveTab={noop} />);
     expect(pending).toContain('Esperando definición de marca...');
-    expect(pending.match(/Pendiente/g)).toHaveLength(4);
+    // D32: a brand chat has no label panel, so one «Pendiente» less than before.
+    expect(pending.match(/Pendiente/g)).toHaveLength(3);
     expect(pending).not.toContain('Generando logo...');
 
     const processing = renderToStaticMarkup(<Dashboard assets={EMPTY} processingAgents={new Set(['logo-agent'])} step={1} setActiveTab={noop} />);
     expect(processing).toContain('Generando logo...');
-    expect(processing.match(/Pendiente/g)).toHaveLength(3);
+    expect(processing.match(/Pendiente/g)).toHaveLength(2);
 
     const done = renderToStaticMarkup(
       <Dashboard assets={{ ...EMPTY, logoUrl: 'https://cdn.example/logo.png' }} processingAgents={new Set(['logo-agent'])} step={3} setActiveTab={noop} />,

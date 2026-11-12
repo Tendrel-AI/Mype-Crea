@@ -40,6 +40,8 @@ export const TASK_ERROR_KINDS = [
   'storage_unavailable',
   /** KAN-43: a usage limit denied the call before the provider was reached. Retry after the window. */
   'usage_limited',
+  /** D32: no lab report of the product yielded usable nutrient data. Its message is written for the user (see `USER_FACING_ERROR_KINDS`). */
+  'lab_report_unusable',
 ] as const;
 
 export type TaskErrorKind = (typeof TASK_ERROR_KINDS)[number];
@@ -56,7 +58,12 @@ const CATEGORY_BY_KIND: Readonly<Record<TaskErrorKind, TaskErrorCategory>> = {
   handler_threw: 'permanent_bug',
   storage_unavailable: 'transient',
   usage_limited: 'transient',
+  // The user fixes it by uploading another report; Reintentar re-reads the product's reports.
+  lab_report_unusable: 'permanent_bug',
 };
+
+/** Kinds whose `error.message` is user-facing Spanish: the state view carries it (`lastFailure.errorMessage`). */
+export const USER_FACING_ERROR_KINDS: ReadonlyArray<TaskErrorKind> = ['lab_report_unusable'];
 
 /**
  * A task `in_progress` for longer than this is considered abandoned (the process died mid-generation)

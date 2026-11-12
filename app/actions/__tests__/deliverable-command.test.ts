@@ -7,7 +7,9 @@ const mocks = vi.hoisted(() => {
   const hasAccepted = vi.fn(async (version: string) => acceptedVersions.has(version));
   const preflight = vi.fn<(request: unknown) => Promise<any>>(async () => ({ allowed: true, reservationId: null }));
   const record = vi.fn(async () => undefined);
-  const repos = vi.fn(() => ({ conversations: { readPinnedConversation }, termsAcceptances: { hasAccepted }, usage: { preflight }, writeRejections: { record } }));
+  const labContext = vi.fn<() => Promise<any>>(async () => ({ brandId: 'b', productId: 'p' }));
+  const listLabReports = vi.fn<() => Promise<any[]>>(async () => [{ fileId: 'f' }]);
+  const repos = vi.fn(() => ({ conversations: { readPinnedConversation, context: labContext }, brandFiles: { listLabReports }, termsAcceptances: { hasAccepted }, usage: { preflight }, writeRejections: { record } }));
   const startConversation = vi.fn(async () => undefined);
   const executeCommand = vi.fn(async (command: { commandId: string; kind: string }) => ({
     ok: true,
@@ -18,7 +20,7 @@ const mocks = vi.hoisted(() => {
   }));
   const getDeliverableStates = vi.fn(async () => [{ agentId: 'logo-agent', state: 'enabled' }]);
   const resolveIdentity = vi.fn<() => Promise<any>>(async () => identity);
-  return { record, identity, acceptedVersions, hasAccepted, preflight, readPinnedConversation, repos, startConversation, executeCommand, getDeliverableStates, resolveIdentity };
+  return { record, labContext, listLabReports, identity, acceptedVersions, hasAccepted, preflight, readPinnedConversation, repos, startConversation, executeCommand, getDeliverableStates, resolveIdentity };
 });
 
 vi.mock('../../../src/auth/resolve-identity', () => ({ resolveIdentity: mocks.resolveIdentity }));
@@ -82,6 +84,35 @@ describe('deliverableCommandAction', () => {
       const result = await deliverableCommandAction({ ...base, kind, ...extra } as never);
       expect(result.ok).toBe(true);
       expect(mocks.preflight).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('D32 label preflight', () => {
+    const label = { ...base, agentId: 'label-agent' };
+
+    it.each([
+      ['generate', {}],
+      ['iterate', { observation: 'Se subió un nuevo análisis de laboratorio.' }],
+      ['retry', { failedTaskId: COMMAND }],
+    ])('rejects %s without lab reports before the core, with the upload message', async (kind, extra) => {
+      mocks.listLabReports.mockResolvedValueOnce([]);
+      const result = await deliverableCommandAction({ ...label, kind, ...extra } as never);
+      expect(result).toMatchObject({ ok: false, message: 'Sube primero el análisis de laboratorio de tu producto (PDF).' });
+      expect(mocks.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('rejects a command in a conversation without a product', async () => {
+      mocks.labContext.mockResolvedValueOnce({ brandId: 'b', productId: null });
+      const result = await deliverableCommandAction({ ...label, kind: 'generate' } as never);
+      expect(result).toMatchObject({ ok: false, message: expect.stringContaining('conversaciones de un producto') });
+      expect(mocks.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('lets the command through with lab reports and skips the usage preflight (deterministic agent)', async () => {
+      const result = await deliverableCommandAction({ ...label, kind: 'generate' } as never);
+      expect(result.ok).toBe(true);
+      expect(mocks.preflight).not.toHaveBeenCalled();
+      expect(mocks.executeCommand).toHaveBeenCalledOnce();
     });
   });
 

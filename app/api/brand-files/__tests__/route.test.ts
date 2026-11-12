@@ -114,6 +114,42 @@ describe('POST /api/brand-files', () => {
     expect(storage.objects.size).toBe(0);
   });
 
+  describe('D32 lab reports', () => {
+    const PDF = new TextEncoder().encode('%PDF-1.4 lab report');
+    const pdf = (fields: Record<string, string>, bytes: Uint8Array = PDF) => upload(fields, { bytes, name: 'informe.pdf' });
+
+    it('stores a PDF for a product with a server-chosen type, key and extension', async () => {
+      const res = await POST((await pdf({ brandId: BRAND, productId: PRODUCT, kind: 'lab_report' })) as never);
+      expect(res.status).toBe(201);
+      const row = mocks.add.mock.calls[0][0];
+      expect(row).toMatchObject({ kind: 'lab_report', productId: PRODUCT, contentType: 'application/pdf', originalName: 'informe.pdf' });
+      expect(row.storageKey).toMatch(/\.pdf$/);
+      expect(storage.objects.has(row.storageKey)).toBe(true);
+    });
+
+    it('refuses a non-PDF (an image named .pdf) with 415 and stores nothing', async () => {
+      const res = await POST((await pdf({ brandId: BRAND, productId: PRODUCT, kind: 'lab_report' }, PNG)) as never);
+      expect(res.status).toBe(415);
+      expect(mocks.add).not.toHaveBeenCalled();
+      expect(storage.objects.size).toBe(0);
+    });
+
+    it('requires a productId (400) and never reads the file', async () => {
+      const res = await POST((await pdf({ brandId: BRAND, kind: 'lab_report' })) as never);
+      expect(res.status).toBe(400);
+      expect(mocks.add).not.toHaveBeenCalled();
+      expect(storage.objects.size).toBe(0);
+    });
+
+    it('the 6th lab report is refused (409) and its object is deleted', async () => {
+      mocks.add.mockResolvedValueOnce({ ok: false, code: 'asset_limit_reached', limit: 5 });
+      const res = await POST((await pdf({ brandId: BRAND, productId: PRODUCT, kind: 'lab_report' })) as never);
+      expect(res.status).toBe(409);
+      expect((await res.json()).message).toContain('5 análisis de laboratorio');
+      expect(storage.objects.size).toBe(0);
+    });
+  });
+
   it('a failing row insert deletes the object and answers 503', async () => {
     mocks.add.mockRejectedValueOnce(new Error('db down'));
     const res = await POST((await upload({ brandId: BRAND, kind: 'asset' }, { bytes: PNG })) as never);

@@ -8,7 +8,7 @@ import { type BrandAssets, type Tab } from './types';
 import { LandingPageRenderer } from './LandingPageRenderer';
 
 
-export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls, nameControls, briefPanel }: {
+export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls, nameControls, labelControls, briefPanel }: {
   assets: BrandAssets;
   processingAgents: Set<string>;
   step: number;
@@ -17,6 +17,8 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
   logoControls?: React.ReactNode;
   /** KAN-31: name candidates and their commands (DeliverableCommands). */
   nameControls?: React.ReactNode;
+  /** D32: the nutrition label card; only product conversations pass it, so a brand chat shows no label panel. */
+  labelControls?: React.ReactNode;
   /** KAN-26: the editable brief (BriefPanel). Replaces the brand placeholder when present. */
   briefPanel?: React.ReactNode;
 }) {
@@ -121,29 +123,19 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
                 {logoControls}
               </motion.div>
 
-              <motion.div
-                id="brand-step-3"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 flex flex-col scroll-mt-4"
-              >
-                <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
-                  <ImageIcon size={16} /> Etiqueta
-                </h2>
-                <div className="flex-1 flex items-center justify-center bg-neutral-50 rounded-xl border border-neutral-200 overflow-hidden aspect-square relative">
-                  {assets.labelUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={assets.labelUrl} alt="Label" className="w-full h-full object-cover" />
-                  ) : processingAgents.has('label-agent') ? (
-                    <div className="flex flex-col items-center gap-2 text-orange-500">
-                      <Loader2 size={28} className="animate-spin" />
-                      <span className="text-xs text-neutral-500">Generando etiqueta...</span>
-                    </div>
-                  ) : (
-                    <span className="text-neutral-500 text-sm">Pendiente</span>
-                  )}
-                </div>
-              </motion.div>
+              {labelControls && (
+                <motion.div
+                  id="brand-step-3"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 flex flex-col scroll-mt-4"
+                >
+                  <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
+                    <ImageIcon size={16} /> Etiqueta
+                  </h2>
+                  {labelControls}
+                </motion.div>
+              )}
             </div>
 
             {/* Step 4: Landing Page */}

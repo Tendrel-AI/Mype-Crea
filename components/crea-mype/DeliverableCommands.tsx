@@ -185,6 +185,8 @@ export function DeliverableCommands({
   feedback,
   feedbackBusy = false,
   onFeedback,
+  enabledNote,
+  renderCandidate,
 }: {
   view: DeliverableStateView | undefined;
   /** Lowercase noun for copy, e.g. "logo". */
@@ -201,6 +203,10 @@ export function DeliverableCommands({
   feedbackBusy?: boolean;
   /** Omit to hide the thumbs. Clicking the active thumb again sends `null` (clears the rating). */
   onFeedback?: (deliverableId: string, value: FeedbackValue | null) => void;
+  /** Replaces «Ya tienes todo listo…» in the `enabled` state (e.g. a deliverable that starts from an upload). */
+  enabledNote?: string;
+  /** A custom preview for a candidate (D32: the nutrition label); null falls back to text / image. */
+  renderCandidate?: (candidate: DeliverableStateView['candidates'][number]) => React.ReactNode | null;
 }) {
   const [iterating, setIterating] = useState(false);
   const [observation, setObservation] = useState('');
@@ -244,7 +250,7 @@ export function DeliverableCommands({
         </p>
       )}
       {view.state === 'enabled' && (
-        <p className="text-xs text-neutral-500">Ya tienes todo listo. Toca Generar cuando quieras.</p>
+        <p className="text-xs text-neutral-500">{enabledNote ?? 'Ya tienes todo listo. Toca Generar cuando quieras.'}</p>
       )}
       {view.state === 'failed' && (
         <p role="status" className="text-xs text-red-700">
@@ -259,12 +265,13 @@ export function DeliverableCommands({
 
       {view.candidates.length > 0 && (
         <ul
-          className={view.candidates.every((candidate) => textCandidate(candidate)) ? 'space-y-2' : 'grid grid-cols-3 gap-2'}
+          className={view.candidates.every((candidate) => textCandidate(candidate) || renderCandidate?.(candidate)) ? 'space-y-2' : 'grid grid-cols-3 gap-2'}
           aria-label="Propuestas"
         >
           {view.candidates.map((candidate, index) => {
             const isApproved = candidate.deliverableId === view.approvedDeliverableId;
             const text = textCandidate(candidate);
+            const custom = candidate.approvable ? renderCandidate?.(candidate) : null;
             return (
               <li
                 key={candidate.deliverableId}
@@ -274,6 +281,8 @@ export function DeliverableCommands({
                   <p role="status" className="px-1 text-xs text-amber-800">
                     {safetyReviewNotice(label)}
                   </p>
+                ) : custom ? (
+                  <div className="px-1">{custom}</div>
                 ) : text ? (
                   <div className="px-1">
                     <p className="text-sm font-semibold text-neutral-900">{text.text}</p>

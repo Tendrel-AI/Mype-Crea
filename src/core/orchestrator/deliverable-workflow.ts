@@ -32,6 +32,8 @@ export interface WorkflowTask {
   readonly errorCategory: TaskErrorCategory | null;
   /** `error.kind` of a failed task (e.g. `usage_limited`); null otherwise or when unknown. */
   readonly errorKind?: string | null;
+  /** `error.message` of a failed task; only surfaced for `USER_FACING_ERROR_KINDS`. */
+  readonly errorMessage?: string | null;
   readonly parentTaskId: TaskId | null;
   readonly iterationRootId: TaskId;
   readonly iterationNumber: number;
@@ -214,6 +216,7 @@ export class InMemoryDeliverableWorkflowStore implements IDeliverableWorkflowSto
       status: input.status,
       errorCategory: input.status === 'failed' ? input.errorCategory ?? 'permanent_bug' : null,
       errorKind: input.status === 'failed' ? input.error?.kind ?? null : null,
+      errorMessage: input.status === 'failed' ? input.error?.message ?? null : null,
     });
     if (!settled) return { applied: false, deliverableIds: [] };
     if (input.status !== 'completed') return { applied: true, deliverableIds: [] };
@@ -248,7 +251,7 @@ export class InMemoryDeliverableWorkflowStore implements IDeliverableWorkflowSto
     conversationId: ConversationId,
     taskId: TaskId,
     from: ReadonlyArray<WorkflowTaskStatus>,
-    patch: Partial<Pick<WorkflowTask, 'status' | 'errorCategory' | 'errorKind'>>,
+    patch: Partial<Pick<WorkflowTask, 'status' | 'errorCategory' | 'errorKind' | 'errorMessage'>>,
   ): boolean {
     const bucket = this.tasks.get(conversationId) ?? [];
     const index = bucket.findIndex((task) => task.id === taskId);

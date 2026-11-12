@@ -29,6 +29,8 @@ import {
   type UUID,
 } from '../../src/core/contracts';
 import { codePointLength } from '../../src/core/refinement';
+import { LABEL_AGENT_ID, NO_LAB_REPORTS_MESSAGE } from '../../src/labeling/lab-report-refs';
+import { labReportsOfConversation } from '../../src/labeling/lab-task-inputs';
 import { loggerFor } from '../../src/services/logger';
 import { usageLimitMessage } from '../../src/services/usage/policy';
 
@@ -39,6 +41,8 @@ const COMMAND_KINDS: ReadonlyArray<DeliverableCommandKind> = ['generate', 'itera
 const GENERATING_COMMANDS: ReadonlyArray<DeliverableCommandKind> = ['generate', 'iterate', 'retry'];
 /** Agents whose generation is one LLM call (KAN-31, KAN-32); every other live agent generates an image. */
 const LLM_AGENTS: ReadonlyArray<string> = ['name-agent', 'tagline-agent'];
+/** D32: the label is deterministic (no LLM, no image), so it has no usage preflight; it needs the product's lab reports instead. */
+const UNMETERED_AGENTS: ReadonlyArray<string> = [LABEL_AGENT_ID];
 const STATE_KINDS: ReadonlyArray<DeliverableStateKind> = [
   'blocked',
   'enabled',
@@ -85,6 +89,8 @@ const MESSAGES = {
   invalid: 'No pudimos validar esta acción.',
   observationTooLong: `Tu comentario puede tener hasta ${MAX_ITERATION_OBSERVATION_LENGTH} caracteres.`,
   failed: 'No pudimos completar esta acción. Inténtalo de nuevo.',
+  labelNeedsProduct: 'La etiqueta nutricional solo está disponible en las conversaciones de un producto.',
+  labelNeedsReports: NO_LAB_REPORTS_MESSAGE,
   loadFailed: 'No pudimos cargar el estado de tus entregables. Inténtalo de nuevo.',
 } as const;
 
@@ -131,7 +137,16 @@ export async function deliverableCommandAction(
   }
   try {
     // KAN-43: refuse before any task row exists. The worker's reservation stays the guarantee.
-    if (GENERATING_COMMANDS.includes(command.kind)) {
+    if (GENERATING_COMMANDS.includes(command.kind) && command.agentId === LABEL_AGENT_ID) {
+      // D32: product conversations only, and only with at least one uploaded lab report.
+      const lab = await labReportsOfConversation(authorized.identity.tenant, authorized.identity.user, command.conversationId);
+      const message = !lab ? MESSAGES.labelNeedsProduct : lab.reports.length === 0 ? MESSAGES.labelNeedsReports : null;
+      if (message) {
+        await record(lab ? 'label_needs_reports' : 'label_needs_product', authorized.identity);
+        return { ok: false, code: 'invalid_request', reason: 'invalid', message, states: [] };
+      }
+    }
+    if (GENERATING_COMMANDS.includes(command.kind) && !UNMETERED_AGENTS.includes(command.agentId)) {
       const preflight = await repos(authorized.identity.tenant, authorized.identity.user).usage.preflight({
         kind: LLM_AGENTS.includes(command.agentId) ? 'llm' : 'image',
         estimatedCostUsd: 0,

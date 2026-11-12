@@ -58,7 +58,7 @@ import {
   type FieldSlot,
 } from '../contracts';
 import { changedFields, isUserOrigin } from '../deliverable-inputs';
-import type { TaskErrorCategory } from '../task-errors';
+import { USER_FACING_ERROR_KINDS, type TaskErrorCategory } from '../task-errors';
 import type { DeliverableSpec } from './agent-registry';
 import type { WorkflowCandidate, WorkflowTask } from './deliverable-workflow';
 
@@ -375,6 +375,9 @@ export function deriveDeliverableState(
           iteration: ownTasks.length,
           errorCategory: latest.errorCategory,
           errorKind: latest.errorKind ?? null,
+          ...(latest.errorMessage && USER_FACING_ERROR_KINDS.some((kind) => kind === latest.errorKind)
+            ? { errorMessage: latest.errorMessage }
+            : {}),
           retryable: latest.errorCategory === 'transient',
         }
       : null;

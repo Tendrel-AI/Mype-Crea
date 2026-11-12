@@ -85,6 +85,11 @@ export interface DeliverableCommandContext {
   loadSnapshot(conversationId: ConversationId): Promise<ConversationSnapshot>;
   agentCardVersion(agentId: string): string;
   /**
+   * Extra, server-read inputs a task is created with (D32: the product's lab reports), read at command time
+   * and recorded in the task snapshot. Never from the client. Absent = none.
+   */
+  taskInputs?(conversationId: ConversationId, agentId: string): Promise<Record<string, unknown>>;
+  /**
    * Send the freshly created task through `IAgentTransport` (implemented by
    * the core: records the in-flight marker, dispatches, queues the
    * announcement).
@@ -387,7 +392,10 @@ export async function executeDeliverableCommand(
       }
 
       // Requirements always come from the current brief, never from the client.
-      const requirements = requirementsFromSnapshot(snapshot, command.agentId);
+      const requirements = {
+        ...requirementsFromSnapshot(snapshot, command.agentId),
+        ...(await ctx.taskInputs?.(command.conversationId, command.agentId)),
+      };
       // RF-07 (KAN-35): a stable reference to the upstream approvals this task is
       // generated under. Staleness is later computed against it; it is never rewritten.
       const approvedUpstream = spec.dependsOn.flatMap((kind) => {
