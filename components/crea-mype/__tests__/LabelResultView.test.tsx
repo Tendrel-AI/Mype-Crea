@@ -21,8 +21,9 @@ describe('LabelResultView', () => {
   it('renders the required octagon, table, serving column, notices (warnings first) and footer', () => {
     const m = renderToStaticMarkup(<LabelResultView result={base} />);
     expect(m).toContain('data:image/svg+xml;utf8,');
-    expect(m).toContain('alt="Octógono: Alto en azúcar');
+    expect(m).toContain('alt="Octógonos: Alto en azúcar. Evitar su consumo excesivo."');
     expect(m.match(/<img/g)).toHaveLength(1);
+    expect(m).toContain('depende del área de la cara frontal');
     expect(m).toContain('Por 100 ml');
     expect(m).toContain('Por porción (330 ml)');
     expect(m).toContain('No reportado');
@@ -31,6 +32,13 @@ describe('LabelResultView', () => {
     expect(m).toContain('¿Por qué?');
     expect(m).toContain('map-2018-fase2');
     expect(m).toContain('INF-2 (no usado)');
+  });
+
+  it('draws several required octagons as one image (one shared legend)', () => {
+    const octagons = base.octagons.map((o) => ({ ...o, status: o.key === 'contiene_grasas_trans' ? 'not_required' as const : 'required' as const }));
+    const m = renderToStaticMarkup(<LabelResultView result={{ ...base, octagons }} />);
+    expect(m.match(/<img/g)).toHaveLength(1);
+    expect(m).toContain('alt="Octógonos: Alto en sodio, Alto en azúcar, Alto en grasas saturadas. Evitar su consumo excesivo."');
   });
 
   it('says so when no octagon is required', () => {

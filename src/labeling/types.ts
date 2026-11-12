@@ -6,7 +6,7 @@
  * Implementations (one per branch):
  *  - src/labeling/lab-report-parser.ts  parseLabReportPdf(bytes: Uint8Array, fileId: string): Promise<ParsedLabReport>  (never throws)
  *  - src/labeling/analyze.ts            analyzeLabReports(reports: ReadonlyArray<ParsedLabReport>, options?: AnalyzeOptions): LabelResult | LabelAnalysisFailure  (pure)
- *  - src/labeling/octagon-svg.ts        octagonSvg(key: OctagonKey): string  (pure)
+ *  - src/labeling/octagon-svg.ts        octagonSetSvg(keys: ReadonlyArray<OctagonKey>, opts?): string  (pure, one image per set)
  */
 
 /** Canonical units: g, except sodium and cholesterol (mg) and energy_kcal (kcal). */
