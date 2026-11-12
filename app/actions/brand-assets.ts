@@ -15,7 +15,7 @@ export type BrandAssetsResult =
       readonly logoUrl: string | null;
       readonly name: string | null;
       readonly tagline: string | null;
-      /** Newest brand-level conversation among the owner's recent ones (null when none is listed). */
+      /** Newest brand-level conversation of the brand (null when none exists). */
       readonly brandConversationId: string | null;
     }
   | { readonly ok: false; readonly message: string };
@@ -36,7 +36,7 @@ export async function loadBrandAssetsAction(input: { readonly conversationId: st
     const owned = repos(tenant, user);
     const context = await owned.conversations.context(conversationId);
     if (!context?.brandId) return { ok: true, brandId: null, logoUrl: null, name: null, tagline: null, brandConversationId: null };
-    const [approved, recent] = await Promise.all([owned.deliverables.listBrandApprovedElsewhere(conversationId), owned.conversations.listRecent()]);
+    const [approved, brandChat] = await Promise.all([owned.deliverables.listBrandApprovedElsewhere(conversationId), owned.conversations.latestBrandConversationId(context.brandId)]);
     const of = (kind: string) => approved.find((row) => row.kind === kind);
     const text = (kind: string) => {
       const value = of(kind)?.contentInline?.value;
@@ -49,7 +49,7 @@ export async function loadBrandAssetsAction(input: { readonly conversationId: st
       logoUrl: logo ? clientDeliverableUrl({ ...logo, metadata: logo.artifactMetadata ?? logo.contentInline?.metadata }) : null,
       name: text('business_name'),
       tagline: text('tagline'),
-      brandConversationId: recent.find((row) => row.brandId === context.brandId && row.productId === null)?.conversationId ?? null,
+      brandConversationId: brandChat ?? null,
     };
   } catch (error) {
     log.error({ conversationId, err: error }, 'brandAssets.failed');

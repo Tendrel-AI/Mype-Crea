@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => {
     authorizeConversation: vi.fn(async (..._a: unknown[]): Promise<unknown> => ({ ok: true, identity })),
     context: vi.fn(async (..._a: unknown[]): Promise<unknown> => ({ brandId: 'b1', productId: 'p1' })),
     listBrandApprovedElsewhere: vi.fn(async (..._a: unknown[]): Promise<unknown[]> => []),
-    listRecent: vi.fn(async (..._a: unknown[]): Promise<unknown[]> => []),
+    latest: vi.fn(async (..._a: unknown[]): Promise<string | undefined> => undefined),
   };
 });
 vi.mock('../conversation-access', () => ({
@@ -16,7 +16,7 @@ vi.mock('../conversation-access', () => ({
 }));
 vi.mock('../../../src/repos', () => ({
   repos: () => ({
-    conversations: { context: mocks.context, listRecent: mocks.listRecent },
+    conversations: { context: mocks.context, latestBrandConversationId: mocks.latest },
     deliverables: { listBrandApprovedElsewhere: mocks.listBrandApprovedElsewhere },
   }),
 }));
@@ -29,7 +29,7 @@ describe('loadBrandAssetsAction', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.listBrandApprovedElsewhere.mockResolvedValue([]);
-    mocks.listRecent.mockResolvedValue([]);
+    mocks.latest.mockResolvedValue(undefined);
   });
 
   it('owner: returns approved logo (asset route), name, tagline and the brand chat', async () => {
@@ -38,10 +38,7 @@ describe('loadBrandAssetsAction', () => {
       { id: 'd2', kind: 'business_name', contentUrl: null, contentInline: { value: 'Café Andino' } },
       { id: 'd3', kind: 'tagline', contentUrl: null, contentInline: { value: 'Sabor de altura' } },
     ]);
-    mocks.listRecent.mockResolvedValue([
-      { conversationId: 'prod-chat', brandId: 'b1', productId: 'p1' },
-      { conversationId: 'brand-chat', brandId: 'b1', productId: null },
-    ]);
+    mocks.latest.mockResolvedValue('brand-chat');
     expect(await loadBrandAssetsAction({ conversationId: CONV })).toEqual({
       ok: true, brandId: 'b1', logoUrl: '/api/assets/d1', name: 'Café Andino', tagline: 'Sabor de altura', brandConversationId: 'brand-chat',
     });
