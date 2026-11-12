@@ -119,6 +119,10 @@ async function assertJsonbTenantSafe(tx: TxClient, payload: unknown): Promise<vo
        UNION ALL SELECT id FROM agent_tasks
        UNION ALL SELECT id FROM deliverables
        UNION ALL SELECT id FROM users
+       UNION ALL SELECT id FROM brands
+       UNION ALL SELECT id FROM products
+       UNION ALL SELECT id FROM brand_files
+       UNION ALL SELECT current_setting('app.tenant_id', true)::uuid
      ) AS visible
      WHERE id = ANY($1::uuid[])`,
     [list],
