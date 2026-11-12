@@ -22,6 +22,8 @@ import { createConversationAction, exportConversationTraceAction, listConversati
 import { archiveBrandAction, createBrandAction, createProductAction, getBrandAction, getProductAction, updateBrandAction, updateProductAction } from '../app/actions/brands';
 import type { BrandFileView, BrandListEntry, ConversationContext, ConversationListEntry, NewOwnedConversation } from '../src/conversations/selection';
 import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/actions/deliverable-command';
+import { loadBrandAssetsAction, type BrandAssetsResult } from '../app/actions/brand-assets';
+import { BrandAssetsReadOnly } from './crea-mype/BrandAssetsReadOnly';
 import { listLabReportNamesAction } from '../app/actions/lab-reports';
 import { LABEL_AGENT_ID } from '../src/labeling/lab-report-refs';
 import { deliverableFeedbackAction, loadDeliverableFeedbackAction } from '../app/actions/deliverable-feedback';
@@ -169,6 +171,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   const labelView = productId ? deliverableStates.find((view) => view.agentId === LABEL_AGENT_ID) : undefined;
   const [labReportNames, setLabReportNames] = useState<ReadonlyArray<{ id: string; name: string }>>([]);
   const [labUploading, setLabUploading] = useState(false);
+  // D34: a product conversation shows the brand's approved assets read-only.
+  const [brandAssets, setBrandAssets] = useState<Extract<BrandAssetsResult, { ok: true }> | null>(null);
   // KAN-26: the brief exactly as the server last returned it.
   const [briefFields, setBriefFields] = useState<ReadonlyArray<BriefPanelField>>(initialBrief);
   const [briefSaving, setBriefSaving] = useState<string | null>(null);
@@ -271,6 +275,14 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       console.error('Failed to load lab reports', error);
     }
   }, []);
+
+  useEffect(() => {
+    setBrandAssets(null);
+    if (!conversationId || !productId) return;
+    void loadBrandAssetsAction({ conversationId })
+      .then((result) => { if (result.ok && currentConversationRef.current === conversationId) setBrandAssets(result); })
+      .catch((error) => console.error('Failed to load brand assets', error));
+  }, [conversationId, productId]);
 
   useEffect(() => {
     setLabReportNames([]);
@@ -509,6 +521,15 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     />
   ) : undefined;
 
+  const brandId = context?.brandId ?? null;
+  const renderBrandAssets = () => productId ? (
+    <BrandAssetsReadOnly
+      assets={brandAssets}
+      brandConversationId={brandAssets?.brandConversationId ?? null}
+      onCreateBrandChat={() => { if (brandId) handleNewConversationInBrand(brandId); }}
+    />
+  ) : undefined;
+
   const briefPanel = (
     <BriefPanel fields={briefFields} savingField={briefSaving} error={briefError} onSave={saveBriefField} />
   );
@@ -735,7 +756,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       )}
       {activeTab === 'create' && (
         <>
-          <ChatPanel labUpload={productId ? { busy: labUploading || commandBusy, onFiles: (files) => void handleLabUpload(files) } : undefined} assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} context={context} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || logoView || nameView || taglineView || labelView ? (
+          <ChatPanel labUpload={productId ? { busy: labUploading || commandBusy, onFiles: (files) => void handleLabUpload(files) } : undefined} assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} context={context} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || productId || logoView || nameView || taglineView || labelView ? (
             <>
               {briefFields.length > 0 && (
                 <details className="mb-2">
@@ -743,14 +764,22 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
                   <div className="mt-2 max-h-[50vh] overflow-y-auto">{briefPanel}</div>
                 </details>
               )}
-              {renderNameCommands()}
-              {renderTextCommands(LOGO_AGENT_ID, logoView, 'Logo', 'logo')}
-              {productId && <div className="mt-6"><h3 className="text-sm font-semibold text-neutral-700">Etiqueta nutricional</h3>{renderLabelCard()}</div>}
+              {productId ? (
+                <>
+                  <div className="mt-2"><h3 className="text-sm font-semibold text-neutral-700">Etiqueta nutricional</h3>{renderLabelCard()}</div>
+                  <div className="mt-6"><h3 className="text-sm font-semibold text-neutral-700">Recursos de tu marca</h3>{renderBrandAssets()}</div>
+                </>
+              ) : (
+                <>
+                  {renderNameCommands()}
+                  {renderTextCommands(LOGO_AGENT_ID, logoView, 'Logo', 'logo')}
+                </>
+              )}
             </>
           ) : undefined} conversationNotFound={notFound} liveConnectionLost={liveLost} creationBlocked={creationBlocked} conversationMenu={creationBlocked ? undefined :
             <ConversationMenu initialConversations={initialConversations} initialBrands={initialBrands} currentConversationId={conversationId} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} onNewProduct={(brandId) => void openNewProduct(brandId)} onEditBrand={(brandId) => void openEditBrand(brandId)} onEditProduct={(productId) => void openEditProduct(productId)} onNewProductConversation={handleNewConversationInBrand} onNewConversation={handleNewConversationInBrand} onArchiveBrand={handleArchiveBrand} loadConversations={listConversationsAction} />
           } />
-          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} labelControls={renderLabelCard()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
+          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} labelControls={renderLabelCard()} brandAssetsPanel={renderBrandAssets()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
       </>
       )}
 

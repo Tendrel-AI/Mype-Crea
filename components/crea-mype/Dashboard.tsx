@@ -8,7 +8,7 @@ import { type BrandAssets, type Tab } from './types';
 import { LandingPageRenderer } from './LandingPageRenderer';
 
 
-export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls, nameControls, labelControls, briefPanel }: {
+export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls, nameControls, labelControls, briefPanel, brandAssetsPanel }: {
   assets: BrandAssets;
   processingAgents: Set<string>;
   step: number;
@@ -21,6 +21,8 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
   labelControls?: React.ReactNode;
   /** KAN-26: the editable brief (BriefPanel). Replaces the brand placeholder when present. */
   briefPanel?: React.ReactNode;
+  /** D34: product conversations only. Read-only brand assets; replaces the logo/name command panels. */
+  brandAssetsPanel?: React.ReactNode;
 }) {
   const landingContent = assets.typedLandingPage ?? assets.landingPage;
   const hasLandingPage = Boolean(assets.typedLandingPage || assets.landingPage);
@@ -94,12 +96,12 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
                   Esperando definición de marca...
                 </div>
               ))}
-              {nameControls}
+              {!brandAssetsPanel && nameControls}
             </motion.div>
 
             {/* Step 2 & 3: Visual Assets */}
-            <div id="brand-step-2" className="grid grid-cols-2 gap-6 scroll-mt-4">
-              <motion.div
+            <div id="brand-step-2" className={`grid ${brandAssetsPanel ? 'grid-cols-1' : 'grid-cols-2'} gap-6 scroll-mt-4`}>
+              {!brandAssetsPanel && <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 flex flex-col"
@@ -121,7 +123,7 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
                   )}
                 </div>
                 {logoControls}
-              </motion.div>
+              </motion.div>}
 
               {labelControls && (
                 <motion.div
@@ -137,6 +139,20 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
                 </motion.div>
               )}
             </div>
+
+            {brandAssetsPanel && (
+              <motion.div
+                id="brand-assets"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 scroll-mt-4"
+              >
+                <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
+                  <Sparkles size={16} /> Recursos de tu marca
+                </h2>
+                {brandAssetsPanel}
+              </motion.div>
+            )}
 
             {/* Step 4: Landing Page */}
             <motion.div
