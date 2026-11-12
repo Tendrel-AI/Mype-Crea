@@ -42,6 +42,7 @@ const mocks = vi.hoisted(() => ({
   listNotices: vi.fn(),
   listByConversation: vi.fn(),
   startConversation: vi.fn(async () => undefined),
+  adoptOwnVersion: vi.fn(async () => true),
   getDeliverableStates: vi.fn(async (): Promise<unknown[]> => []),
   peekNextDecision: vi.fn(async (): Promise<unknown[]> => [{ kind: 'announce_all_complete' }]),
   executeCommand: vi.fn(),
@@ -56,6 +57,7 @@ vi.mock('../../auth/resolve-identity', () => ({ resolveIdentity: mocks.resolveId
 vi.mock('../../core/orchestrator/runtime', () => ({
   getOrchestrator: () => ({
     startConversation: mocks.startConversation,
+    adoptOwnVersion: mocks.adoptOwnVersion,
     getDeliverableStates: mocks.getDeliverableStates,
     peekNextDecision: mocks.peekNextDecision,
     executeCommand: mocks.executeCommand,
@@ -313,7 +315,7 @@ describe('brand and product creation (KAN-87)', () => {
     expect(await createOwnedBrand(OWN as never, { attributes: BRAND_ATTRIBUTES })).toMatchObject({
       ok: true, conversationId: ids.created, brandId: BRAND, productId: null, context: { brandName: 'Café Andino' },
     });
-    expect(mocks.startConversation).toHaveBeenCalledTimes(1);
+    expect(mocks.startConversation).toHaveBeenCalledTimes(2); // the start plus the adoption's own start (D35)
     expect(mocks.brandCreate).toHaveBeenLastCalledWith(OWN.tenant, OWN.user, expect.objectContaining({ name: 'Café Andino', attributes: BRAND_ATTRIBUTES }));
   });
 
@@ -331,6 +333,18 @@ describe('brand and product creation (KAN-87)', () => {
     expect(mocks.brandCreate.mock.calls[0][2].attributes).not.toHaveProperty('imported');
     await createOwnedBrand(OWN as never, { attributes: BRAND_ATTRIBUTES, imported: true });
     expect(mocks.brandCreate.mock.calls[1][2].attributes).toMatchObject({ imported: true });
+  });
+
+  it('creation adopts the typed name and tagline as own versions; name_pending or empty tagline adopts nothing (D35)', async () => {
+    await createOwnedBrand(OWN as never, { attributes: { ...BRAND_ATTRIBUTES, existing_tagline: 'Pan de casa' } });
+    expect((mocks.adoptOwnVersion.mock.calls as unknown[][]).map((c) => c.slice(1))).toEqual([['business_name', BRAND_ATTRIBUTES.business_name], ['tagline', 'Pan de casa']]);
+    mocks.adoptOwnVersion.mockClear();
+    await createOwnedBrand(OWN as never, { attributes: BRAND_ATTRIBUTES });
+    expect((mocks.adoptOwnVersion.mock.calls as unknown[][]).map((c) => c[1])).toEqual(['business_name']);
+    mocks.adoptOwnVersion.mockClear();
+    const { business_name: _n, ...rest } = BRAND_ATTRIBUTES;
+    await createOwnedBrand(OWN as never, { attributes: { ...rest, name_pending: true } });
+    expect(mocks.adoptOwnVersion).not.toHaveBeenCalled();
   });
 
   it('a pending name stores a null brand name', async () => {

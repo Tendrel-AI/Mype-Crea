@@ -308,8 +308,8 @@ export async function createOwnedBrand(
   }
   log.debug({ brandId: created.brandId, conversationId }, 'selection.brand_created');
   const started = await startedConversation(identity, conversationId, created.brandId, null, created.pin);
-  // KAN-89: an imported brand brings its name and tagline; its logo is adopted when it is uploaded.
-  if (started.ok && input.imported) await adoptImportedBrand(identity, conversationId, attributes);
+  // KAN-89 / D35: a typed name (not name_pending) and tagline become the approved Nombre / Lema, imported or not.
+  if (started.ok) await adoptImportedBrand(identity, conversationId, attributes);
   return started;
 }
 

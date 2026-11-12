@@ -16,8 +16,8 @@ export type BrandFormResult =
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,image/svg+xml';
-/** Only «Ya tengo una marca» (and editing) shows these; «Crear marca» starts from nothing. */
-const IMPORT_ONLY = new Set(['existing_tagline', 'social_accounts']);
+/** Only «Ya tengo una marca» (and editing) shows these; «Crear marca» starts from nothing (except the optional tagline, D35). */
+const IMPORT_ONLY = new Set(['social_accounts']);
 
 const TITLES: Record<BrandFormMode, string> = { create: 'Crear marca', import: 'Ya tengo una marca', edit: 'Editar marca' };
 
@@ -72,7 +72,8 @@ export function BrandForm({ mode, initialValues, existingFiles = [], onSubmit, o
 }) {
   const [files, setFiles] = useState<BrandFiles>({ logo: null, assets: [] });
   const [uploadErrors, setUploadErrors] = useState<ReadonlyArray<string>>([]);
-  const fields = BRAND_CATALOG.filter((f) => mode !== 'create' || !IMPORT_ONLY.has(f.key));
+  const fields = BRAND_CATALOG.filter((f) => mode !== 'create' || !IMPORT_ONLY.has(f.key))
+    .map((f) => (mode === 'create' && f.key === 'existing_tagline' ? { ...f, label: 'Lema o eslogan (opcional)' } : f));
   return (
     <CatalogForm
       level="brand"
