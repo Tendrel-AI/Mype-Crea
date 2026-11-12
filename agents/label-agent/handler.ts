@@ -9,7 +9,8 @@
  *
  * Traceability: `metadata.inputs` is empty on purpose (staleness compares brief fields; the label uses none),
  * the lab reports used are listed in `metadata.labReports`. `metadata.safety` is the deterministic `passed`
- * verdict (KAN-33 shape) so the candidate is approvable. A `LabelAnalysisFailure` fails the task with the typed
+ * verdict (KAN-33 shape) so the candidate is approvable. A report whose bytes are missing or whose hash differs is skipped
+ * with a warning notice; when none is readable the task fails `lab_report_missing` (permanent). A `LabelAnalysisFailure` fails the task with the typed
  * kind `lab_report_unusable` and its user-facing message. The handler never writes to the database.
  */
 import { createHash } from 'node:crypto';
@@ -19,7 +20,7 @@ import { TaskError, taskErrorFromThrown } from '../../src/core/task-errors';
 import { LAB_REPORTS_KEY, LAB_SERVING_KEY, NO_LAB_REPORTS_MESSAGE, type LabReportRef } from '../../src/labeling/lab-report-refs';
 import { analyzeLabReports } from '../../src/labeling/analyze';
 import { parseLabReportPdf } from '../../src/labeling/lab-report-parser';
-import type { AnalyzeOptions, ParsedLabReport } from '../../src/labeling/types';
+import type { AnalyzeOptions, LabelNotice, ParsedLabReport } from '../../src/labeling/types';
 import { loggerFor } from '../../src/services/logger';
 import { brandFileStorage } from '../../src/services/storage/brand-upload';
 
@@ -59,19 +60,24 @@ export const handler: AgentHandler<undefined> = async (message: A2AMessage) => {
 
     const storage = brandFileStorage();
     const reports: ParsedLabReport[] = [];
+    const skipped: LabelNotice[] = [];
     for (const ref of refs) {
       const bytes = await storage.getObject(ref.storageKey);
       if (!bytes || createHash('sha256').update(bytes).digest('hex') !== ref.sha256) {
-        throw new TaskError('storage_unavailable', `No pudimos leer el análisis «${ref.originalName}». Inténtalo de nuevo.`);
+        child.warn({ fileId: ref.fileId }, 'agent.label.report_unreadable');
+        skipped.push({ code: 'lab_report_missing', severity: 'warning', message: `No encontramos el archivo «${ref.originalName}»; súbelo de nuevo.` });
+        continue;
       }
       reports.push(await parseLabReportPdf(bytes, ref.fileId));
     }
+    if (reports.length === 0) throw new TaskError('lab_report_missing', 'No encontramos tus análisis guardados. Súbelos de nuevo.');
 
-    const result = analyzeLabReports(reports, serving ? { serving } : undefined);
-    if (!result.ok) {
-      child.debug({ issueCodes: result.issues.map((issue) => issue.code) }, 'agent.label.unusable');
-      throw new TaskError('lab_report_unusable', result.message);
+    const analyzed = analyzeLabReports(reports, serving ? { serving } : undefined);
+    if (!analyzed.ok) {
+      child.debug({ issueCodes: analyzed.issues.map((issue) => issue.code) }, 'agent.label.unusable');
+      throw new TaskError('lab_report_unusable', analyzed.message);
     }
+    const result = { ...analyzed, notices: [...analyzed.notices, ...skipped] };
 
     const completedAt = new Date().toISOString();
     const artifact: A2AArtifact = {
@@ -92,7 +98,7 @@ export const handler: AgentHandler<undefined> = async (message: A2AMessage) => {
   } catch (err) {
     const error = taskErrorFromThrown(err);
     // An unusable report is the user's to fix, not a system error.
-    child[error.kind === 'lab_report_unusable' ? 'warn' : 'error']({ err, errorKind: error.kind }, 'agent.label.failed');
+    child[error.kind === 'lab_report_unusable' || error.kind === 'lab_report_missing' ? 'warn' : 'error']({ err, errorKind: error.kind }, 'agent.label.failed');
     return { status: 'failed', taskId: message.taskId, error, completedAt: new Date().toISOString() };
   }
 };

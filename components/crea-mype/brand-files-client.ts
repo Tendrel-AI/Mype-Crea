@@ -53,3 +53,13 @@ export async function uploadLabReports(
   }
   return { uploaded, errors };
 }
+
+/** D32: remove one lab report; returns a Spanish error or null. */
+export async function removeLabReport(fileId: string): Promise<string | null> {
+  try {
+    const response = await fetch(`/api/brand-files/${fileId}`, { method: 'DELETE' });
+    return response.ok ? null : 'No pudimos quitar el análisis. Inténtalo de nuevo.';
+  } catch {
+    return 'No pudimos quitar el análisis. Revisa tu conexión.';
+  }
+}

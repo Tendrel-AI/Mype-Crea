@@ -43,22 +43,30 @@ export function labelCommandAfterUpload(
 
 export function LabelCard({
   view,
-  reportNames,
+  reports,
+  onRemove,
   uploading,
   ...commands
 }: {
   view: DeliverableStateView | undefined;
-  /** Original names of the product's uploaded lab reports. */
-  reportNames: ReadonlyArray<string>;
+  /** The product's uploaded lab reports (id and original name). */
+  reports: ReadonlyArray<{ id: string; name: string }>;
+  /** «Quitar»: remove one lab report. */
+  onRemove: (fileId: string) => void;
   uploading: boolean;
 } & Omit<React.ComponentProps<typeof DeliverableCommands>, 'view' | 'label' | 'enabledNote' | 'renderCandidate'>) {
   return (
     <section aria-label="Etiqueta nutricional">
-      {reportNames.length > 0 ? (
+      {reports.length > 0 ? (
         <div className="text-xs text-neutral-600" data-testid="lab-report-names">
           <p className="font-medium">Análisis de laboratorio subidos:</p>
           <ul className="list-disc pl-4">
-            {reportNames.map((name, index) => <li key={`${index}:${name}`} className="break-words">{name}</li>)}
+            {reports.map(({ id, name }) => (
+              <li key={id} className="break-words">
+                {name}{' '}
+                <button type="button" className="underline disabled:opacity-50" disabled={commands.busy} onClick={() => onRemove(id)} aria-label={`Quitar ${name}`}>Quitar</button>
+              </li>
+            ))}
           </ul>
         </div>
       ) : (

@@ -7,7 +7,7 @@ import { FormModal } from './crea-mype/FormModal';
 import { BrandForm, brandFormTitle, type BrandFiles, type BrandFormMode, type BrandFormResult } from './crea-mype/BrandForm';
 import { ProductForm, productFormTitle } from './crea-mype/ProductForm';
 import type { FormResult } from './crea-mype/CatalogForm';
-import { uploadBrandFiles, uploadLabReports } from './crea-mype/brand-files-client';
+import { removeLabReport, uploadBrandFiles, uploadLabReports } from './crea-mype/brand-files-client';
 import { LabelCard, labelCommandAfterUpload } from './crea-mype/label-card';
 import { LAB_UPLOAD_WAIT_MESSAGE } from './crea-mype/lab-upload-copy';
 import { ConversationMenu } from './crea-mype/ConversationMenu';
@@ -167,7 +167,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   // D32: the label is a product deliverable; a brand conversation never shows it.
   const productId = context?.productId ?? null;
   const labelView = productId ? deliverableStates.find((view) => view.agentId === LABEL_AGENT_ID) : undefined;
-  const [labReportNames, setLabReportNames] = useState<ReadonlyArray<string>>([]);
+  const [labReportNames, setLabReportNames] = useState<ReadonlyArray<{ id: string; name: string }>>([]);
   const [labUploading, setLabUploading] = useState(false);
   // KAN-26: the brief exactly as the server last returned it.
   const [briefFields, setBriefFields] = useState<ReadonlyArray<BriefPanelField>>(initialBrief);
@@ -266,7 +266,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   const refreshLabReports = useCallback(async (forConversation: string) => {
     try {
       const result = await listLabReportNamesAction({ conversationId: forConversation });
-      if (result.ok && currentConversationRef.current === forConversation) setLabReportNames(result.names);
+      if (result.ok && currentConversationRef.current === forConversation) setLabReportNames(result.reports);
     } catch (error) {
       console.error('Failed to load lab reports', error);
     }
@@ -445,6 +445,16 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     }
   };
 
+  /** D32: «Quitar» a lab report, then reload the list. */
+  const handleLabRemove = async (fileId: string) => {
+    if (!conversationId || labUploading) return;
+    setCommandError('');
+    setCommandErrorAgent(LABEL_AGENT_ID);
+    const error = await removeLabReport(fileId);
+    if (error) setCommandError(error);
+    await refreshLabReports(conversationId);
+  };
+
   const renderLogoCommands = () => (
     <DeliverableCommands
       view={logoView}
@@ -487,7 +497,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   const renderLabelCard = () => productId ? (
     <LabelCard
       view={labelView}
-      reportNames={labReportNames}
+      reports={labReportNames}
+      onRemove={(fileId) => void handleLabRemove(fileId)}
       uploading={labUploading}
       busy={commandBusy || labUploading}
       error={commandErrorAgent === LABEL_AGENT_ID ? commandError : ''}

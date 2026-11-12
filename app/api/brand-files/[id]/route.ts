@@ -38,3 +38,25 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
     return plain(503, 'Unavailable');
   }
 }
+
+/** D32: `DELETE /api/brand-files/<id>` removes one of the caller's lab reports (row first, then the object; a missing object is fine). Any other kind, foreign or missing is the same 404. */
+export async function DELETE(_request: NextRequest, context: { params: Promise<{ id: string }> }): Promise<Response> {
+  const { id } = await context.params;
+  if (!isConversationId(id)) return plain(404, 'Not found');
+  let identity;
+  try {
+    identity = await resolveIdentity();
+  } catch {
+    return plain(401, 'Unauthorized');
+  }
+  try {
+    const storageKey = await repos(identity.tenant, identity.user).brandFiles.removeLabReport(id as UUID);
+    if (!storageKey) return plain(404, 'Not found');
+    await brandFileStorage().deleteObject(storageKey).catch((err) => log.error({ err, fileId: id }, 'brand_files.removed_cleanup_failed'));
+    log.debug({ tenantId: identity.tenant.id, fileId: id }, 'brand_files.lab_report_removed');
+    return new Response(null, { status: 204, headers: NO_STORE });
+  } catch (err) {
+    log.error({ err, tenantId: identity.tenant.id, fileId: id }, 'brand_files.remove_failed');
+    return plain(503, 'Unavailable');
+  }
+}

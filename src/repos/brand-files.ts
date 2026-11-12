@@ -47,10 +47,12 @@ export interface NewBrandFile {
 
 export interface BrandFilesRepo {
   add(file: NewBrandFile): Promise<
-    | { ok: true; file: BrandFileRow; replacedStorageKey?: string }
+    | { ok: true; file: BrandFileRow; replacedStorageKey?: string; reused?: true }
     | { ok: false; code: 'not_found' }
     | { ok: false; code: 'asset_limit_reached'; limit: number }
   >;
+  /** D32: delete one of the caller's lab reports; returns its storage key (the route deletes the object), or null when foreign/missing. */
+  removeLabReport(fileId: UUID): Promise<string | null>;
   /** D32: the product's lab reports (oldest first) with the hash recorded at upload. */
   listLabReports(productId: UUID): Promise<LabReportRow[]>;
   /** The caller's own file, or null when foreign or missing. */
@@ -94,6 +96,16 @@ export function brandFilesRepo(tenant: Tenant, user: User): BrandFilesRepo {
           );
           replacedStorageKey = old.rows[0]?.storage_key;
         } else {
+          if (file.kind === 'lab_report') {
+            // Same bytes again: reuse the row (the route rewrites the object at its key); no new row, no limit.
+            const same = await tx.query<Db>(
+              `SELECT ${COLUMNS} FROM brand_files
+                WHERE tenant_id = $1 AND user_id = $2 AND brand_id = $3 AND product_id = $4 AND kind = 'lab_report' AND sha256 = $5
+                ORDER BY created_at, id LIMIT 1`,
+              [tenant.id, user.id, file.brandId, productId, file.sha256],
+            );
+            if (same.rows[0]) return { ok: true, file: toRow(same.rows[0]), reused: true } as const;
+          }
           const limit = file.kind === 'lab_report' ? MAX_LAB_REPORTS : MAX_ASSETS;
           const count = await tx.query<{ n: number }>(
             `SELECT count(*)::int AS n FROM brand_files
@@ -118,6 +130,16 @@ export function brandFilesRepo(tenant: Tenant, user: User): BrandFilesRepo {
           [fileId, tenant.id, user.id],
         );
         return res.rows[0] ? toRow(res.rows[0]) : null;
+      });
+    },
+
+    async removeLabReport(fileId) {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<{ storage_key: string }>(
+          `DELETE FROM brand_files WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND kind = 'lab_report' RETURNING storage_key`,
+          [fileId, tenant.id, user.id],
+        );
+        return res.rows[0]?.storage_key ?? null;
       });
     },
 

@@ -6,7 +6,8 @@
  * same 404. The type is decided by magic bytes (`sniffImage`); size is checked from `content-length`
  * first and again on the real bytes. The object is written first, then the row; when the row is
  * refused or fails the object is deleted (no orphans). Replacing the logo deletes the old object.
- * D32: `kind=lab_report` takes a PDF (magic bytes) of a product (`productId` required), at most 5 per product.
+ * D32: `kind=lab_report` takes a PDF (magic bytes) of a product (`productId` required), at most 5 per product;
+ * the same bytes (sha256) again reuse the existing row and rewrite its object.
  */
 import { randomUUID, createHash } from 'node:crypto';
 import type { NextRequest } from 'next/server';
@@ -87,8 +88,15 @@ export async function POST(request: NextRequest): Promise<Response> {
         await storage.deleteObject(storageKey);
         if (added.code === 'not_found') return NOT_FOUND();
         return reply(409, kind === 'lab_report'
-          ? `Cada producto admite hasta ${MAX_LAB_REPORTS} análisis de laboratorio.`
+          ? `Este producto ya tiene ${MAX_LAB_REPORTS} análisis. Quita uno para subir otro.`
           : `Cada marca o producto admite hasta ${MAX_ASSETS} archivos.`);
+      }
+      if (added.reused) {
+        // D32: same file again: rewrite the bytes at the existing row's key (they may have been lost) and drop the new object.
+        await storage.putObject(added.file.storageKey, bytes, sniffed.contentType);
+        await storage.deleteObject(storageKey);
+        child.debug({ fileId: added.file.id }, 'brand_files.reused');
+        return Response.json({ ok: true, id: added.file.id, kind, originalName: added.file.originalName, url: `/api/brand-files/${added.file.id}` }, { status: 200, headers: NO_STORE });
       }
       if (added.replacedStorageKey) {
         await storage.deleteObject(added.replacedStorageKey).catch((err) => child.error({ err }, 'brand_files.replaced_cleanup_failed'));
