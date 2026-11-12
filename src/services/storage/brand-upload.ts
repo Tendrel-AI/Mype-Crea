@@ -58,14 +58,21 @@ export function safeOriginalName(name: string): string {
   return cleaned || 'archivo';
 }
 
-let devFallback: InMemoryObjectStorage | undefined;
+// Cached on globalThis (like the runtime/Redis/notifiers) so every Next.js bundle in the process
+// (route handlers, label-agent worker) shares one in-memory store; the warning logs once per process.
+const DEV_STORAGE_SLOT = Symbol.for('mypes.storage.brand-dev-fallback');
+type DevStorageHolder = { [DEV_STORAGE_SLOT]?: InMemoryObjectStorage };
+const holder = globalThis as unknown as DevStorageHolder;
 
 /** The configured bucket, or an in-memory store when none is configured (local only). */
 export function brandFileStorage(): IObjectStorage {
   const configured = getObjectStorage();
   if (configured) return configured;
-  log.warn('brand uploads use in-memory storage (no bucket configured): files are lost on restart');
-  return (devFallback ??= new InMemoryObjectStorage());
+  if (!holder[DEV_STORAGE_SLOT]) {
+    log.warn('brand uploads use in-memory storage (no bucket configured): files are lost on restart');
+    holder[DEV_STORAGE_SLOT] = new InMemoryObjectStorage();
+  }
+  return holder[DEV_STORAGE_SLOT];
 }
 
 /** Inert-by-default headers for serving an uploaded file (SVG included). */
