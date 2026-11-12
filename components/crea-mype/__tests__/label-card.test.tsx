@@ -63,7 +63,7 @@ describe('label preview and card', () => {
     const markup = renderToStaticMarkup(
       <LabelCard
         view={view({ state: 'in_review', allowedCommands: ['iterate'], candidates: [candidate({ kind: 'label', value: result })] })}
-        reportNames={['informe.pdf', 'otro.pdf']} uploading={false} busy={false} error="" onCommand={noop}
+        reports={[{ id: 'a', name: 'informe.pdf' }, { id: 'b', name: 'otro.pdf' }]} onRemove={noop} uploading={false} busy={false} error="" onCommand={noop}
       />,
     );
     expect(markup).toContain('rules.v9');

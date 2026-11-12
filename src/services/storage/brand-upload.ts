@@ -1,11 +1,12 @@
 /**
  * KAN-87 brand uploads: what a file is is decided by its BYTES (never the client MIME), SVG is only
- * accepted when it is inert, and the object storage always resolves (the in-memory fallback is used
+ * accepted when it is inert, and the object storage always resolves (the on-disk fallback (`.data/brand-files`) is used
  * locally when no bucket is configured; production without a bucket fails closed in `getObjectStorage`).
  */
 import { loggerFor } from '../logger';
 import { getObjectStorage } from './index';
-import { InMemoryObjectStorage } from './memory-storage';
+import { join } from 'node:path';
+import { DiskObjectStorage } from './disk-storage';
 import type { IObjectStorage } from './types';
 
 const log = loggerFor('services.storage.brand-upload');
@@ -59,18 +60,18 @@ export function safeOriginalName(name: string): string {
 }
 
 // Cached on globalThis (like the runtime/Redis/notifiers) so every Next.js bundle in the process
-// (route handlers, label-agent worker) shares one in-memory store; the warning logs once per process.
+// (route handlers, label-agent worker) shares one store; the warning logs once per process.
 const DEV_STORAGE_SLOT = Symbol.for('mypes.storage.brand-dev-fallback');
-type DevStorageHolder = { [DEV_STORAGE_SLOT]?: InMemoryObjectStorage };
+type DevStorageHolder = { [DEV_STORAGE_SLOT]?: IObjectStorage };
 const holder = globalThis as unknown as DevStorageHolder;
 
-/** The configured bucket, or an in-memory store when none is configured (local only). */
+/** The configured bucket, or an on-disk store (`<repo>/.data/brand-files`) when none is configured (local only). */
 export function brandFileStorage(): IObjectStorage {
   const configured = getObjectStorage();
   if (configured) return configured;
   if (!holder[DEV_STORAGE_SLOT]) {
-    log.warn('brand uploads use in-memory storage (no bucket configured): files are lost on restart');
-    holder[DEV_STORAGE_SLOT] = new InMemoryObjectStorage();
+    log.warn('brand uploads use local disk storage (no bucket configured): files persist in .data/brand-files');
+    holder[DEV_STORAGE_SLOT] = new DiskObjectStorage(join(process.cwd(), '.data', 'brand-files'));
   }
   return holder[DEV_STORAGE_SLOT];
 }

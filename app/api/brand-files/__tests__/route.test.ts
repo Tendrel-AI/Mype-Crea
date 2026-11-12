@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   productGet: vi.fn(),
   add: vi.fn(),
   get: vi.fn(),
+  removeLabReport: vi.fn(),
 }));
 
 vi.mock('../../../../src/auth/resolve-identity', () => ({ resolveIdentity: mocks.resolveIdentity }));
@@ -23,12 +24,12 @@ vi.mock('../../../../src/repos', () => ({
   repos: () => ({
     brands: { get: mocks.brandGet },
     products: { get: mocks.productGet },
-    brandFiles: { add: mocks.add, get: mocks.get },
+    brandFiles: { add: mocks.add, get: mocks.get, removeLabReport: mocks.removeLabReport },
   }),
 }));
 
 import { POST } from '../route';
-import { GET } from '../[id]/route';
+import { DELETE, GET } from '../[id]/route';
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
 const svg = (body: string) => new TextEncoder().encode(`<svg xmlns="http://www.w3.org/2000/svg">${body}</svg>`);
@@ -145,8 +146,18 @@ describe('POST /api/brand-files', () => {
       mocks.add.mockResolvedValueOnce({ ok: false, code: 'asset_limit_reached', limit: 5 });
       const res = await POST((await pdf({ brandId: BRAND, productId: PRODUCT, kind: 'lab_report' })) as never);
       expect(res.status).toBe(409);
-      expect((await res.json()).message).toContain('5 análisis de laboratorio');
+      expect((await res.json()).message).toBe('Este producto ya tiene 5 análisis. Quita uno para subir otro.');
       expect(storage.objects.size).toBe(0);
+    });
+
+    it('the same file again reuses the row: bytes rewritten at its key, no new object, 200', async () => {
+      const key = 'tenants/tenant-1/brands/b/files/old.pdf';
+      mocks.add.mockResolvedValueOnce({ ok: true, reused: true, file: { id: FILE_ID, storageKey: key, originalName: 'informe.pdf' } });
+      const res = await POST((await pdf({ brandId: BRAND, productId: PRODUCT, kind: 'lab_report' })) as never);
+      expect(res.status).toBe(200);
+      expect((await res.json())).toMatchObject({ ok: true, id: FILE_ID });
+      expect([...storage.objects.keys()]).toEqual([key]);
+      expect(storage.objects.get(key)?.bytes).toEqual(PDF);
     });
   });
 
@@ -218,3 +229,28 @@ describe('GET /api/brand-files/[id]', () => {
   });
 });
 
+
+describe('DELETE /api/brand-files/[id] (D32)', () => {
+  const call = (id: string) => DELETE(new Request('http://app.test/x', { method: 'DELETE' }) as never, { params: Promise.resolve({ id }) });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    storage = new InMemoryObjectStorage();
+    setObjectStorage(storage);
+    mocks.resolveIdentity.mockResolvedValue(mocks.identity);
+  });
+
+  it('removes the row, then the object (204)', async () => {
+    await storage.putObject('k.pdf', new Uint8Array([1]), 'application/pdf');
+    mocks.removeLabReport.mockResolvedValue('k.pdf');
+    expect((await call(FILE_ID)).status).toBe(204);
+    expect(storage.objects.size).toBe(0);
+  });
+
+  it('a foreign, missing or non lab-report file is 404; a missing object is fine', async () => {
+    mocks.removeLabReport.mockResolvedValue(null);
+    expect((await call(FILE_ID)).status).toBe(404);
+    expect((await call('nope')).status).toBe(404);
+    mocks.removeLabReport.mockResolvedValue('gone.pdf');
+    expect((await call(FILE_ID)).status).toBe(204);
+  });
+});

@@ -30,6 +30,7 @@ export const FAILURE_CAUSE_BY_KIND: Readonly<Record<TaskErrorKind, string>> = {
   handler_threw: 'Ocurrió un error inesperado.',
   usage_limited: 'Alcanzaste un límite de uso. Inténtalo más tarde.',
   lab_report_unusable: 'No pudimos usar el análisis de laboratorio.',
+  lab_report_missing: 'No encontramos tus análisis guardados. Súbelos de nuevo.',
 };
 
 /** Card copy for a failed deliverable. `label` is a lowercase noun, e.g. "logo". */

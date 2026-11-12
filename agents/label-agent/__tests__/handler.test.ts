@@ -79,10 +79,24 @@ describe('label-agent handler', () => {
   it.each([
     ['a missing object', null],
     ['an altered object', new TextEncoder().encode('%PDF-1.4 otro')],
-  ])('%s fails storage_unavailable (transient) naming the file', async (_name, bytes) => {
+  ])('%s fails lab_report_missing (permanent, no retry copy) when it is the only report', async (_name, bytes) => {
     mocks.getObject.mockResolvedValue(bytes);
     const result = await handler(message({ lab_reports: [REF] }), undefined);
-    expect(result).toMatchObject({ status: 'failed', error: { kind: 'storage_unavailable', message: expect.stringContaining('informe.pdf') } });
+    expect(result).toMatchObject({ status: 'failed', error: { kind: 'lab_report_missing', message: 'No encontramos tus análisis guardados. Súbelos de nuevo.' } });
     expect(mocks.parse).not.toHaveBeenCalled();
+  });
+
+  it('skips one missing report with a warning notice appended and analyzes the rest', async () => {
+    const lost = { ...REF, fileId: 'f2', storageKey: 'tenants/t/files/f2.pdf', originalName: 'perdido.pdf' };
+    mocks.getObject.mockImplementation(async (key) => (key === lost.storageKey ? null : PDF));
+    mocks.analyze.mockReturnValue({ ...RESULT, notices: [{ code: 'x', severity: 'info', message: 'previo' }] });
+    const result = await handler(message({ lab_reports: [REF, lost] }), undefined);
+    expect(result.status).toBe('completed');
+    if (result.status !== 'completed') return;
+    expect(mocks.analyze).toHaveBeenCalledWith([expect.objectContaining({ fileId: 'f1' })], undefined);
+    expect((result.artifacts[0].inline as typeof RESULT).notices).toEqual([
+      { code: 'x', severity: 'info', message: 'previo' },
+      { code: 'lab_report_missing', severity: 'warning', message: 'No encontramos el archivo «perdido.pdf»; súbelo de nuevo.' },
+    ]);
   });
 });

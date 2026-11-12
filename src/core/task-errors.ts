@@ -42,6 +42,8 @@ export const TASK_ERROR_KINDS = [
   'usage_limited',
   /** D32: no lab report of the product yielded usable nutrient data. Its message is written for the user (see `USER_FACING_ERROR_KINDS`). */
   'lab_report_unusable',
+  /** D32: none of the product's recorded lab reports can be read from storage (missing bytes or a different hash). Message is user-facing. */
+  'lab_report_missing',
 ] as const;
 
 export type TaskErrorKind = (typeof TASK_ERROR_KINDS)[number];
@@ -60,10 +62,12 @@ const CATEGORY_BY_KIND: Readonly<Record<TaskErrorKind, TaskErrorCategory>> = {
   usage_limited: 'transient',
   // The user fixes it by uploading another report; Reintentar re-reads the product's reports.
   lab_report_unusable: 'permanent_bug',
+  // Permanent: retrying cannot bring the bytes back; the user uploads the reports again.
+  lab_report_missing: 'permanent_bug',
 };
 
 /** Kinds whose `error.message` is user-facing Spanish: the state view carries it (`lastFailure.errorMessage`). */
-export const USER_FACING_ERROR_KINDS: ReadonlyArray<TaskErrorKind> = ['lab_report_unusable'];
+export const USER_FACING_ERROR_KINDS: ReadonlyArray<TaskErrorKind> = ['lab_report_unusable', 'lab_report_missing'];
 
 /**
  * A task `in_progress` for longer than this is considered abandoned (the process died mid-generation)
