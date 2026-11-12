@@ -5,6 +5,8 @@
  * failure category offers at least one command).
  */
 import { describe, expect, it } from 'vitest';
+import { planNextDecision } from '../planner';
+import { buildDefaultRegistry } from '../bootstrap-registry';
 import type {
   AgentRequirementState,
   ConversationSnapshot,
@@ -825,6 +827,18 @@ describe('KAN-89 — brand-level kinds and «Usar mi …»', () => {
   it('a product chat never generates a brand-level kind: blocked, no commands, until the brand approves it', () => {
     const view = stateOf(snap(true), [NAME_OWN], none, 'name-agent');
     expect(view).toMatchObject({ state: 'blocked', inheritedFromBrand: true, allowedCommands: [] });
+  });
+
+  it('D35: once the own name is adopted (approved) neither the state nor the planner offers «Generar»; pending keeps the offer', () => {
+    const adopted = { ...none, candidates: [candidate('d1', 't1', '2026-10-25T00:00:02.000Z', 'business_name')], approvals: [{ deliverableKind: 'business_name', deliverableId: 'd1' }] } as DeliverableWorkflowFacts;
+    const registry = buildDefaultRegistry();
+    const plan = (facts: DeliverableWorkflowFacts) =>
+      planNextDecision(snap(false), registry, { deliverableStates: deriveDeliverableStates(snap(false), [NAME_OWN], facts) });
+    const view = stateOf(snap(false), [NAME_OWN], adopted, 'name-agent');
+    expect(view.state).toBe('approved');
+    expect(view.allowedCommands).not.toContain('generate');
+    expect(plan(adopted).map((d) => d.kind)).not.toContain('offer_generation');
+    expect(stateOf(snap(false), [NAME_OWN], none, 'name-agent').allowedCommands).toContain('generate');
   });
 
   it('a kind without ownSource never offers use_own', () => {
