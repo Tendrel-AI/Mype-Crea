@@ -37,6 +37,8 @@ function describe(decision: PlannerDecision, context: ChatContext | null | undef
       // D29: no per-field list; one open invitation. The Extractor maps the answer and marks the rest «No aplica».
       return 'Para avanzar, cuéntame en un solo mensaje lo que tengas claro: qué quieres lograr, qué te inspira, el estilo que imaginas y lo que no quieres ver o no puedes usar.';
     }
+    case 'request_upload':
+      return decision.promptHint;
     case 'confirm_field':
       return `Tengo este valor pendiente: «${String(decision.pendingValue)}». ¿Es correcto?`;
     case 'offer_generation':
@@ -56,8 +58,7 @@ function describe(decision: PlannerDecision, context: ChatContext | null | undef
     }
     case 'announce_all_complete':
       return context?.productId
-        // shortcut: promise of future product deliverables, remove when label/ad-image agents ship (KAN-92)
-        ? 'Los datos de tu producto quedaron guardados. Puedes revisarlos o editarlos en el panel; pronto podrás generar la etiqueta y las imágenes publicitarias de tu producto.'
+        ? 'Tu etiqueta nutricional está lista. Puedes revisarla en el panel o subir otro análisis para actualizarla.'
         : 'Tu marca está lista. Para continuar, crea un producto con el botón «Nuevo producto».';
     case 'request_selection':
       return 'Elige una de las opciones en el panel lateral.';

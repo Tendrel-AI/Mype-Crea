@@ -46,3 +46,11 @@ export async function labReportsOfConversation(
   if (!context?.productId || !context.brandId) return null;
   return { productId: context.productId, brandId: context.brandId, reports: await owned.brandFiles.listLabReports(context.productId) };
 }
+
+/** D34: uploaded files per `brand_files.kind` for the conversation's product (planner fact). Empty when it is not a product chat. */
+export function uploadCountsOfConversation(tenant: Tenant, user: User) {
+  return async (conversationId: ConversationId): Promise<Readonly<Record<string, number>>> => {
+    const lab = await labReportsOfConversation(tenant, user, conversationId);
+    return { lab_report: lab?.reports.length ?? 0 };
+  };
+}

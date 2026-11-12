@@ -27,6 +27,7 @@ export type PlannerDecision =
   | ConfirmFieldDecision
   | RequestSelectionDecision
   | OfferGenerationDecision
+  | RequestUploadDecision
   | AnnounceDispatchDecision
   | AnnounceCompletionDecision
   | ReportDeliverableStatusDecision
@@ -91,6 +92,20 @@ export interface OfferGenerationDecision {
   readonly agentId: AgentId;
   /** Deliverable kind from the Agent Card's `mypes:deliverable` (e.g. "logo"). */
   readonly deliverableKind: string;
+}
+
+/**
+ * D34: an in-scope deliverable needs a file upload (Agent Card `mypes:requirements.uploads`) and the
+ * conversation has fewer than `min`. The user has a panel button to upload it.
+ */
+export interface RequestUploadDecision {
+  readonly kind: 'request_upload';
+  readonly agentId: AgentId;
+  readonly deliverableKind: string;
+  /** `brand_files.kind` being asked for (e.g. "lab_report"). */
+  readonly uploadKind: string;
+  /** The human-facing hint from the Agent Card. */
+  readonly promptHint: string;
 }
 
 /** Inform the user (via the adapter) that a sub-agent task has just been dispatched. */
@@ -166,6 +181,9 @@ export function isRequestSelection(d: PlannerDecision): d is RequestSelectionDec
 }
 export function isOfferGeneration(d: PlannerDecision): d is OfferGenerationDecision {
   return d.kind === 'offer_generation';
+}
+export function isRequestUpload(d: PlannerDecision): d is RequestUploadDecision {
+  return d.kind === 'request_upload';
 }
 export function isAnnounceDispatch(d: PlannerDecision): d is AnnounceDispatchDecision {
   return d.kind === 'announce_dispatch';

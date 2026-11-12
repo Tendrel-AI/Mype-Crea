@@ -54,7 +54,7 @@ import {
   defaultDecisionNotifier,
   defaultLifecycleNotifier,
 } from './notifiers';
-import { labelTaskInputs } from '../../labeling/lab-task-inputs';
+import { labelTaskInputs, uploadCountsOfConversation } from '../../labeling/lab-task-inputs';
 import { loggerFor } from '../../services/logger';
 import { activePromptVersions, resolvePinnedPrompt, type PromptKey } from '../../services/prompts';
 import { buildRuntime, type OnTaskSettled, type Runtime } from './runtime-config';
@@ -229,6 +229,7 @@ function build(): Runtime {
     workflowFor: (tenantId: UUID, userId: UUID) => new PostgresDeliverableWorkflowStore(tenantId, userId),
     approvalsFor: createApprovalStore,
     taskInputsFor: (tenantId: UUID, userId: UUID) => labelTaskInputs({ id: tenantId }, { id: userId }),
+    uploadCountsFor: (tenantId: UUID, userId: UUID) => uploadCountsOfConversation({ id: tenantId }, { id: userId }),
     transportFactory: (onTaskSettled) => buildTransport(registry, onTaskSettled),
   });
 }

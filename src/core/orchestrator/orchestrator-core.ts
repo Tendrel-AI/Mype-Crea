@@ -139,6 +139,8 @@ export interface OrchestratorCoreDeps {
   readonly approvalsFor?: (tenantId: UUID, userId: UUID) => IApprovalStore;
   /** D32: server-read inputs added to a task's requirements at command time (e.g. the product's lab reports). */
   readonly taskInputsFor?: (tenantId: UUID, userId: UUID) => (conversationId: ConversationId, agentId: string) => Promise<Record<string, unknown>>;
+  /** D34: per-kind count of the files uploaded for the conversation's product (a planner fact); omitted = unknown. */
+  readonly uploadCountsFor?: (tenantId: UUID, userId: UUID) => (conversationId: ConversationId) => Promise<Readonly<Record<string, number>>>;
   /**
    * Optional artifact notifier. When provided, onTaskSettled publishes the
    * artifacts produced by a completed task on this channel. The SSE/UI edge
@@ -355,7 +357,8 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
       throw new Error(`Unknown conversation: ${conversationId}`);
     }
     const deliverableStates = await this.statesForPlanner(conversationId, snapshot);
-    plan.push(...planNextDecision(snapshot, this.deps.registry, { deliverableStates }));
+    const uploadCounts = await this.uploadCountsForPlanner(conversationId);
+    plan.push(...planNextDecision(snapshot, this.deps.registry, { deliverableStates, uploadCounts }));
 
     return plan;
   }
@@ -374,6 +377,19 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
       return await deriveStatesFor(this.commandContext(conversationId, snapshot), conversationId);
     } catch (err) {
       log.warn({ err, conversationId }, 'orchestrator.deliverable_states.unavailable');
+      return undefined;
+    }
+  }
+
+  /** D34: upload counts for the planner; on a read failure they are unknown and no upload is asked. */
+  private async uploadCountsForPlanner(conversationId: ConversationId): Promise<Readonly<Record<string, number>> | undefined> {
+    const tenantId = this.conversationTenants.get(conversationId);
+    const userId = this.conversationUsers.get(conversationId);
+    if (!this.deps.uploadCountsFor || !tenantId || !userId) return undefined;
+    try {
+      return await this.deps.uploadCountsFor(tenantId, userId)(conversationId);
+    } catch (err) {
+      log.warn({ err, conversationId }, 'orchestrator.upload_counts.unavailable');
       return undefined;
     }
   }

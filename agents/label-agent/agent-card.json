@@ -5,7 +5,14 @@
   "skills": [],
   "mypes:requirements": {
     "required": [],
-    "optional": []
+    "optional": [],
+    "uploads": [
+      {
+        "kind": "lab_report",
+        "min": 1,
+        "promptHint": "Para tu etiqueta nutricional, sube el análisis de laboratorio de tu producto (PDF) con el botón «Subir análisis de laboratorio». Con eso calculo la tabla nutricional y los octógonos."
+      }
+    ]
   },
   "mypes:ui": {
     "tabLabel": "Etiqueta",

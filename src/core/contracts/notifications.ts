@@ -121,6 +121,7 @@ const PLANNER_DECISION_KINDS: ReadonlyArray<PlannerDecision['kind']> = [
   'confirm_field',
   'request_selection',
   'offer_generation',
+  'request_upload',
   'announce_dispatch',
   'announce_completion',
   'report_deliverable_status',
