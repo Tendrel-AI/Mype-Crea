@@ -142,7 +142,7 @@ export async function getProductAction(input: { readonly productId: string }): P
     const files = await owned.brandFiles.listByBrand(brand.id);
     return {
       ok: true, productId: product.id, brandId: product.brandId, attributes: product.attributes,
-      brandAttributes: brand.attributes, files: files.filter((f) => f.productId === product.id).map(fileView),
+      brandAttributes: brand.attributes, files: files.filter((f) => f.productId === product.id && f.kind !== 'lab_report').map(fileView),
     };
   } catch (error) {
     log.error({ err: error }, 'products.get_failed');

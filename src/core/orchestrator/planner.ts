@@ -252,8 +252,9 @@ function pickGenerationOffer(
   context: PlannerContext,
 ): { readonly agentId: AgentId; readonly deliverableKind: string } | null {
   if (context.deliverableStates) {
+    const silent = new Set(registry.getDeliverableSpecs().filter((spec) => spec.offerable === false).map((spec) => spec.agentId));
     const enabled = context.deliverableStates
-      .filter((view) => view.state === 'enabled')
+      .filter((view) => view.state === 'enabled' && !silent.has(view.agentId))
       .filter((view) => !snapshot.agentStates[view.agentId]?.lastDispatchedTaskId)
       .map((view) => ({ agentId: view.agentId, deliverableKind: view.deliverableKind }))
       .sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0));

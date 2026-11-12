@@ -21,7 +21,7 @@ import type { IDeliverableWorkflowStore } from './deliverable-workflow';
 import type { AgentRegistry } from './agent-registry';
 import type { IConversationStore } from './in-memory-store';
 import type { IArtifactNotifier } from './artifact-notifier';
-import { type IDecisionNotifier, OrchestratorCoreImpl } from './orchestrator-core';
+import { type IDecisionNotifier, type OrchestratorCoreDeps, OrchestratorCoreImpl } from './orchestrator-core';
 
 /** What `buildRuntime` returns — the wired set callers consume. */
 export interface Runtime {
@@ -62,6 +62,8 @@ export interface RuntimeConfig {
   readonly workflowFor?: (tenantId: UUID, userId: UUID) => IDeliverableWorkflowStore;
   /** Approval store (KAN-34 port); omitted -> in-memory. */
   readonly approvalsFor?: (tenantId: UUID, userId: UUID) => IApprovalStore;
+  /** Server-read extra task inputs (D32); omitted -> none. */
+  readonly taskInputsFor?: OrchestratorCoreDeps['taskInputsFor'];
   /**
    * Build the agent transport. The factory receives the unified
    * `onTaskSettled` callback; the transport (or any workers it spawns) must
@@ -92,6 +94,7 @@ export function buildRuntime(config: RuntimeConfig): Runtime {
     newTaskId: config.newTaskId,
     workflowFor: config.workflowFor,
     approvalsFor: config.approvalsFor,
+    taskInputsFor: config.taskInputsFor,
   });
   coreRef = core;
 

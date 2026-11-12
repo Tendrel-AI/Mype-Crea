@@ -831,3 +831,14 @@ describe('KAN-89 — brand-level kinds and «Usar mi …»', () => {
     expect(stateOf(snap(false), [{ ...NAME_OWN, ownSource: undefined }], none, 'name-agent').allowedCommands).toEqual(['generate']);
   });
 });
+
+describe('D32 user-facing failure message', () => {
+  const failed = (errorKind: string) =>
+    task({ id: 't1', status: 'failed', errorCategory: 'permanent_bug', errorKind, errorMessage: 'Mensaje para el usuario' });
+
+  it('exposes the message only for user-facing kinds', () => {
+    const run = (kind: string) => stateOf(LOGO_READY, [LOGO_SPEC], facts({ tasks: [failed(kind)] })).lastFailure;
+    expect(run('lab_report_unusable')).toMatchObject({ errorMessage: 'Mensaje para el usuario' });
+    expect(run('handler_threw')).not.toHaveProperty('errorMessage');
+  });
+});

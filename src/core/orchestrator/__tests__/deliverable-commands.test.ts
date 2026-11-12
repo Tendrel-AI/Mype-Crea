@@ -172,6 +172,14 @@ describe('executeDeliverableCommand — Generar', () => {
     expect(result.states[0]).toMatchObject({ state: 'generating', allowedCommands: ['cancel'] });
   });
 
+  it('D32: server-read task inputs (never the client) join the task requirements', async () => {
+    const h = harness();
+    const reports = [{ fileId: 'f', storageKey: 'k', sha256: 's', originalName: 'a.pdf' }];
+    h.ctx.taskInputs = async () => ({ lab_reports: reports });
+    okOf(await h.run({ kind: 'generate' }));
+    expect(h.dispatch.mock.calls[0][0].requirements).toEqual({ business_name: 'Sazón Andino', lab_reports: reports });
+  });
+
   it('is not allowed while blocked (missing brief field)', async () => {
     const h = harness({ filled: false });
     const result = await h.run({ kind: 'generate' });

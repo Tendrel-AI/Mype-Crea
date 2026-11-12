@@ -262,6 +262,21 @@ describe('planNextDecision', () => {
       ).toEqual([{ kind: 'offer_generation', agentId: 'agent-a', deliverableKind: 'a' }]);
     });
 
+    it('D32: never offers «Generar» for a card declared offerable:false (it starts from another user action)', () => {
+      const silentCard = { ...buildFixtureCard({ id: 'agent-a' }), 'mypes:deliverable': { kind: 'a', dependsOn: [], offerable: false } } as AgentCard;
+      const registry = makeRegistry([silentCard, buildFixtureCard({ id: 'agent-z' })]);
+      const states = [
+        { agentId: 'agent-a', deliverableKind: 'a', state: 'enabled', allowedCommands: [] },
+        { agentId: 'agent-z', deliverableKind: 'z', state: 'enabled', allowedCommands: [] },
+      ] as never;
+      expect(planNextDecision(snapshotWith({}), registry, { deliverableStates: states })).toEqual([
+        { kind: 'offer_generation', agentId: 'agent-z', deliverableKind: 'z' },
+      ]);
+      expect(planNextDecision(snapshotWith({}), makeRegistry([silentCard]), { deliverableStates: [states[0]] })).toEqual([
+        { kind: 'announce_all_complete' },
+      ]);
+    });
+
     describe('report_deliverable_status (KAN-91)', () => {
       const registry = makeRegistry([buildFixtureCard({ id: 'agent-a', required: [{ name: 'a_field' }] })]);
       const snap = snapshotWith(filledA);

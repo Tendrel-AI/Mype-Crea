@@ -20,6 +20,9 @@ export interface SniffedImage {
 const startsWith = (bytes: Uint8Array, signature: ReadonlyArray<number>, offset = 0) =>
   signature.every((byte, i) => bytes[offset + i] === byte);
 
+/** D32: a lab report is a PDF, decided by its `%PDF-` magic bytes. */
+export const isPdf = (bytes: Uint8Array): boolean => startsWith(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d]);
+
 /** SVG accepted only without scripts, event handlers, foreignObject, entities or external references. */
 export function isSafeSvg(text: string): boolean {
   const body = text.replace(/^﻿/, '');

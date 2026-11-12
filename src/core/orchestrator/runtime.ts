@@ -39,7 +39,7 @@ import { globalRepos } from '../../repos/global';
 import { getConversationOwnerUserId } from '../../repos/conversations';
 import { LocalAdapter } from '../../transport/local-adapter';
 import { dispatchWakeUp, RedisQueueAdapter } from '../../transport/redis-queue-adapter';
-import { LOGO_WORKER, NAME_WORKER, TAGLINE_WORKER, startAgentWorker } from '../../workers/agent-worker';
+import { LABEL_WORKER, LOGO_WORKER, NAME_WORKER, TAGLINE_WORKER, startAgentWorker } from '../../workers/agent-worker';
 import { getRedisPublisher, getRedisSubscriber } from '../../services/redis';
 import type { AgentId, ConversationId, TaskId, UUID } from '../contracts';
 import type { IAgentTransport } from '../agent-types';
@@ -54,6 +54,7 @@ import {
   defaultDecisionNotifier,
   defaultLifecycleNotifier,
 } from './notifiers';
+import { labelTaskInputs } from '../../labeling/lab-task-inputs';
 import { loggerFor } from '../../services/logger';
 import { activePromptVersions, resolvePinnedPrompt, type PromptKey } from '../../services/prompts';
 import { buildRuntime, type OnTaskSettled, type Runtime } from './runtime-config';
@@ -65,7 +66,7 @@ import type { OrchestratorCoreImpl } from './orchestrator-core';
 const log = loggerFor('orchestrator.runtime');
 
 /** Agents with a Redis worker; the worker persists their deliverables (§2.5). */
-const REDIS_WORKERS = [LOGO_WORKER, NAME_WORKER, TAGLINE_WORKER] as const;
+const REDIS_WORKERS = [LOGO_WORKER, NAME_WORKER, TAGLINE_WORKER, LABEL_WORKER] as const;
 const REDIS_DISPATCH_AGENTS: ReadonlySet<AgentId> = new Set(REDIS_WORKERS.map((worker) => worker.agentId));
 
 // Cached on globalThis so that multiple Next.js server bundles observe the
@@ -227,6 +228,7 @@ function build(): Runtime {
     artifactNotifier: defaultArtifactNotifier,
     workflowFor: (tenantId: UUID, userId: UUID) => new PostgresDeliverableWorkflowStore(tenantId, userId),
     approvalsFor: createApprovalStore,
+    taskInputsFor: (tenantId: UUID, userId: UUID) => labelTaskInputs({ id: tenantId }, { id: userId }),
     transportFactory: (onTaskSettled) => buildTransport(registry, onTaskSettled),
   });
 }

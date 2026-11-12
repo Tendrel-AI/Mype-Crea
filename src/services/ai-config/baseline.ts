@@ -9,6 +9,7 @@ import { freezeManifest, validateManifest, type AiConfigManifestV1, type JsonVal
 import logoCard from '../../../agents/logo-agent/agent-card.json';
 import nameCard from '../../../agents/name-agent/agent-card.json';
 import taglineCard from '../../../agents/tagline-agent/agent-card.json';
+import labelCard from '../../../agents/label-agent/agent-card.json';
 
 const SOURCE_FILES = [
   'src/services/ai-config/adapter-behavior.ts',
@@ -32,6 +33,7 @@ const SOURCE_FILES = [
   'agents/logo-agent/handler.ts',
   'agents/name-agent/handler.ts',
   'agents/tagline-agent/handler.ts',
+  'agents/label-agent/handler.ts',
   'src/core/contracts/index.ts',
   'src/core/contracts/decisions.ts',
   'src/core/contracts/deltas.ts',
@@ -44,6 +46,7 @@ const CARDS = {
   'logo-agent': logoCard,
   'name-agent': nameCard,
   'tagline-agent': taglineCard,
+  'label-agent': labelCard,
 } as const;
 
 /** Build a real development/build fingerprint from an internal source allowlist. */

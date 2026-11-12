@@ -7,7 +7,9 @@ import { FormModal } from './crea-mype/FormModal';
 import { BrandForm, brandFormTitle, type BrandFiles, type BrandFormMode, type BrandFormResult } from './crea-mype/BrandForm';
 import { ProductForm, productFormTitle } from './crea-mype/ProductForm';
 import type { FormResult } from './crea-mype/CatalogForm';
-import { uploadBrandFiles } from './crea-mype/brand-files-client';
+import { uploadBrandFiles, uploadLabReports } from './crea-mype/brand-files-client';
+import { LabelCard, labelCommandAfterUpload } from './crea-mype/label-card';
+import { LAB_UPLOAD_WAIT_MESSAGE } from './crea-mype/lab-upload-copy';
 import { ConversationMenu } from './crea-mype/ConversationMenu';
 import { ChatPanel } from './crea-mype/ChatPanel';
 import { Dashboard } from './crea-mype/Dashboard';
@@ -20,6 +22,8 @@ import { createConversationAction, exportConversationTraceAction, listConversati
 import { archiveBrandAction, createBrandAction, createProductAction, getBrandAction, getProductAction, updateBrandAction, updateProductAction } from '../app/actions/brands';
 import type { BrandFileView, BrandListEntry, ConversationContext, ConversationListEntry, NewOwnedConversation } from '../src/conversations/selection';
 import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/actions/deliverable-command';
+import { listLabReportNamesAction } from '../app/actions/lab-reports';
+import { LABEL_AGENT_ID } from '../src/labeling/lab-report-refs';
 import { deliverableFeedbackAction, loadDeliverableFeedbackAction } from '../app/actions/deliverable-feedback';
 import type { FeedbackValue } from '../src/repos/deliverable-feedback';
 import type { DeliverableStateView } from '../src/core/contracts';
@@ -160,6 +164,11 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   const logoView = deliverableStates.find((view) => view.agentId === LOGO_AGENT_ID);
   const nameView = deliverableStates.find((view) => view.agentId === NAME_AGENT_ID);
   const taglineView = deliverableStates.find((view) => view.agentId === TAGLINE_AGENT_ID);
+  // D32: the label is a product deliverable; a brand conversation never shows it.
+  const productId = context?.productId ?? null;
+  const labelView = productId ? deliverableStates.find((view) => view.agentId === LABEL_AGENT_ID) : undefined;
+  const [labReportNames, setLabReportNames] = useState<ReadonlyArray<string>>([]);
+  const [labUploading, setLabUploading] = useState(false);
   // KAN-26: the brief exactly as the server last returned it.
   const [briefFields, setBriefFields] = useState<ReadonlyArray<BriefPanelField>>(initialBrief);
   const [briefSaving, setBriefSaving] = useState<string | null>(null);
@@ -253,6 +262,20 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       .catch((error) => console.error('Failed to load deliverable feedback', error));
     return () => { active = false; };
   }, [conversationId]);
+
+  const refreshLabReports = useCallback(async (forConversation: string) => {
+    try {
+      const result = await listLabReportNamesAction({ conversationId: forConversation });
+      if (result.ok && currentConversationRef.current === forConversation) setLabReportNames(result.names);
+    } catch (error) {
+      console.error('Failed to load lab reports', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    setLabReportNames([]);
+    if (conversationId && productId) void refreshLabReports(conversationId);
+  }, [conversationId, productId, refreshLabReports]);
 
   // Subscribe to artifact events from the orchestrator. The SSE stream is
   // scoped to the current conversationId; resetting the conversation
@@ -395,6 +418,33 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     }
   };
 
+  /** D32: upload lab-report PDFs, then issue the label command the fresh state allows (the upload is the user's command). */
+  const handleLabUpload = async (files: File[]) => {
+    if (!conversationId || !productId || !context?.brandId || files.length === 0 || labUploading) return;
+    const forConversation = conversationId;
+    setLabUploading(true);
+    setCommandError('');
+    setCommandErrorAgent(LABEL_AGENT_ID);
+    try {
+      const { uploaded, errors } = await uploadLabReports(context.brandId, productId, files);
+      if (errors.length > 0) setCommandError(errors.join(' '));
+      if (uploaded === 0) return;
+      await refreshLabReports(forConversation);
+      const fresh = await loadDeliverableStatesAction({ conversationId: forConversation });
+      if (!fresh.ok || currentConversationRef.current !== forConversation) return;
+      applyStates(fresh.states);
+      const view = fresh.states.find((candidate) => candidate.agentId === LABEL_AGENT_ID);
+      const request = view ? labelCommandAfterUpload(view) : null;
+      if (!view || !request) setCommandError(LAB_UPLOAD_WAIT_MESSAGE);
+      else await handleDeliverableCommand(LABEL_AGENT_ID, view, request);
+    } catch (error) {
+      console.error('Lab report upload failed.', error);
+      setCommandError('No pudimos subir el análisis. Inténtalo de nuevo.');
+    } finally {
+      setLabUploading(false);
+    }
+  };
+
   const renderLogoCommands = () => (
     <DeliverableCommands
       view={logoView}
@@ -433,6 +483,20 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       {renderTextCommands(TAGLINE_AGENT_ID, taglineView, 'Lema', 'lema')}
     </>
   );
+
+  const renderLabelCard = () => productId ? (
+    <LabelCard
+      view={labelView}
+      reportNames={labReportNames}
+      uploading={labUploading}
+      busy={commandBusy || labUploading}
+      error={commandErrorAgent === LABEL_AGENT_ID ? commandError : ''}
+      onCommand={(request) => { if (labelView) void handleDeliverableCommand(LABEL_AGENT_ID, labelView, request); }}
+      feedback={feedback}
+      feedbackBusy={feedbackBusy}
+      onFeedback={(deliverableId, value) => void handleFeedback(LABEL_AGENT_ID, deliverableId, value)}
+    />
+  ) : undefined;
 
   const briefPanel = (
     <BriefPanel fields={briefFields} savingField={briefSaving} error={briefError} onSave={saveBriefField} />
@@ -517,6 +581,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     setBriefFields([]);
     setBriefError(null);
     setCommandError('');
+    setLabReportNames([]);
     setNotFound(false);
     window.history.pushState({}, '', `/?conversationId=${encodeURIComponent(result.conversationId)}`);
   };
@@ -659,7 +724,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       )}
       {activeTab === 'create' && (
         <>
-          <ChatPanel assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} context={context} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || logoView || nameView || taglineView ? (
+          <ChatPanel labUpload={productId ? { busy: labUploading || commandBusy, onFiles: (files) => void handleLabUpload(files) } : undefined} assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} context={context} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || logoView || nameView || taglineView || labelView ? (
             <>
               {briefFields.length > 0 && (
                 <details className="mb-2">
@@ -669,11 +734,12 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
               )}
               {renderNameCommands()}
               {renderTextCommands(LOGO_AGENT_ID, logoView, 'Logo', 'logo')}
+              {productId && <div className="mt-6"><h3 className="text-sm font-semibold text-neutral-700">Etiqueta nutricional</h3>{renderLabelCard()}</div>}
             </>
           ) : undefined} conversationNotFound={notFound} liveConnectionLost={liveLost} creationBlocked={creationBlocked} conversationMenu={creationBlocked ? undefined :
             <ConversationMenu initialConversations={initialConversations} initialBrands={initialBrands} currentConversationId={conversationId} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} onNewProduct={(brandId) => void openNewProduct(brandId)} onEditBrand={(brandId) => void openEditBrand(brandId)} onEditProduct={(productId) => void openEditProduct(productId)} onNewProductConversation={handleNewConversationInBrand} onNewConversation={handleNewConversationInBrand} onArchiveBrand={handleArchiveBrand} loadConversations={listConversationsAction} />
           } />
-          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
+          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} labelControls={renderLabelCard()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
       </>
       )}
 

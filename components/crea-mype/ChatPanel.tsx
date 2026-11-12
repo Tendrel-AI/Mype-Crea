@@ -4,7 +4,8 @@ import React from 'react';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
-import { Send, Loader2, Sparkles, PlusCircle, Download } from 'lucide-react';
+import { Send, Loader2, Sparkles, PlusCircle, Download, Paperclip } from 'lucide-react';
+import { LAB_UPLOAD_LABEL } from './lab-upload-copy';
 import { type BrandAssets, type Message } from './types';
 import { LIVE_CONNECTION_LOST_MESSAGE } from './live-updates';
 import type { ConversationContext } from '../../src/conversations/selection';
@@ -18,7 +19,7 @@ export function contextLine(context: ConversationContext | null | undefined): st
 }
 
 
-export function ChatPanel({ assets, processingAgents, conversationId, handleExportConversation, onCreateBrand, onImportBrand, creationBlocked = false, context, messages, isLoading, messagesEndRef, conversationError, retryTurn, submitTurn, inputText, setInputText, handleKeyDown, handleSend, needsNewConversation, mobileDeliverablePanel, conversationMenu, conversationNotFound = false, liveConnectionLost = false }: { assets: BrandAssets; processingAgents: Set<string>; conversationId: string; handleExportConversation: () => void; /** KAN-87: opens the brand form. */ onCreateBrand: () => void; /** KAN-87: opens the «Ya tengo una marca» form. */ onImportBrand: () => void; /** KAN-27: the terms gate is unavailable; creating brands is disabled and the error message is shown instead. */ creationBlocked?: boolean; /** KAN-87: brand/product of the open conversation, for the header line. */ context?: ConversationContext | null; messages: Message[]; isLoading: boolean; messagesEndRef: React.RefObject<HTMLDivElement | null>; conversationError: string; retryTurn: { requestId: string; userMessage: string } | null; submitTurn: (text: string, requestId: string) => void; inputText: string; setInputText: (text: string) => void; handleKeyDown: (e: React.KeyboardEvent) => void; handleSend: () => void; needsNewConversation: boolean; /** KAN-28: deliverable commands for small screens, where the dashboard is hidden. */ mobileDeliverablePanel?: React.ReactNode; /** KAN-25: «Mis conversaciones» dropdown, next to the restart button. */ conversationMenu?: React.ReactNode; /** KAN-25: the requested conversation is not the caller's (or does not exist). */ conversationNotFound?: boolean; /** KAN-30: the SSE stream is gone; offer a reload of the durable state. */ liveConnectionLost?: boolean }) {
+export function ChatPanel({ assets, processingAgents, conversationId, handleExportConversation, onCreateBrand, onImportBrand, creationBlocked = false, context, messages, isLoading, messagesEndRef, conversationError, retryTurn, submitTurn, inputText, setInputText, handleKeyDown, handleSend, needsNewConversation, mobileDeliverablePanel, conversationMenu, conversationNotFound = false, liveConnectionLost = false, labUpload }: { assets: BrandAssets; processingAgents: Set<string>; conversationId: string; handleExportConversation: () => void; /** KAN-87: opens the brand form. */ onCreateBrand: () => void; /** KAN-87: opens the «Ya tengo una marca» form. */ onImportBrand: () => void; /** KAN-27: the terms gate is unavailable; creating brands is disabled and the error message is shown instead. */ creationBlocked?: boolean; /** KAN-87: brand/product of the open conversation, for the header line. */ context?: ConversationContext | null; messages: Message[]; isLoading: boolean; messagesEndRef: React.RefObject<HTMLDivElement | null>; conversationError: string; retryTurn: { requestId: string; userMessage: string } | null; submitTurn: (text: string, requestId: string) => void; inputText: string; setInputText: (text: string) => void; handleKeyDown: (e: React.KeyboardEvent) => void; handleSend: () => void; needsNewConversation: boolean; /** KAN-28: deliverable commands for small screens, where the dashboard is hidden. */ mobileDeliverablePanel?: React.ReactNode; /** KAN-25: «Mis conversaciones» dropdown, next to the restart button. */ conversationMenu?: React.ReactNode; /** KAN-25: the requested conversation is not the caller's (or does not exist). */ conversationNotFound?: boolean; /** KAN-30: the SSE stream is gone; offer a reload of the durable state. */ liveConnectionLost?: boolean; /** D32: product conversations only; uploads lab-report PDFs for the nutrition label. */ labUpload?: { busy: boolean; onFiles: (files: File[]) => void } }) {
   return (
 <>
           {/* Left Panel: Chat Interface */}
@@ -183,6 +184,33 @@ export function ChatPanel({ assets, processingAgents, conversationId, handleExpo
             </p>
           )}
           <div className="relative flex items-end gap-2">
+            {labUpload && (
+              <>
+                <input
+                  id="lab-report-input"
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  multiple
+                  hidden
+                  data-testid="lab-report-input"
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files ?? []);
+                    e.target.value = '';
+                    if (files.length > 0) labUpload.onFiles(files);
+                  }}
+                />
+                <button
+                  type="button"
+                  title={LAB_UPLOAD_LABEL}
+                  aria-label={LAB_UPLOAD_LABEL}
+                  disabled={!conversationId || labUpload.busy || conversationNotFound}
+                  onClick={() => document.getElementById('lab-report-input')?.click()}
+                  className="mb-1 p-2 rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-100 disabled:opacity-50 flex-shrink-0"
+                >
+                  {labUpload.busy ? <Loader2 size={18} className="animate-spin" /> : <Paperclip size={18} />}
+                </button>
+              </>
+            )}
             <textarea
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}

@@ -9,8 +9,10 @@ import type { UUID } from '../core/contracts';
 import { withTenantTransaction, type Tenant, type User } from '../db/with-transaction';
 
 export const MAX_ASSETS = MAX_BRAND_ASSETS;
+/** D32: lab-report PDFs per product. */
+export const MAX_LAB_REPORTS = 5;
 
-export type BrandFileKind = 'logo' | 'asset';
+export type BrandFileKind = 'logo' | 'asset' | 'lab_report';
 
 export interface BrandFileRow {
   readonly id: UUID;
@@ -22,6 +24,13 @@ export interface BrandFileRow {
   readonly byteSize: number;
   readonly originalName: string;
   readonly createdAt: string;
+}
+
+export interface LabReportRow {
+  readonly fileId: UUID;
+  readonly storageKey: string;
+  readonly sha256: string;
+  readonly originalName: string;
 }
 
 export interface NewBrandFile {
@@ -42,6 +51,8 @@ export interface BrandFilesRepo {
     | { ok: false; code: 'not_found' }
     | { ok: false; code: 'asset_limit_reached'; limit: number }
   >;
+  /** D32: the product's lab reports (oldest first) with the hash recorded at upload. */
+  listLabReports(productId: UUID): Promise<LabReportRow[]>;
   /** The caller's own file, or null when foreign or missing. */
   get(fileId: UUID): Promise<BrandFileRow | null>;
   /** Files of a brand's active owner, oldest first. */
@@ -66,6 +77,7 @@ export function brandFilesRepo(tenant: Tenant, user: User): BrandFilesRepo {
       return withTenantTransaction(tenant, user, async (tx) => {
         await tx.query(`SELECT pg_advisory_xact_lock(hashtext('brand_files:' || $1::text))`, [file.brandId]);
         const productId = file.productId ?? null;
+        if (file.kind === 'lab_report' && !productId) return { ok: false, code: 'not_found' } as const;
         const owner = await tx.query(
           productId
             ? `SELECT 1 FROM products p JOIN brands b ON b.tenant_id = p.tenant_id AND b.id = p.brand_id
@@ -82,12 +94,13 @@ export function brandFilesRepo(tenant: Tenant, user: User): BrandFilesRepo {
           );
           replacedStorageKey = old.rows[0]?.storage_key;
         } else {
+          const limit = file.kind === 'lab_report' ? MAX_LAB_REPORTS : MAX_ASSETS;
           const count = await tx.query<{ n: number }>(
             `SELECT count(*)::int AS n FROM brand_files
-              WHERE tenant_id = $1 AND brand_id = $2 AND kind = 'asset' AND product_id IS NOT DISTINCT FROM $3::uuid`,
-            [tenant.id, file.brandId, productId],
+              WHERE tenant_id = $1 AND brand_id = $2 AND kind = $4 AND product_id IS NOT DISTINCT FROM $3::uuid`,
+            [tenant.id, file.brandId, productId, file.kind],
           );
-          if ((count.rows[0]?.n ?? 0) >= MAX_ASSETS) return { ok: false, code: 'asset_limit_reached', limit: MAX_ASSETS } as const;
+          if ((count.rows[0]?.n ?? 0) >= limit) return { ok: false, code: 'asset_limit_reached', limit } as const;
         }
         const res = await tx.query<Db>(
           `INSERT INTO brand_files (id, tenant_id, user_id, brand_id, product_id, kind, storage_key, content_type, byte_size, sha256, original_name)
@@ -105,6 +118,17 @@ export function brandFilesRepo(tenant: Tenant, user: User): BrandFilesRepo {
           [fileId, tenant.id, user.id],
         );
         return res.rows[0] ? toRow(res.rows[0]) : null;
+      });
+    },
+
+    async listLabReports(productId) {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<{ id: UUID; storage_key: string; sha256: string; original_name: string }>(
+          `SELECT id, storage_key, sha256, original_name FROM brand_files
+            WHERE tenant_id = $1 AND user_id = $2 AND product_id = $3 AND kind = 'lab_report' ORDER BY created_at, id`,
+          [tenant.id, user.id, productId],
+        );
+        return res.rows.map((r) => ({ fileId: r.id, storageKey: r.storage_key, sha256: r.sha256, originalName: r.original_name }));
       });
     },
 

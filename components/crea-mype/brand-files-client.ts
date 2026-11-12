@@ -2,7 +2,7 @@
 export async function uploadBrandFile(input: {
   brandId: string;
   productId?: string;
-  kind: 'logo' | 'asset';
+  kind: 'logo' | 'asset' | 'lab_report';
   file: File;
 }): Promise<string | null> {
   const body = new FormData();
@@ -36,4 +36,20 @@ export async function uploadBrandFiles(
     if (error) { errors.push(error); remaining.assets.push(file); }
   }
   return { errors, remaining };
+}
+
+/** D32: upload lab-report PDFs one by one; `uploaded` counts the stored ones, `errors` are Spanish and never thrown. */
+export async function uploadLabReports(
+  brandId: string,
+  productId: string,
+  files: ReadonlyArray<File>,
+): Promise<{ uploaded: number; errors: string[] }> {
+  const errors: string[] = [];
+  let uploaded = 0;
+  for (const file of files) {
+    const error = await uploadBrandFile({ brandId, productId, kind: 'lab_report', file });
+    if (error) errors.push(error);
+    else uploaded += 1;
+  }
+  return { uploaded, errors };
 }

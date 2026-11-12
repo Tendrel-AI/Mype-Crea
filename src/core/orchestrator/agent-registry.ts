@@ -65,6 +65,8 @@ export interface AgentCard {
      */
     readonly level?: 'brand' | 'product';
     readonly ownSource?: 'text' | 'brand_logo';
+    /** D32: `false` = the chat never offers «Generar» for it (it starts from another user action, e.g. an upload). Default true. */
+    readonly offerable?: boolean;
   };
   readonly supportedInterfaces: ReadonlyArray<
     | { readonly protocol: 'local'; readonly module: string }
@@ -89,6 +91,8 @@ export interface DeliverableSpec {
   /** Absent means `product` (KAN-89). */
   readonly level?: 'brand' | 'product';
   readonly ownSource?: 'text' | 'brand_logo';
+  /** Absent means true. */
+  readonly offerable?: false;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +170,7 @@ export class AgentRegistry {
           dependsOn: [...(declared?.dependsOn ?? [])].sort(),
           level: declared?.level ?? 'product',
           ...(declared?.ownSource ? { ownSource: declared.ownSource } : {}),
+          ...(declared?.offerable === false ? { offerable: false as const } : {}),
         };
       })
       .sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0));

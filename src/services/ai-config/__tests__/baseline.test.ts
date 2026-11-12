@@ -2,16 +2,18 @@ import { describe, expect, it } from 'vitest';
 import logoCard from '../../../../agents/logo-agent/agent-card.json';
 import nameCard from '../../../../agents/name-agent/agent-card.json';
 import taglineCard from '../../../../agents/tagline-agent/agent-card.json';
+import labelCard from '../../../../agents/label-agent/agent-card.json';
 import { createBaselineDraft, captureSourceIdentity } from '../baseline';
 
 describe('baseline draft capture', () => {
   it('captures only currently registered card content and its extractor fields', async () => {
     const manifest = await createBaselineDraft();
-    expect(Object.keys(manifest.agents)).toEqual(['logo-agent', 'name-agent', 'tagline-agent']);
+    expect(Object.keys(manifest.agents)).toEqual(['logo-agent', 'name-agent', 'tagline-agent', 'label-agent']);
     expect(manifest.agents['logo-agent']).toEqual(logoCard);
     expect(manifest.agents['name-agent']).toEqual(nameCard);
     expect(manifest.agents['tagline-agent']).toEqual(taglineCard);
-    const names = [logoCard, nameCard, taglineCard].flatMap((card) => {
+    expect(manifest.agents['label-agent']).toEqual(labelCard);
+    const names = [logoCard, nameCard, taglineCard, labelCard].flatMap((card) => {
       const requirements = card['mypes:requirements'];
       return [...requirements.required, ...requirements.optional].map((field) => field.name);
     });

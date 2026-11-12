@@ -29,6 +29,7 @@ export const FAILURE_CAUSE_BY_KIND: Readonly<Record<TaskErrorKind, string>> = {
   not_implemented: 'Este entregable aún no está disponible.',
   handler_threw: 'Ocurrió un error inesperado.',
   usage_limited: 'Alcanzaste un límite de uso. Inténtalo más tarde.',
+  lab_report_unusable: 'No pudimos usar el análisis de laboratorio.',
 };
 
 /** Card copy for a failed deliverable. `label` is a lowercase noun, e.g. "logo". */
@@ -44,6 +45,8 @@ export function failedCardMessage(
     const llm = view.deliverableKind === 'business_name' || view.deliverableKind === 'tagline';
     return usageLimitMessage(llm ? 'user_llm_hourly' : 'user_image_daily');
   }
+  // D32: the failure's own message tells the user what to fix (e.g. the lab report could not be read).
+  if (view.lastFailure?.errorMessage) return view.lastFailure.errorMessage;
   const base = `No pudimos generar tu ${label}.`;
   const kind = view.lastFailure?.errorKind;
   const cause = isTaskErrorKind(kind) ? ` ${FAILURE_CAUSE_BY_KIND[kind]}` : '';
