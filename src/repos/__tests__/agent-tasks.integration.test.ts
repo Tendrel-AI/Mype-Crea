@@ -237,6 +237,54 @@ SUITE('agent_tasks repository (integration)', () => {
     ).rejects.toThrow(/JSONB tenant safety/);
   });
 
+  it('accepts lab-report refs (brand_files id, tenant/brand ids in storageKey) and rejects a foreign tenant brand file', async () => {
+    const admin = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await admin.connect();
+    const mk = async (tid: string, uid: string | null) => {
+      const brandId = randomUUID();
+      const fileId = randomUUID();
+      const owner = uid ?? randomUUID();
+      if (!uid) {
+        await admin.query(`INSERT INTO tenants (id, kind, name) VALUES ($1, 'institutional', $2)`, [tid, `jsonb ${tid}`]);
+        await admin.query(
+          `INSERT INTO users (id, tenant_id, workos_user_id, email, role, status) VALUES ($1, $2, $3, $4, 'member', 'active')`,
+          [owner, tid, `w-${owner}`, `${owner}@example.test`],
+        );
+      }
+      await admin.query(`INSERT INTO brands (id, tenant_id, user_id) VALUES ($1, $2, $3)`, [brandId, tid, owner]);
+      await admin.query(
+        `INSERT INTO brand_files (id, tenant_id, user_id, brand_id, kind, storage_key, content_type, byte_size, sha256, original_name)
+         VALUES ($1, $2, $3, $4, 'asset', 'k', 'application/pdf', 1, $5, 'a.pdf')`,
+        [fileId, tid, owner, brandId, 'a'.repeat(64)],
+      );
+      return { brandId, fileId };
+    };
+    const foreignTenant = randomUUID();
+    try {
+      const own = await mk(tenantId, userId);
+      const foreign = await mk(foreignTenant, null);
+      const conversationId = await newConversation();
+      const sys = systemRepos({ id: tenantId });
+      const ref = (t: string, b: string, f: string) => ({
+        lab_reports: [{ fileId: f, storageKey: `tenants/${t}/brands/${b}/files/${f}.pdf`, sha256: 'a'.repeat(64), originalName: 'a.pdf' }],
+      });
+      await expect(sys.agentTasks.insertRoot({
+        conversationId, agentId: 'test-fixture-agent', agentCardVersion: '1.0.0',
+        idempotencyKey: randomUUID(), requirementsSnapshot: ref(tenantId, own.brandId, own.fileId),
+      })).resolves.toBeDefined();
+      await expect(sys.agentTasks.insertRoot({
+        conversationId, agentId: 'test-fixture-agent', agentCardVersion: '1.0.0',
+        idempotencyKey: randomUUID(), requirementsSnapshot: { lab_reports: [{ fileId: foreign.fileId }] },
+      })).rejects.toThrow(/JSONB tenant safety/);
+    } finally {
+      await admin.query(`DELETE FROM brand_files WHERE tenant_id = ANY($1::uuid[])`, [[tenantId, foreignTenant]]);
+      await admin.query(`DELETE FROM brands WHERE tenant_id = ANY($1::uuid[])`, [[tenantId, foreignTenant]]);
+      await admin.query(`DELETE FROM users WHERE tenant_id = $1`, [foreignTenant]);
+      await admin.query(`DELETE FROM tenants WHERE id = $1`, [foreignTenant]);
+      await admin.end();
+    }
+  });
+
   it('extractUuids finds embedded UUIDs in nested JSONB', () => {
     const u1 = randomUUID();
     const u2 = randomUUID();
