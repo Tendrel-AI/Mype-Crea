@@ -57,6 +57,7 @@ import {
   type DeliverableStateView,
   type FieldSlot,
 } from '../contracts';
+import { DELEGATED_FIELD_VALUE } from '../brief';
 import { changedFields, isUserOrigin } from '../deliverable-inputs';
 import { USER_FACING_ERROR_KINDS, type TaskErrorCategory } from '../task-errors';
 import type { DeliverableSpec } from './agent-registry';
@@ -158,12 +159,15 @@ export function dependentKindsOf(
 export function requirementsFromSnapshot(
   snapshot: ConversationSnapshot,
   agentId: string,
+  /** D35: delegable required fields; each one still empty is sent as `DELEGATED_FIELD_VALUE`. */
+  delegableFields: ReadonlyArray<string> = [],
 ): Record<string, unknown> {
   const agentState = snapshot.agentStates[agentId];
   const requirements: Record<string, unknown> = {};
   if (!agentState) return requirements;
   for (const [fieldName, slot] of Object.entries(agentState.requiredFields) as Array<[string, FieldSlot]>) {
     if (slot.status === 'filled') requirements[fieldName] = slot.value;
+    else if (slot.status === 'empty' && delegableFields.includes(fieldName)) requirements[fieldName] = DELEGATED_FIELD_VALUE;
   }
   for (const [fieldName, slot] of Object.entries(agentState.optionalFields) as Array<[string, FieldSlot]>) {
     if (slot.status === 'filled') requirements[fieldName] = slot.value;
@@ -199,7 +203,7 @@ export function deriveStaleCandidateIds(
     // A version the user brought was not made from anything that can change (KAN-89).
     if (candidate && isUserOrigin(candidate.metadata)) return false;
     if (spec && candidate?.inputVersions) {
-      if (changedFields(candidate.inputVersions, requirementsFromSnapshot(snapshot, spec.agentId)).length > 0) return true;
+      if (changedFields(candidate.inputVersions, requirementsFromSnapshot(snapshot, spec.agentId, spec.delegableFields)).length > 0) return true;
     }
     const upstream = candidate ? upstreamOf(candidate, facts.tasks) : null;
     if (!spec || !upstream) return approvalOf(kind) === deliverableId && marked.has(kind);
@@ -278,8 +282,12 @@ export function deriveDeliverableState(
   const { spec, facts } = input;
   const agentState = snapshot.agentStates[spec.agentId];
 
+  // D35: an empty delegable field is satisfied; a pending one still waits for its confirmation.
   const missingFields = spec.requiredFields
-    .filter((field) => agentState?.requiredFields[field]?.status !== 'filled')
+    .filter((field) => {
+      const status = agentState?.requiredFields[field]?.status ?? 'empty';
+      return status !== 'filled' && !(status === 'empty' && spec.delegableFields?.includes(field));
+    })
     .sort();
   const missingUpstream = spec.dependsOn
     .filter((kind) => !input.usableApprovedKinds.has(kind))

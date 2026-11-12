@@ -24,7 +24,7 @@ import type { AgentId, DeliverableId, FieldName, TaskId } from './ids';
 
 export type PlannerDecision =
   | RequestFieldsDecision
-  | ConfirmFieldDecision
+  | ConfirmFieldsDecision
   | RequestSelectionDecision
   | OfferGenerationDecision
   | RequestUploadDecision
@@ -59,12 +59,21 @@ export interface RequestFieldEntry {
   readonly examples?: ReadonlyArray<unknown>;
 }
 
-/** Ask the user to confirm a value the system has stored but isn't confident in. */
-export interface ConfirmFieldDecision {
-  readonly kind: 'confirm_field';
+/** One stored-but-unconfirmed value of a `confirm_fields` decision. */
+export interface ConfirmFieldEntry {
   readonly agentId: AgentId;
   readonly fieldName: FieldName;
   readonly pendingValue: unknown;
+}
+
+/**
+ * Ask the user to confirm, in ONE turn, every value the system has stored but isn't confident in (D35).
+ * A bare «sí» confirms all of them, a bare «no» resets all, a longer reply corrects what it restates.
+ */
+export interface ConfirmFieldsDecision {
+  readonly kind: 'confirm_fields';
+  /** Lex-sorted by (agentId, fieldName); one entry per field name. */
+  readonly entries: ReadonlyArray<ConfirmFieldEntry>;
 
   /** Why confirmation is needed — informs how the adapter phrases the confirmation. */
   readonly reason: 'low_confidence' | 'conflict' | 'high_stakes';
@@ -173,8 +182,8 @@ export const MAX_FIELD_BATCH_SIZE = 2;
 export function isRequestFields(d: PlannerDecision): d is RequestFieldsDecision {
   return d.kind === 'request_fields';
 }
-export function isConfirmField(d: PlannerDecision): d is ConfirmFieldDecision {
-  return d.kind === 'confirm_field';
+export function isConfirmFields(d: PlannerDecision): d is ConfirmFieldsDecision {
+  return d.kind === 'confirm_fields';
 }
 export function isRequestSelection(d: PlannerDecision): d is RequestSelectionDecision {
   return d.kind === 'request_selection';

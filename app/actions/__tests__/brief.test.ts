@@ -37,6 +37,7 @@ vi.mock('../../../src/core/orchestrator/runtime', () => ({ getOrchestrator: () =
 
 import { loadBriefAction, updateBriefFieldAction, type BriefPanelField } from '../brief';
 import { deliverableCommandAction } from '../deliverable-command';
+import { priorDecisionFrom } from '../prior-decision';
 import { InProcessDecisionNotifier, OrchestratorCoreImpl } from '../../../src/core/orchestrator/orchestrator-core';
 import { InMemoryConversationStore } from '../../../src/core/orchestrator/in-memory-store';
 import { InMemoryDeliverableWorkflowStore } from '../../../src/core/orchestrator/deliverable-workflow';
@@ -46,14 +47,17 @@ import { newTaskId } from '../../../src/core/ids';
 import { resetProvider, setProvider } from '../../../src/services/llm';
 import { APPROVED_NAME_ID, FakeLLMProvider, TEST_TENANT_ID, TEST_USER_ID, buildApprovedStore } from '../../../src/core/__tests__/_fixtures';
 import type { A2AMessage, IAgentTransport } from '../../../src/core/agent-types';
-import type { ConfirmFieldDecision, ConversationId, DeliverableStateView } from '../../../src/core/contracts';
+import type { ConfirmFieldsDecision, ConversationId, DeliverableStateView, PlannerDecision } from '../../../src/core/contracts';
 import { createCurrentAdapterBehaviorSnapshot, type AdapterBehaviorSnapshot } from '../../../src/services/ai-config/adapter-behavior';
 import { TERMS_REQUIRED_MESSAGE } from '../../../src/consent/terms';
-import { BRIEF_CATALOG } from '../../../src/core/brief';
+import { BRIEF_CATALOG, DELEGATED_FIELD_VALUE } from '../../../src/core/brief';
 import logoCard from '../../../agents/logo-agent/agent-card.json';
 
 /** The logo card's required fields: the whole logo brief the gate waits for. */
 const LOGO_REQUIRED: ReadonlyArray<string> = logoCard['mypes:requirements'].required.map((f) => f.name);
+/** D35: the required fields the card lets the user leave to the designer; they never block «Generar». */
+const LOGO_DELEGABLE: ReadonlyArray<string> = logoCard['mypes:requirements'].required.filter((f) => 'delegable' in f && f.delegable).map((f) => f.name);
+const LOGO_BLOCKING: ReadonlyArray<string> = LOGO_REQUIRED.filter((n) => !LOGO_DELEGABLE.includes(n));
 
 const CONVERSATION = '3f1c2a4e-9b7d-4c2e-8f10-0a1b2c3d4e5f' as ConversationId;
 
@@ -85,13 +89,13 @@ function buildRuntime(store = new InMemoryConversationStore(buildDefaultRegistry
 /**
  * One chat turn's input side, as app/actions/chat.ts runs it, with a scripted
  * Extractor. `release` stands in for a pinned AI release (frozen behavior);
- * `priorDecision` is the confirm_field the previous assistant turn asked.
+ * `priorDecision` is the decision the previous assistant turn asked.
  */
 async function chatTurn(
   runtime: ReturnType<typeof buildRuntime>,
   userMessage: string,
   fields: Record<string, { value: string; confidence: number }>,
-  options: { readonly release?: AdapterBehaviorSnapshot; readonly priorDecision?: ConfirmFieldDecision } = {},
+  options: { readonly release?: AdapterBehaviorSnapshot; readonly priorDecision?: PlannerDecision } = {},
 ) {
   // D22: the extractor always asks the registry's fields, whatever list the release froze.
   const askedFields = BRIEF_CATALOG.map((spec) => spec.name);
@@ -116,10 +120,10 @@ async function chatTurn(
   return provider;
 }
 
-/** The confirm_field the planner currently asks, as the next chat turn would receive it. */
-async function currentConfirm(runtime: ReturnType<typeof buildRuntime>): Promise<ConfirmFieldDecision> {
-  const decision = (await runtime.core.peekNextDecision(CONVERSATION)).find((d) => d.kind === 'confirm_field');
-  if (!decision || decision.kind !== 'confirm_field') throw new Error('no confirm_field pending');
+/** The confirm_fields the planner currently asks, as the next chat turn would receive it. */
+async function currentConfirm(runtime: ReturnType<typeof buildRuntime>): Promise<ConfirmFieldsDecision> {
+  const decision = (await runtime.core.peekNextDecision(CONVERSATION)).find((d) => d.kind === 'confirm_fields');
+  if (!decision || decision.kind !== 'confirm_fields') throw new Error('no confirm_fields pending');
   return decision;
 }
 
@@ -285,7 +289,7 @@ describe('brief actions (KAN-26)', () => {
     async function pendingStyleThenPanel(runtime: ReturnType<typeof buildRuntime>) {
       await chatTurn(runtime, 'quizá algo rústico', { style_keywords: { value: 'rústico', confidence: 0.7 } });
       const question = await currentConfirm(runtime);
-      expect(question).toMatchObject({ fieldName: 'style_keywords', pendingValue: 'rústico' });
+      expect(question.entries).toEqual([expect.objectContaining({ fieldName: 'style_keywords', pendingValue: 'rústico' })]);
       await updateBriefFieldAction({ conversationId: CONVERSATION, fieldName: 'style_keywords', value: 'moderno' });
       return question;
     }
@@ -320,6 +324,48 @@ describe('brief actions (KAN-26)', () => {
     });
   });
 
+  describe('bug 5: «sí» to the confirmation of logo_keep (D35)', () => {
+    type Turn = { id: string; stage: string; payload: Record<string, unknown> };
+
+    // Replays a conversation the way chat.ts does: each answered turn persists its plan, and the next
+    // reply is read against the prior decision chosen by `priorDecisionFrom` over `listTurns` order (newest first).
+    async function converse() {
+      const runtime = buildRuntime();
+      const turns: Turn[] = [];
+      let n = 0;
+      const say = async (message: string, fields: Record<string, { value: string; confidence: number }> = {}) => {
+        const id = `turn-${++n}`;
+        await chatTurn(runtime, message, fields, { priorDecision: priorDecisionFrom(turns, id) });
+        turns.unshift({ id, stage: 'responded', payload: { decisions: await runtime.core.peekNextDecision(CONVERSATION) } });
+      };
+      return { say };
+    }
+
+    it('confirms logo_keep, and restating it later does not bring it back to pending', async () => {
+      const { say } = await converse();
+      await say('quizá algo rústico', { style_keywords: { value: 'rústico', confidence: 0.7 } }); // turn 1 asks to confirm
+      await say('sí'); // turn 2 confirms it
+      await say('solo el color café oscuro', { logo_keep: { value: 'el color café oscuro', confidence: 0.7 } });
+      expect(field((await brief()).fields, 'logo_keep')).toMatchObject({ status: 'pending_confirmation' });
+
+      await say('sí'); // the reply the old lookup lost: it was read against turn 1's confirmation
+      expect(field((await brief()).fields, 'logo_keep')).toMatchObject({ status: 'filled', value: 'el color café oscuro' });
+
+      await say('como te dije, solo el color café', { logo_keep: { value: 'el color café oscuro', confidence: 0.7 } });
+      expect(field((await brief()).fields, 'logo_keep')).toMatchObject({ status: 'filled', value: 'el color café oscuro' });
+    });
+
+    it('the lookup reads the MOST RECENT answered turn, not the oldest', () => {
+      const confirm = (fieldName: string): PlannerDecision => ({ kind: 'confirm_fields', entries: [{ agentId: 'logo-agent', fieldName, pendingValue: 'x' }], reason: 'low_confidence' });
+      const turns = [
+        { id: 'current', stage: 'reserved', payload: {} },
+        { id: 'new', stage: 'responded', payload: { decisions: [confirm('logo_keep')] } },
+        { id: 'old', stage: 'responded', payload: { decisions: [confirm('visual_references')] } },
+      ];
+      expect(priorDecisionFrom(turns, 'current')).toMatchObject({ entries: [{ fieldName: 'logo_keep' }] });
+    });
+  });
+
   describe('precondition gate: the server verdict drives «Generar» in both directions', () => {
     type Step = (runtime: ReturnType<typeof buildRuntime>) => Promise<void>;
     const panel = (fieldName: string, value: string): Step => async () => {
@@ -335,14 +381,16 @@ describe('brief actions (KAN-26)', () => {
       for (const name of LOGO_REQUIRED.filter((n) => !except.includes(n))) await panel(name, 'Sin preferencia')(runtime);
     };
     it.each<[string, ReadonlyArray<Step>, ReadonlyArray<string>]>([
-      ['empty brief', [], LOGO_REQUIRED],
-      ['only the name, via panel', [panel('business_name', 'Dulce Andino')], LOGO_REQUIRED.filter((n) => n !== 'business_name')],
+      ['empty brief', [], LOGO_BLOCKING],
+      ['only the name, via panel', [panel('business_name', 'Dulce Andino')], LOGO_BLOCKING.filter((n) => n !== 'business_name')],
       [
         'one logo field still pending confirmation from chat',
         [panelAllExcept('logo_goal'), chat({ logo_goal: { value: 'verse profesional', confidence: 0.7 } })],
         ['logo_goal'],
       ],
-      ['optional facts only', [panel('location', 'Cusco'), panel('style_keywords', 'rústico')], LOGO_REQUIRED],
+      ['optional facts only', [panel('location', 'Cusco'), panel('style_keywords', 'rústico')], LOGO_BLOCKING],
+      // D35: empty delegable fields never block; Generar sends them as the delegated value.
+      ['only the delegable fields empty', [panelAllExcept(...LOGO_DELEGABLE)], []],
       [
         'pending field confirmed in the panel',
         [panelAllExcept('logo_goal'), chat({ logo_goal: { value: 'verse profesional', confidence: 0.7 } }), panel('logo_goal', 'verse profesional')],
@@ -365,6 +413,18 @@ describe('brief actions (KAN-26)', () => {
       expect(result.ok).toBe(enabled);
       expect(runtime.dispatched).toHaveLength(enabled ? 1 : 0);
       if (!result.ok) expect(result.reason).toBe('not_allowed');
+    });
+
+    it('generate sends every empty delegable field as the delegated value, so the agent receives the whole brief (D35)', async () => {
+      const runtime = buildRuntime();
+      await panelAllExcept(...LOGO_DELEGABLE, 'logo_keep')(runtime);
+      await panel('logo_keep', 'solo el color café')(runtime);
+      const view = logoState((await brief()).states);
+      expect((await generate(view)).ok).toBe(true);
+      const sent = runtime.dispatched[0].requirements as Record<string, unknown>;
+      for (const name of LOGO_REQUIRED) expect(sent[name], name).toBeDefined();
+      expect(sent.logo_keep).toBe('solo el color café');
+      expect(sent.logo_typography).toBe(DELEGATED_FIELD_VALUE);
     });
 
     it('refuses a forged "enabled" command while preconditions are missing', async () => {

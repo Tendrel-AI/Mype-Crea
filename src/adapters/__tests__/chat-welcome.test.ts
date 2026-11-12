@@ -15,7 +15,8 @@ const agentId = 'test-fixture-agent';
 const decisions: Record<string, PlannerDecision> = {
   one: { kind: 'request_fields', agentId, fields: [field('a', 'Cuéntame el nombre')] },
   many: { kind: 'request_fields', agentId, fields: [field('a', 'Uno'), field('b', 'Dos'), field('c', 'Tres')] },
-  confirm: { kind: 'confirm_field', agentId, fieldName: 'a', pendingValue: 'Brisa', reason: 'low_confidence' },
+  confirm: { kind: 'confirm_fields', entries: [{ agentId, fieldName: 'a', pendingValue: 'Brisa' }], reason: 'low_confidence' },
+  confirmMany: { kind: 'confirm_fields', entries: [{ agentId, fieldName: 'a', pendingValue: 'Brisa' }, { agentId, fieldName: 'b', pendingValue: 'Cálido' }], reason: 'low_confidence' },
   offer: { kind: 'offer_generation', agentId, deliverableKind: 'logo' },
   review: { kind: 'report_deliverable_status', agentId, deliverableKind: 'logo', state: 'in_review', allowedCommands: ['approve', 'iterate'] },
   failed: { kind: 'report_deliverable_status', agentId, deliverableKind: 'logo', state: 'failed', allowedCommands: ['retry'] },
@@ -49,6 +50,7 @@ describe('renderWelcome', () => {
     expect(list).toContain('qué quieres lograr, qué te inspira');
     expect(list).not.toMatch(/1\. Uno|no aplica|sin preferencia/);
     expect(renderWelcome([decisions.confirm], brand, registry)).toContain('«Brisa». ¿Es correcto?');
+    expect(renderWelcome([decisions.confirmMany], brand, registry)).toContain('- «Brisa»\n- «Cálido»\n¿Es todo correcto?');
     expect(renderWelcome([decisions.offer], brand, registry)).toContain('Cuando quieras, toca el botón Generar.');
     expect(renderWelcome([decisions.failed], brand, registry)).toContain('botón Reintentar');
     expect(renderWelcome([decisions.generating], brand, registry)).toContain('se está generando');

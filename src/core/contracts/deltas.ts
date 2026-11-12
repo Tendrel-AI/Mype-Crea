@@ -89,7 +89,7 @@ export interface FieldValueWithConfidence {
 
   /**
    * Optional precondition: apply only while the slot is still
-   * `pending_confirmation` with this value. A «sí» to a confirm_field sets it,
+   * `pending_confirmation` with this value. A «sí» to a confirm_fields sets it,
    * so a stale confirmation cannot overwrite a value accepted since (KAN-26).
    */
   readonly expectedPendingValue?: unknown;
@@ -175,7 +175,7 @@ export const CONFIDENCE_THRESHOLDS = {
   /** At or above this, store the value without prompting for confirmation. */
   AUTO_ACCEPT: 0.9,
 
-  /** At or above this but below AUTO_ACCEPT: store but mark pending for confirm_field. */
+  /** At or above this but below AUTO_ACCEPT: store but mark pending for confirm_fields. */
   STORE_AND_CONFIRM: 0.6,
 
   /** Below STORE_AND_CONFIRM: discard the extracted value and re-ask explicitly. */

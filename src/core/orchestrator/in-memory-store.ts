@@ -14,6 +14,8 @@ export interface AgentFieldSchema {
   readonly displayOrder: number;
   readonly requiredFields: ReadonlyArray<FieldName>;
   readonly optionalFields: ReadonlyArray<FieldName>;
+  /** D35: required fields the card lets the user leave to the agent (`delegable: true`); a subset of `requiredFields`. */
+  readonly delegableFields?: ReadonlyArray<FieldName>;
   /** Card-declared cap of fields asked in one `request_fields`; absent = `MAX_FIELD_BATCH_SIZE`. */
   readonly askBatchSize?: number;
 }

@@ -153,10 +153,10 @@ export const responderCases: ReadonlyArray<ResponderCase> = [
   },
   {
     id: 'confirm-name',
-    tags: ['confirm_field'],
+    tags: ['confirm_fields'],
     inputs: {
       decisions: [
-        { kind: 'confirm_field', agentId: 'logo-agent', fieldName: 'business_name', pendingValue: 'Dulce Hogar', reason: 'low_confidence' },
+        { kind: 'confirm_fields', entries: [{ agentId: 'logo-agent', fieldName: 'business_name', pendingValue: 'Dulce Hogar' }], reason: 'low_confidence' },
       ],
       recentMessages: [{ role: 'user', content: 'Creo que lo voy a llamar algo como Dulce Hogar' }],
       logoState: {
@@ -171,10 +171,10 @@ export const responderCases: ReadonlyArray<ResponderCase> = [
   },
   {
     id: 'confirm-style',
-    tags: ['confirm_field'],
+    tags: ['confirm_fields'],
     inputs: {
       decisions: [
-        { kind: 'confirm_field', agentId: 'logo-agent', fieldName: 'style_keywords', pendingValue: 'elegante', reason: 'low_confidence' },
+        { kind: 'confirm_fields', entries: [{ agentId: 'logo-agent', fieldName: 'style_keywords', pendingValue: 'elegante' }], reason: 'low_confidence' },
       ],
       recentMessages: [{ role: 'user', content: 'Tal vez algo elegante, no sé' }],
       logoState: nameFilled,

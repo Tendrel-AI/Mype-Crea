@@ -89,6 +89,8 @@ export interface RequirementField {
   readonly type: string;
   readonly promptHint: string;
   readonly enumValues?: ReadonlyArray<string>;
+  /** D35: a required field the user may leave to the agent; never blocks generation, sent as `DELEGATED_FIELD_VALUE` when empty. */
+  readonly delegable?: boolean;
 }
 
 /** What the pure deliverable state function needs to know about one agent. */
@@ -96,6 +98,8 @@ export interface DeliverableSpec {
   readonly agentId: AgentId;
   readonly deliverableKind: string;
   readonly requiredFields: ReadonlyArray<string>;
+  /** D35: subset of `requiredFields` that may stay empty; absent = none. */
+  readonly delegableFields?: ReadonlyArray<string>;
   readonly dependsOn: ReadonlyArray<string>;
   /** Absent means `product` (KAN-89). */
   readonly level?: 'brand' | 'product';
@@ -160,6 +164,7 @@ export class AgentRegistry {
       requiredFields: entry.card['mypes:requirements'].required.map((f) => f.name),
       optionalFields: entry.card['mypes:requirements'].optional.map((f) => f.name),
       displayOrder: entry.card['mypes:ui'].displayOrder,
+      ...delegableOf(entry.card),
       ...(entry.card['mypes:requirements'].askBatchSize
         ? { askBatchSize: entry.card['mypes:requirements'].askBatchSize }
         : {}),
@@ -178,6 +183,7 @@ export class AgentRegistry {
           agentId: entry.card.name,
           deliverableKind: declared?.kind ?? entry.card.name,
           requiredFields: entry.card['mypes:requirements'].required.map((f) => f.name),
+          ...delegableOf(entry.card),
           dependsOn: [...(declared?.dependsOn ?? [])].sort(),
           level: declared?.level ?? 'product',
           ...(declared?.ownSource ? { ownSource: declared.ownSource } : {}),
@@ -201,4 +207,10 @@ export class AgentRegistry {
     if (!match) throw new Error(`Unknown field ${fieldName} for agent ${agentId}`);
     return match.promptHint;
   }
+}
+
+/** D35: the card's delegable required fields, or nothing. */
+function delegableOf(card: AgentCard): { readonly delegableFields?: ReadonlyArray<string> } {
+  const names = card['mypes:requirements'].required.filter((f) => f.delegable === true).map((f) => f.name);
+  return names.length > 0 ? { delegableFields: names } : {};
 }

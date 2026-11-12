@@ -49,7 +49,8 @@
       {
         "name": "color_palette",
         "type": "string",
-        "promptHint": "¿Qué colores quieres usar, permitir o evitar en el logo?"
+        "promptHint": "¿Qué colores quieres usar, permitir o evitar en el logo?",
+        "delegable": true
       },
       {
         "name": "logo_goal",
@@ -74,37 +75,44 @@
       {
         "name": "logo_composition",
         "type": "string",
-        "promptHint": "¿Qué composición prefieres? (solo nombre, nombre y símbolo, monograma, o que el diseñador recomiende)"
+        "promptHint": "¿Qué composición prefieres? (solo nombre, nombre y símbolo, monograma, o que el diseñador recomiende)",
+        "delegable": true
       },
       {
         "name": "logo_shapes",
         "type": "string",
-        "promptHint": "¿Cómo imaginas las formas del logo? (geometría, curvas o ángulos, grosor y nivel de detalle)"
+        "promptHint": "¿Cómo imaginas las formas del logo? (geometría, curvas o ángulos, grosor y nivel de detalle)",
+        "delegable": true
       },
       {
         "name": "logo_typography",
         "type": "string",
-        "promptHint": "¿Cómo quieres la tipografía? (mayúsculas o minúsculas, espaciado, carácter de las letras)"
+        "promptHint": "¿Cómo quieres la tipografía? (mayúsculas o minúsculas, espaciado, carácter de las letras)",
+        "delegable": true
       },
       {
         "name": "logo_keep",
         "type": "string",
-        "promptHint": "¿Hay elementos actuales de tu marca que tus clientes ya reconocen y quieres conservar?"
+        "promptHint": "¿Hay elementos actuales de tu marca que tus clientes ya reconocen y quieres conservar?",
+        "delegable": true
       },
       {
         "name": "logo_applications",
         "type": "string",
-        "promptHint": "¿Dónde aparecerá tu logo, ordenado por importancia? (empaque, redes sociales, letrero, etc.)"
+        "promptHint": "¿Dónde aparecerá tu logo, ordenado por importancia? (empaque, redes sociales, letrero, etc.)",
+        "delegable": true
       },
       {
         "name": "logo_production_limits",
         "type": "string",
-        "promptHint": "¿Qué límites de producción hay? (tamaño mínimo, fondos, impresión, bordado, grabado)"
+        "promptHint": "¿Qué límites de producción hay? (tamaño mínimo, fondos, impresión, bordado, grabado)",
+        "delegable": true
       },
       {
         "name": "logo_restrictions",
         "type": "string",
-        "promptHint": "¿Hay elementos obligatorios o prohibidos en el logo?"
+        "promptHint": "¿Hay elementos obligatorios o prohibidos en el logo?",
+        "delegable": true
       }
     ],
     "optional": [

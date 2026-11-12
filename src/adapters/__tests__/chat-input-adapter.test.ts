@@ -3,7 +3,7 @@
  *
  * - The affirmation/denial fast paths must NOT call the LLM, and only a bare
  *   yes/no takes them.
- * - Compound replies to confirm_field (yes/no plus a correction or extra
+ * - Compound replies to confirm_fieldss (yes/no plus a correction or extra
  *   facts) are extracted, and the resulting delta is merged into a real
  *   in-memory store so the tests assert the final slot state (KAN-56).
  * - The LLM extraction path parses the JSON, applies the STORE_AND_CONFIRM
@@ -24,7 +24,7 @@ import { ChatInputAdapter, classifyConfirmationReply } from '../chat-input-adapt
 import { resetProvider, setProvider } from '../../services/llm';
 import {
   CONFIDENCE_THRESHOLDS,
-  type ConfirmFieldDecision,
+  type ConfirmFieldsDecision,
   type PlannerDecision,
 } from '../../core/contracts';
 import {
@@ -41,6 +41,7 @@ import { AgentRegistry } from '../../core/orchestrator/agent-registry';
 import { InMemoryConversationStore } from '../../core/orchestrator/in-memory-store';
 import { mergeFieldDelta } from '../../core/orchestrator/merge';
 import { createCurrentAdapterBehaviorSnapshot } from '../../services/ai-config/adapter-behavior';
+import { DELEGATED_FIELD_VALUE } from '../../core/brief';
 
 const ctx = {
   tenant: { id: TEST_TENANT_ID },
@@ -86,10 +87,8 @@ describe('ChatInputAdapter', () => {
     const adapter = new ChatInputAdapter(buildFakeCore(), registry);
 
     const priorDecision: PlannerDecision = {
-      kind: 'confirm_field',
-      agentId: 'fixture-a',
-      fieldName: 'business_name',
-      pendingValue: 'Café Andino',
+      kind: 'confirm_fields',
+      entries: [{ agentId: 'fixture-a', fieldName: 'business_name', pendingValue: 'Café Andino' }],
       reason: 'low_confidence',
     };
 
@@ -133,10 +132,8 @@ describe('ChatInputAdapter', () => {
     const adapter = new ChatInputAdapter(buildFakeCore(), registry);
 
     const priorDecision: PlannerDecision = {
-      kind: 'confirm_field',
-      agentId: 'fixture-a',
-      fieldName: 'business_name',
-      pendingValue: 'Cafetería Mocha',
+      kind: 'confirm_fields',
+      entries: [{ agentId: 'fixture-a', fieldName: 'business_name', pendingValue: 'Cafetería Mocha' }],
       reason: 'low_confidence',
     };
 
@@ -229,9 +226,10 @@ describe('ChatInputAdapter', () => {
 
     const prompt = provider.captured[0].systemPrompt;
     expect(prompt).toContain('Preguntas pendientes (el usuario');
-    expect(prompt).toContain('todo campo pendiente que el mensaje no aborde se devuelve con el valor literal "No aplica"');
-    expect(prompt).toContain('Si el mensaje NO responde a esas preguntas');
+    expect(prompt).toContain('Todo campo pendiente que el mensaje no aborde se devuelve con null');
+    expect(prompt).toContain('"answers_pending" es true solo si el mensaje responde');
     expect(prompt).toContain('  1. c_field: Hint C\n  2. a_field: Hint A\n  3. b_field: Hint B');
+    // Neither field is delegable: the answer is stored as given.
     expect(delta.fields['fixture-a']?.b_field).toMatchObject({ value: 'Sin preferencia', confidence: 1 });
 
     await adapter.extract({ conversationId, userMessage: 'hola', llmContext: ctx });
@@ -428,7 +426,7 @@ describe('ChatInputAdapter', () => {
 });
 
 // ---------------------------------------------------------------------------
-// KAN-56: compound replies to confirm_field
+// KAN-56: compound replies to confirm_fields
 // ---------------------------------------------------------------------------
 
 const PENDING_NAME = 'Dulce Hogar';
@@ -436,11 +434,9 @@ const PENDING_NAME = 'Dulce Hogar';
 const PENDING_CONFIDENCE = 0.7;
 const AGENT = 'fixture-a';
 
-const confirmName: ConfirmFieldDecision = {
-  kind: 'confirm_field',
-  agentId: AGENT,
-  fieldName: 'business_name',
-  pendingValue: PENDING_NAME,
+const confirmName: ConfirmFieldsDecision = {
+  kind: 'confirm_fields',
+  entries: [{ agentId: AGENT, fieldName: 'business_name', pendingValue: PENDING_NAME }],
   reason: 'low_confidence',
 };
 
@@ -454,7 +450,7 @@ function toolArgs(fields: Record<string, ToolField> = {}): string {
 }
 
 /**
- * One confirm_field turn end to end through the adapter and the real merge:
+ * One confirm_fields turn end to end through the adapter and the real merge:
  * the store holds `business_name` pending as "Dulce Hogar", the user replies,
  * the (mocked) extractor answers with `llmArgs`, and the delta is merged.
  */
@@ -493,7 +489,7 @@ async function runConfirmTurn(userMessage: string, llmArgs: string = toolArgs())
   return { delta, provider, state };
 }
 
-describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
+describe('ChatInputAdapter — replies to confirm_fields (KAN-56)', () => {
   beforeEach(() => {
     recordSpy.mockClear();
   });
@@ -775,4 +771,183 @@ describe('ChatInputAdapter — replies to confirm_field (KAN-56)', () => {
       });
     },
   );
+});
+
+
+// ---------------------------------------------------------------------------
+// D35: answers_pending + delegable fields
+// ---------------------------------------------------------------------------
+
+describe('ChatInputAdapter — delegable fields (D35)', () => {
+  beforeEach(() => {
+    recordSpy.mockClear();
+  });
+  afterEach(() => {
+    resetProvider();
+  });
+
+  const asked: PlannerDecision = {
+    kind: 'request_fields',
+    agentId: 'fixture-a' as never,
+    fields: [
+      { fieldName: 'goal' as never, promptHint: 'Hint goal' },
+      { fieldName: 'shapes' as never, promptHint: 'Hint shapes' },
+      { fieldName: 'keep' as never, promptHint: 'Hint keep' },
+      { fieldName: 'refs' as never, promptHint: 'Hint refs' },
+    ],
+  };
+
+  function setup(fields: Record<string, ToolField>, answersPending: boolean | undefined) {
+    const provider = makeExtractorProvider(
+      JSON.stringify({
+        fields: { goal: null, shapes: null, keep: null, refs: null, ...fields },
+        ...(answersPending === undefined ? {} : { answers_pending: answersPending }),
+      }),
+    );
+    setProvider(provider);
+    const registry = new AgentRegistry();
+    registry.register(
+      buildFixtureCard({
+        id: 'fixture-a',
+        required: [{ name: 'goal' }, { name: 'shapes', delegable: true }, { name: 'keep', delegable: true }, { name: 'refs' }],
+      }),
+      fixtureEchoHandler,
+      undefined,
+    );
+    return { provider, adapter: new ChatInputAdapter(buildFakeCore(), registry) };
+  }
+
+  const extract = (adapter: ChatInputAdapter, userMessage: string) =>
+    adapter.extract({ conversationId, userMessage, priorDecision: asked, llmContext: ctx });
+
+  it('declares answers_pending in the tool schema the model is forced into', async () => {
+    const { provider, adapter } = setup({}, false);
+    await extract(adapter, 'hola');
+    const params = provider.captured[0].params as { tools: Array<{ function: { parameters: { required: string[]; properties: Record<string, unknown> } } }> };
+    const schema = params.tools[0].function.parameters;
+    expect(schema.required).toEqual(['fields', 'answers_pending']);
+    expect(schema.properties.answers_pending).toEqual({ type: 'boolean' });
+  });
+
+  it('when the reply answers the questions, asked delegable fields left empty get the delegated value at 1.0; asked non-delegable ones stay empty', async () => {
+    const { adapter } = setup({ goal: { value: 'Verse profesional', confidence: 0.95 } }, true);
+    const delta = await extract(adapter, 'Quiero verme profesional');
+    expect(delta.fields['fixture-a']).toEqual({
+      goal: { value: 'Verse profesional', confidence: 0.95 },
+      shapes: { value: DELEGATED_FIELD_VALUE, confidence: 1 },
+      keep: { value: DELEGATED_FIELD_VALUE, confidence: 1 },
+    });
+    expect(delta.fields['fixture-a']?.refs).toBeUndefined();
+  });
+
+  it('a conversation pinned to extractor.v7 (no answers_pending in its schema) still extracts, without delegating', async () => {
+    const { provider, adapter } = setup({ goal: { value: 'Verse profesional', confidence: 0.95 } }, undefined);
+    const delta = await adapter.extract({ conversationId, userMessage: 'hola', priorDecision: asked, llmContext: ctx, promptVersions: { extractor: 'extractor.v7' } });
+    const params = provider.captured[0].params as { tools: Array<{ function: { parameters: { properties: Record<string, unknown> } } }> };
+    expect(params.tools[0].function.parameters.properties.answers_pending).toBeUndefined();
+    expect(delta.fields['fixture-a']).toEqual({ goal: { value: 'Verse profesional', confidence: 0.95 } });
+  });
+
+  it('does not delegate when the reply does not answer the questions (or the flag is missing)', async () => {
+    for (const flag of [false, undefined]) {
+      const { adapter } = setup({}, flag);
+      const delta = await extract(adapter, '¿Qué es un monograma?');
+      expect(delta.fields).toEqual({});
+    }
+  });
+
+  it('normalizes «Sin preferencia» / «No aplica» on a delegable field; a non-delegable «No aplica» is kept', async () => {
+    const { adapter } = setup(
+      { shapes: { value: 'Sin preferencia', confidence: 1 }, keep: { value: 'No aplica', confidence: 1 }, refs: { value: 'No aplica', confidence: 1 } },
+      false,
+    );
+    const delta = await extract(adapter, 'forma: no sé, conservar: nada, referencias: ninguna');
+    expect(delta.fields['fixture-a']).toEqual({
+      shapes: { value: DELEGATED_FIELD_VALUE, confidence: 1 },
+      keep: { value: DELEGATED_FIELD_VALUE, confidence: 1 },
+      refs: { value: 'No aplica', confidence: 1 },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D35: grouped confirmation
+// ---------------------------------------------------------------------------
+
+describe('ChatInputAdapter — grouped confirm_fields (D35)', () => {
+  beforeEach(() => {
+    recordSpy.mockClear();
+  });
+  afterEach(() => {
+    resetProvider();
+  });
+
+  const grouped: ConfirmFieldsDecision = {
+    kind: 'confirm_fields',
+    entries: [
+      { agentId: 'fixture-a', fieldName: 'business_name', pendingValue: 'Dulce Hogar' },
+      { agentId: 'fixture-a', fieldName: 'style_keywords', pendingValue: 'elegante' },
+    ],
+    reason: 'low_confidence',
+  };
+
+  async function turn(userMessage: string, llmFields: Record<string, ToolField> = {}, mutate?: (store: InMemoryConversationStore) => Promise<void>) {
+    const provider = makeExtractorProvider(
+      JSON.stringify({ fields: { business_name: null, style_keywords: null, ...llmFields } }),
+    );
+    setProvider(provider);
+    const registry = new AgentRegistry();
+    registry.register(
+      buildFixtureCard({ id: 'fixture-a', required: [{ name: 'business_name' }, { name: 'style_keywords' }] }),
+      fixtureEchoHandler,
+      undefined,
+    );
+    const store = new InMemoryConversationStore(registry.getFieldSchemas());
+    await store.getOrCreate(conversationId, TEST_TENANT_ID, TEST_USER_ID);
+    for (const e of grouped.entries) {
+      await store.updateFieldSlot(conversationId, 'fixture-a', e.fieldName, true, { status: 'pending_confirmation', value: e.pendingValue, confidence: 0.7 });
+    }
+    const adapter = new ChatInputAdapter(buildFakeCore(), registry);
+    const delta = await adapter.extract({ conversationId, userMessage, priorDecision: grouped, llmContext: ctx });
+    await mutate?.(store);
+    await mergeFieldDelta(delta, store, registry);
+    const state = (await store.get(conversationId))!.agentStates['fixture-a'].requiredFields;
+    return { delta, state };
+  }
+
+  it('a bare «sí» confirms every pending value in one turn, without calling the LLM', async () => {
+    const { delta, state } = await turn('sí');
+    expect(recordSpy).not.toHaveBeenCalled();
+    expect(Object.keys(delta.fields['fixture-a'] ?? {}).sort()).toEqual(['business_name', 'style_keywords']);
+    expect(state.business_name).toMatchObject({ status: 'filled', value: 'Dulce Hogar', confidence: 1 });
+    expect(state.style_keywords).toMatchObject({ status: 'filled', value: 'elegante', confidence: 1 });
+  });
+
+  it('a bare «no» resets all of them', async () => {
+    const { delta, state } = await turn('no');
+    expect(recordSpy).not.toHaveBeenCalled();
+    expect(delta.intents).toHaveLength(2);
+    expect(state.business_name.status).toBe('empty');
+    expect(state.style_keywords.status).toBe('empty');
+  });
+
+  it('a compound «sí» applies the correction it restates and confirms the rest', async () => {
+    const { state } = await turn('Sí, pero el estilo es rústico', { style_keywords: { value: 'rústico', confidence: 0.95 } });
+    expect(state.business_name).toMatchObject({ status: 'filled', value: 'Dulce Hogar' });
+    expect(state.style_keywords).toMatchObject({ status: 'filled', value: 'rústico' });
+  });
+
+  it('a compound «no» resets what it does not restate and replaces what it does', async () => {
+    const { state } = await turn('No, se llama Dulce Casa', { business_name: { value: 'Dulce Casa', confidence: 0.95 } });
+    expect(state.business_name).toMatchObject({ status: 'filled', value: 'Dulce Casa' });
+    expect(state.style_keywords.status).toBe('empty');
+  });
+
+  it('a stale «sí» (the value changed meanwhile) does not overwrite that entry; the others still confirm', async () => {
+    const { state } = await turn('sí', {}, (store) =>
+      store.updateFieldSlot(conversationId, 'fixture-a', 'business_name', true, { status: 'filled', value: 'Otro Nombre', confidence: 1 }),
+    );
+    expect(state.business_name).toMatchObject({ status: 'filled', value: 'Otro Nombre' });
+    expect(state.style_keywords).toMatchObject({ status: 'filled', value: 'elegante', confidence: 1 });
+  });
 });

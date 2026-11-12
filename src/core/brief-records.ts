@@ -9,6 +9,7 @@
  *
  * Pure: no I/O, no branching on `FieldDelta.source`; the repo calls these helpers.
  */
+import { DELEGATED_FIELD_VALUE } from './brief';
 import { MAX_PRESENTATIONS, NAME_PENDING_KEY, type AttributeLevel, type Presentation } from './brand-catalog';
 import { CONFIDENCE_THRESHOLDS, type AdapterSource, type AgentRequirementState, type FieldSlot } from './contracts';
 
@@ -145,7 +146,8 @@ export function filledChanges(
   for (const id of Object.keys(next).sort()) {
     for (const key of ['requiredFields', 'optionalFields'] as const) {
       for (const [name, slot] of Object.entries(next[id][key])) {
-        if (slot.status !== 'filled' || out.has(name) || typeof slot.value !== 'string') continue;
+        // D35: a delegated value is not a fact about the brand; it never reaches the record.
+        if (slot.status !== 'filled' || out.has(name) || typeof slot.value !== 'string' || slot.value === DELEGATED_FIELD_VALUE) continue;
         const before = previous[id]?.[key]?.[name];
         if (before?.status === 'filled' && before.value === slot.value) continue;
         out.set(name, slot.value);

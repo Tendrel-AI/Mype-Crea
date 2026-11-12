@@ -11,7 +11,7 @@
  *
  * Bump DATASET_VERSION when cases change meaning (not when adding cases).
  */
-import type { ConfirmFieldDecision } from '../../src/core/contracts';
+import type { ConfirmFieldsDecision } from '../../src/core/contracts';
 import type { ExtractorExpectation } from '../evaluators/extractor';
 
 export const EXTRACTOR_DATASET_VERSION = 'extractor-cases.v1';
@@ -21,16 +21,14 @@ export interface ExtractorCase {
   readonly tags: ReadonlyArray<string>;
   readonly inputs: {
     readonly userMessage: string;
-    readonly priorDecision?: ConfirmFieldDecision;
+    readonly priorDecision?: ConfirmFieldsDecision;
   };
   readonly expected: ExtractorExpectation;
 }
 
-const confirmName = (pendingValue: string): ConfirmFieldDecision => ({
-  kind: 'confirm_field',
-  agentId: 'logo-agent',
-  fieldName: 'business_name',
-  pendingValue,
+const confirmName = (pendingValue: string): ConfirmFieldsDecision => ({
+  kind: 'confirm_fields',
+  entries: [{ agentId: 'logo-agent', fieldName: 'business_name', pendingValue }],
   reason: 'low_confidence',
 });
 
@@ -203,7 +201,7 @@ export const extractorCases: ReadonlyArray<ExtractorCase> = [
     expected: { fields: {} },
   },
 
-  // --- confirm_field fast path (no LLM call) --------------------------------
+  // --- confirm_fields fast path (no LLM call) --------------------------------
   {
     id: 'confirm-yes',
     tags: ['fast-path'],
@@ -229,7 +227,7 @@ export const extractorCases: ReadonlyArray<ExtractorCase> = [
     expected: { fields: { business_name: { contains: ['casa dulce'] } } },
   },
 
-  // --- compound replies to confirm_field (KAN-56; these call the LLM) --------
+  // --- compound replies to confirm_fields (KAN-56; these call the LLM) --------
   // Formerly `known-gap`: the yes/no regex short-circuited and dropped the
   // rest of the message. Ids kept stable for score history.
   {

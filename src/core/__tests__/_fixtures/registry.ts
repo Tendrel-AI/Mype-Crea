@@ -34,7 +34,8 @@ export const fixtureEchoHandler: AgentHandler<undefined> = async (
 
 export interface FixtureCardOptions {
   readonly id: string;
-  readonly required?: ReadonlyArray<{ readonly name: string; readonly promptHint?: string }>;
+  /** `delegable` (D35): the field may stay empty and is sent as the delegated value. */
+  readonly required?: ReadonlyArray<{ readonly name: string; readonly promptHint?: string; readonly delegable?: boolean }>;
   readonly optional?: ReadonlyArray<{ readonly name: string; readonly promptHint?: string }>;
   readonly tabLabel?: string;
   /** `mypes:deliverable.kind`; omitted -> the registry defaults it to the agent id. */
@@ -61,6 +62,7 @@ export function buildFixtureCard(opts: FixtureCardOptions): AgentCard {
         name: f.name,
         type: 'string',
         promptHint: f.promptHint ?? `enter ${f.name}`,
+        ...(f.delegable ? { delegable: true } : {}),
       })),
       optional: (opts.optional ?? []).map((f) => ({
         name: f.name,
