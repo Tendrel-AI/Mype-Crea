@@ -23,7 +23,8 @@ describe('BrandForm', () => {
     const markup = renderToStaticMarkup(<BrandForm mode="create" onSubmit={async () => ({ ok: true })} onCancel={noop} />);
     expect(markup).toContain('Aún no tengo nombre');
     expect(markup.match(/\(obligatorio\)/g)).toHaveLength(4);
-    expect(markup).not.toContain('Lema actual');
+    expect(markup).toContain('Lema o eslogan (opcional)');
+    expect(markup).not.toContain('Redes sociales actuales');
     expect(markup).not.toContain('Logo');
   });
 
