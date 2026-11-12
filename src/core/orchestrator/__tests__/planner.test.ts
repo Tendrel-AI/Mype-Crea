@@ -14,6 +14,7 @@ import {
   AgentRegistry,
   type AgentCard,
 } from '../agent-registry';
+import { buildDefaultRegistry } from '../bootstrap-registry';
 import { buildFixtureCard, fixtureEchoHandler } from '../../__tests__/_fixtures/registry';
 
 const conversationId = '00000000-0000-0000-0000-000000000003';
@@ -389,6 +390,54 @@ describe('planNextDecision', () => {
 
     it('does not ask once the logo was generated or iterated (iterationCount > 0)', () => {
       expect(plan(snapshotWith({ logo: { ...empty.logo, iterationCount: 1 } }))).toEqual([{ kind: 'announce_all_complete' }]);
+    });
+  });
+  describe('D34 — request_upload and level scoping', () => {
+    const label = buildFixtureCard({
+      id: 'label', level: 'product', required: [{ name: 'f' }],
+      uploads: [{ kind: 'lab_report', min: 1, promptHint: 'sube el PDF' }],
+    });
+    const logo = buildFixtureCard({ id: 'logo', level: 'brand', required: [{ name: 'a' }] });
+    const registry = makeRegistry([label, logo]);
+    const empty = { label: { requiredFields: {}, optionalFields: {}, iterationCount: 0 }, logo: { requiredFields: {}, optionalFields: {}, iterationCount: 0 } };
+    const filled = { label: { requiredFields: { f: { status: 'filled', value: 'x' } }, optionalFields: {}, iterationCount: 0 } } as unknown as ConversationSnapshot['agentStates'];
+    const productChat = (agentStates: ConversationSnapshot['agentStates']) =>
+      ({ ...snapshotWith(agentStates), links: { hasBrand: true, hasProduct: true } }) as ConversationSnapshot;
+    const brandChat = (agentStates: ConversationSnapshot['agentStates']) =>
+      ({ ...snapshotWith(agentStates), links: { hasBrand: true, hasProduct: false } }) as ConversationSnapshot;
+    const plan = (snapshot: ConversationSnapshot, uploadCounts?: Record<string, number>) =>
+      planNextDecision(snapshot, registry, { uploadCounts, deliverableStates: deriveDeliverableStates(snapshot, registry.getDeliverableSpecs(), EMPTY_WORKFLOW_FACTS) });
+
+    it('the registry exposes the card uploads; the real label card requires one lab_report', () => {
+      expect(registry.getDeliverableSpecs().find((x) => x.agentId === 'label')?.uploads).toEqual([{ kind: 'lab_report', min: 1, promptHint: 'sube el PDF' }]);
+      const real = buildDefaultRegistry().getDeliverableSpecs().find((x) => x.agentId === 'label-agent');
+      expect(real).toMatchObject({ level: 'product', uploads: [{ kind: 'lab_report', min: 1 }] });
+    });
+
+    it('asks the missing fields first, then the upload', () => {
+      expect(plan(productChat(empty), { lab_report: 0 })[0].kind).toBe('request_fields');
+      expect(plan(productChat(filled), { lab_report: 0 })).toEqual([
+        { kind: 'request_upload', agentId: 'label', deliverableKind: 'label', uploadKind: 'lab_report', promptHint: 'sube el PDF' },
+      ]);
+    });
+
+    it('does not ask once the uploads reach min, nor when the count is unknown', () => {
+      expect(plan(productChat(filled), { lab_report: 1 })[0].kind).not.toBe('request_upload');
+      expect(plan(productChat(filled), undefined)[0].kind).not.toBe('request_upload');
+    });
+
+    it('does not ask for an upload when the deliverable is already generating', () => {
+      const snapshot = productChat({ label: { ...filled.label, lastDispatchedTaskId: 't1' } } as unknown as ConversationSnapshot['agentStates']);
+      const facts = { ...EMPTY_WORKFLOW_FACTS, tasks: [{ id: 't1', agentId: 'label', status: 'in_progress', createdAt: '2026-01-01T00:00:00Z', iterationNumber: 1 }] } as never;
+      const states = deriveDeliverableStates(snapshot, registry.getDeliverableSpecs(), facts);
+      expect(planNextDecision(snapshot, registry, { uploadCounts: { lab_report: 0 }, deliverableStates: states })[0].kind).toBe('report_deliverable_status');
+    });
+
+    it('scopes by level: a product chat ignores brand cards, a brand chat ignores product cards', () => {
+      expect(plan(productChat(empty), { lab_report: 0 }).some((d) => d.kind === 'request_fields' && d.agentId === 'logo')).toBe(false);
+      const brandPlan = plan(brandChat(empty), { lab_report: 0 });
+      expect(brandPlan[0]).toMatchObject({ kind: 'request_fields', agentId: 'logo' });
+      expect(plan(brandChat({ logo: { requiredFields: { a: { status: 'filled', value: 'x' } }, optionalFields: {}, iterationCount: 0 } } as unknown as ConversationSnapshot['agentStates']), { lab_report: 0 })[0].kind).toBe('offer_generation');
     });
   });
 });

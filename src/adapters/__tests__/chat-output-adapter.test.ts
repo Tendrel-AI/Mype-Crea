@@ -478,7 +478,7 @@ describe('ChatOutputAdapter', () => {
   });
 
   it('bumps the responder prompt version for the command guidance', () => {
-    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v10');
+    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v11');
   });
 
   it('a release frozen before v6 still renders offer_generation through the fragment fallbacks', async () => {
@@ -513,7 +513,7 @@ describe('ChatOutputAdapter', () => {
 
     await adapter.render(base);
     await adapter.render({ ...base, promptVersions: { responder: 'responder.chat-step1.v6' } });
-    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v10', 'responder.chat-step1.v6']);
+    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v11', 'responder.chat-step1.v6']);
   });
 
   it('falls back to the active version when the pinned one no longer exists', async () => {
@@ -525,7 +525,7 @@ describe('ChatOutputAdapter', () => {
       decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
       promptVersions: { responder: 'responder.chat-step1.v0' },
     });
-    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v10');
+    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v11');
   });
 
   describe('KAN-93 conversation context', () => {
@@ -592,6 +592,18 @@ describe('ChatOutputAdapter', () => {
       const product = await renderPrompt({ kind: 'announce_all_complete' }, buildSnapshot({ links: { hasBrand: true, hasProduct: true } }));
       expect(product).toContain('etiqueta');
       expect(product).not.toContain('«Nuevo producto» NO');
+    });
+
+    it('D34: renders request_upload with the card hint, and the product chat redirects brand deliverables', async () => {
+      const prompt = await renderPrompt({ kind: 'request_upload', agentId: 'test-fixture-agent', deliverableKind: 'label', uploadKind: 'lab_report', promptHint: 'sube el PDF' });
+      expect(prompt).toContain('kind=request_upload');
+      expect(prompt).toContain('"sube el PDF"');
+      setProvider(provider = makeResponderProvider('ok'));
+      await new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry).render({
+        decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
+        context: { brandId: 'b', brandName: 'B', productId: 'p', productName: 'P' } as never,
+      });
+      expect(provider.captured[0].systemPrompt).toContain('«Ir al chat de la marca»');
     });
 
     it('always carries the no-dead-end guardrail', async () => {

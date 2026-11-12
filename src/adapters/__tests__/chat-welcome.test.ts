@@ -53,7 +53,15 @@ describe('renderWelcome', () => {
     expect(renderWelcome([decisions.failed], brand, registry)).toContain('botón Reintentar');
     expect(renderWelcome([decisions.generating], brand, registry)).toContain('se está generando');
     expect(renderWelcome([decisions.done], brand, registry)).toContain('«Nuevo producto»');
-    expect(renderWelcome([decisions.done], product, registry)).toContain('etiqueta y las imágenes publicitarias');
+    expect(renderWelcome([decisions.done], product, registry)).toContain('Tu etiqueta nutricional está lista.');
+    expect(renderWelcome([decisions.done], product, registry)).not.toContain('pronto');
+  });
+
+  it('D34: a product chat without the lab report asks for the upload, using the card hint', () => {
+    const request: PlannerDecision = { kind: 'request_upload', agentId: 'label-agent', deliverableKind: 'label', uploadKind: 'lab_report', promptHint: buildDefaultRegistry().get('label-agent').card['mypes:requirements'].uploads![0].promptHint };
+    const text = renderWelcome([request], product, registry);
+    expect(text).toContain('Para tu etiqueta nutricional, sube el análisis de laboratorio de tu producto (PDF) con el botón «Subir análisis de laboratorio».');
+    expect(text).toContain('los octógonos.');
   });
 
   it('ignores announcements and falls back when nothing is plannable', () => {

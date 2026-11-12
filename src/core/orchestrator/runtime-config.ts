@@ -64,6 +64,8 @@ export interface RuntimeConfig {
   readonly approvalsFor?: (tenantId: UUID, userId: UUID) => IApprovalStore;
   /** Server-read extra task inputs (D32); omitted -> none. */
   readonly taskInputsFor?: OrchestratorCoreDeps['taskInputsFor'];
+  /** Per-kind upload counts of the conversation's product (D34); omitted -> unknown. */
+  readonly uploadCountsFor?: OrchestratorCoreDeps['uploadCountsFor'];
   /**
    * Build the agent transport. The factory receives the unified
    * `onTaskSettled` callback; the transport (or any workers it spawns) must
@@ -95,6 +97,7 @@ export function buildRuntime(config: RuntimeConfig): Runtime {
     workflowFor: config.workflowFor,
     approvalsFor: config.approvalsFor,
     taskInputsFor: config.taskInputsFor,
+    uploadCountsFor: config.uploadCountsFor,
   });
   coreRef = core;
 

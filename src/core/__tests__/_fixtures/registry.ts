@@ -46,6 +46,8 @@ export interface FixtureCardOptions {
   /** `mypes:deliverable.level` / `ownSource` (KAN-89). */
   readonly level?: 'brand' | 'product';
   readonly ownSource?: 'text' | 'brand_logo';
+  /** `mypes:requirements.uploads` (D34). */
+  readonly uploads?: NonNullable<AgentCard['mypes:requirements']['uploads']>;
 }
 
 export function buildFixtureCard(opts: FixtureCardOptions): AgentCard {
@@ -66,6 +68,7 @@ export function buildFixtureCard(opts: FixtureCardOptions): AgentCard {
         promptHint: f.promptHint ?? `enter ${f.name}`,
       })),
       ...(opts.askBatchSize ? { askBatchSize: opts.askBatchSize } : {}),
+      ...(opts.uploads ? { uploads: opts.uploads } : {}),
     },
     'mypes:ui': {
       tabLabel: opts.tabLabel ?? opts.id,

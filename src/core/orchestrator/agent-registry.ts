@@ -41,6 +41,8 @@ export interface AgentCard {
     readonly optional: ReadonlyArray<RequirementField>;
     /** How many missing required fields the planner may ask in one turn; absent = `MAX_FIELD_BATCH_SIZE`. */
     readonly askBatchSize?: number;
+    /** D34: files the user must upload before this agent can work (e.g. `lab_report`); asked after the fields. */
+    readonly uploads?: ReadonlyArray<UploadRequirement>;
   };
   readonly 'mypes:ui': {
     readonly tabLabel: string;
@@ -75,6 +77,13 @@ export interface AgentCard {
   >;
 }
 
+/** D34: a required upload kind (`brand_files.kind`), with the minimum count and the hint shown to the user. */
+export interface UploadRequirement {
+  readonly kind: string;
+  readonly min: number;
+  readonly promptHint: string;
+}
+
 export interface RequirementField {
   readonly name: string;
   readonly type: string;
@@ -93,6 +102,8 @@ export interface DeliverableSpec {
   readonly ownSource?: 'text' | 'brand_logo';
   /** Absent means true. */
   readonly offerable?: false;
+  /** D34: required uploads; absent means none. */
+  readonly uploads?: ReadonlyArray<UploadRequirement>;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +182,7 @@ export class AgentRegistry {
           level: declared?.level ?? 'product',
           ...(declared?.ownSource ? { ownSource: declared.ownSource } : {}),
           ...(declared?.offerable === false ? { offerable: false as const } : {}),
+          ...(entry.card['mypes:requirements'].uploads?.length ? { uploads: entry.card['mypes:requirements'].uploads } : {}),
         };
       })
       .sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0));

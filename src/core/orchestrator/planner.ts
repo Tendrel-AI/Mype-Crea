@@ -33,6 +33,19 @@
  *      in review, failed) or is inherited read-only from the brand (product
  *      conversation) is never asked: its brief would not be used.
  *
+ *   2b. (D34) An in-scope deliverable whose card declares required uploads
+ *      (`mypes:requirements.uploads`) has fewer of them than `min`, and is not
+ *      generating, in review, approved or failed (needs `context.uploadCounts`)
+ *      -> `[request_upload]` (lex-first agent, first unmet kind). Comes after
+ *         the missing fields, like Rule 2.
+ *
+ *   Level scoping (D34): rules 2-4 only consider deliverables of the
+ *   conversation's level — a product conversation (`links.hasProduct`) the
+ *   `product` cards, a brand conversation the `brand` cards. Decided by the
+ *   card's `mypes:deliverable.level`, never by agent id. Without `links`
+ *   (legacy conversations, unit tests) nothing is filtered. Rule 1 is not
+ *   scoped: a pending confirmation is always asked.
+ *
  *   3. A deliverable is ready to generate — lex-first agent whose derived
  *      state is `enabled` (KAN-64: preconditions met, nothing generated, no
  *      task in flight)
@@ -91,15 +104,19 @@ import {
   type DeliverableStateView,
   type PlannerDecision,
   type RequestFieldEntry,
+  type RequestUploadDecision,
 } from '../contracts';
 import { loggerFor } from '../../services/logger';
-import type { AgentRegistry } from './agent-registry';
+import type { AgentRegistry, DeliverableSpec } from './agent-registry';
+import type { AgentFieldSchema } from './in-memory-store';
 
 const log = loggerFor('orchestrator.planner');
 
 /** Optional, already-derived inputs. Plain data; reading them keeps the planner pure. */
 export interface PlannerContext {
   /** Output of `deriveDeliverableStates` for the same snapshot. */
+  /** D34: uploaded files of the conversation's product, count per kind (`brand_files.kind`). Absent = unknown, never asked. */
+  readonly uploadCounts?: Readonly<Record<string, number>>;
   readonly deliverableStates?: ReadonlyArray<
     Pick<DeliverableStateView, 'agentId' | 'deliverableKind' | 'state' | 'allowedCommands'> & Partial<Pick<DeliverableStateView, 'inheritedFromBrand'>>
   >;
@@ -131,7 +148,16 @@ export function planNextDecision(
     return plan;
   };
 
-  const schemas = registry.getFieldSchemas();
+  const allSchemas = registry.getFieldSchemas();
+  const specs = registry.getDeliverableSpecs();
+  const scope = conversationLevel(snapshot);
+  const inScope = (agentId: AgentId): boolean =>
+    !scope || (specs.find((s) => s.agentId === agentId)?.level ?? 'product') === scope;
+  const schemas = allSchemas.filter((s) => inScope(s.agentId));
+  const scopedContext: PlannerContext = {
+    ...context,
+    deliverableStates: context.deliverableStates?.filter((v) => inScope(v.agentId)),
+  };
 
   const requirements = schemas.map((schema) => {
     const agentState = snapshot.agentStates[schema.agentId];
@@ -173,7 +199,7 @@ export function planNextDecision(
 
   // Rule 1: any pending_confirmation (required or optional)? Pick the lex-first (agentId, fieldName)
   // pair so the same field gets confirmed once even if multiple agents own it.
-  const pending = collectPendingConfirmations(snapshot, schemas);
+  const pending = collectPendingConfirmations(snapshot, allSchemas);
   if (pending.length > 0) {
     pending.sort(byAgentThenField);
     const head = pending[0];
@@ -194,7 +220,7 @@ export function planNextDecision(
   // Rule 2: pick a focus agent and batch up to MAX_FIELD_BATCH_SIZE missing
   // required fields from it. Stays on one agent per turn so the user is
   // answering questions about a single concern at a time.
-  const focusAgentId = pickFocusAgent(snapshot, schemas, context);
+  const focusAgentId = pickFocusAgent(snapshot, schemas, scopedContext);
   if (focusAgentId) {
     const schema = schemas.find((s) => s.agentId === focusAgentId)!;
     const agentState = snapshot.agentStates[focusAgentId];
@@ -217,9 +243,13 @@ export function planNextDecision(
     );
   }
 
+  // Rule 2b (D34): a required upload is missing — point the user at the upload button.
+  const upload = pickUploadRequest(specs.filter((s) => inScope(s.agentId)), scopedContext);
+  if (upload) return decide([{ kind: 'request_upload', ...upload }], 'request_upload');
+
   // Rule 3: a deliverable is ready — offer the «Generar» button. Never
   // dispatches; generation is a typed command (KAN-64 Option B).
-  const offer = pickGenerationOffer(snapshot, registry, context);
+  const offer = pickGenerationOffer(snapshot, registry, schemas, scopedContext);
   if (offer) {
     return decide(
       [{ kind: 'offer_generation', agentId: offer.agentId, deliverableKind: offer.deliverableKind }],
@@ -228,7 +258,7 @@ export function planNextDecision(
   }
 
   // Rule 4 (KAN-91): a deliverable needs the user's panel action or is in flight.
-  const status = pickStatusReport(context);
+  const status = pickStatusReport(scopedContext);
   if (status) {
     return decide(
       [{
@@ -246,9 +276,35 @@ export function planNextDecision(
   return decide([{ kind: 'announce_all_complete' }], 'all_complete');
 }
 
+/** `brand`/`product` chat from the snapshot links; null = legacy conversation, no scoping. */
+function conversationLevel(snapshot: ConversationSnapshot): 'brand' | 'product' | null {
+  if (!snapshot.links?.hasBrand) return null;
+  return snapshot.links.hasProduct ? 'product' : 'brand';
+}
+
+const NO_UPLOAD_NEEDED_STATES = new Set(['generating', 'in_review', 'approved', 'failed']);
+
+function pickUploadRequest(
+  specs: ReadonlyArray<DeliverableSpec>,
+  context: PlannerContext,
+): Omit<RequestUploadDecision, 'kind'> | null {
+  const counts = context.uploadCounts;
+  if (!counts) return null;
+  for (const spec of specs) {
+    const state = context.deliverableStates?.find((v) => v.agentId === spec.agentId)?.state;
+    if (state && NO_UPLOAD_NEEDED_STATES.has(state)) continue;
+    const unmet = spec.uploads?.find((u) => (counts[u.kind] ?? 0) < u.min);
+    if (unmet) {
+      return { agentId: spec.agentId, deliverableKind: spec.deliverableKind, uploadKind: unmet.kind, promptHint: unmet.promptHint };
+    }
+  }
+  return null;
+}
+
 function pickGenerationOffer(
   snapshot: ConversationSnapshot,
   registry: AgentRegistry,
+  schemas: ReadonlyArray<AgentFieldSchema>,
   context: PlannerContext,
 ): { readonly agentId: AgentId; readonly deliverableKind: string } | null {
   if (context.deliverableStates) {
@@ -260,7 +316,7 @@ function pickGenerationOffer(
       .sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0));
     return enabled[0] ?? null;
   }
-  const agentId = findAgentReadyToGenerate(snapshot, registry.getFieldSchemas());
+  const agentId = findAgentReadyToGenerate(snapshot, schemas);
   if (!agentId) return null;
   const spec = registry.getDeliverableSpecs().find((s) => s.agentId === agentId);
   return { agentId, deliverableKind: spec?.deliverableKind ?? agentId };

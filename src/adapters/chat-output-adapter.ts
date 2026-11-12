@@ -225,6 +225,11 @@ function describeDecision(
         agentId: decision.agentId,
         deliverableLabel: deliverableLabelFor(decision.agentId, decision.deliverableKind, registry),
       });
+    case 'request_upload':
+      return applyPromptTemplate(fragments.requestUploadDecision, {
+        kind: kindTag, agentId: decision.agentId, deliverableLabel: deliverableLabelFor(decision.agentId, decision.deliverableKind, registry),
+        uploadKind: decision.uploadKind, promptHint: decision.promptHint,
+      });
     case 'announce_dispatch':
       return applyPromptTemplate(fragments.announceDispatchDecision, {
         kind: kindTag, agentId: decision.agentId,
