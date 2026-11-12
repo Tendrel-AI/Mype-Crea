@@ -34,13 +34,15 @@ function describe(decision: PlannerDecision, context: ChatContext | null | undef
       if (decision.fields.length <= 2) {
         return ['Para avanzar necesito esto:', ...decision.fields.map((f) => `- ${f.promptHint}`)].join('\n');
       }
-      // D29: no per-field list; one open invitation. The Extractor maps the answer and marks the rest «No aplica».
+      // D29: no per-field list; one open invitation. The Extractor maps the answer; unaddressed delegable fields are delegated in code (D35).
       return 'Para avanzar, cuéntame en un solo mensaje lo que tengas claro: qué quieres lograr, qué te inspira, el estilo que imaginas y lo que no quieres ver o no puedes usar.';
     }
     case 'request_upload':
       return decision.promptHint;
-    case 'confirm_field':
-      return `Tengo este valor pendiente: «${String(decision.pendingValue)}». ¿Es correcto?`;
+    case 'confirm_fields':
+      return decision.entries.length === 1
+        ? `Tengo este valor pendiente: «${String(decision.entries[0].pendingValue)}». ¿Es correcto?`
+        : `Tengo estos valores pendientes:\n${decision.entries.map((e) => `- «${String(e.pendingValue)}»`).join('\n')}\n¿Es todo correcto?`;
     case 'offer_generation':
       return `Ya tienes todo listo para tu ${inSentence(deliverableLabelFor(decision.agentId, decision.deliverableKind, registry))}. Cuando quieras, toca el botón Generar.`;
     case 'report_deliverable_status': {

@@ -290,10 +290,8 @@ describe('orchestrator smoke (agent-agnostic)', () => {
     const plan = await core.getNextDecision(conversationId);
     expect(plan).toEqual([
       {
-        kind: 'confirm_field',
-        agentId,
-        fieldName: 'business_name',
-        pendingValue: 'Sazón Andino',
+        kind: 'confirm_fields',
+        entries: [{ agentId, fieldName: 'business_name', pendingValue: 'Sazón Andino' }],
         reason: 'low_confidence',
       },
     ]);
@@ -310,13 +308,13 @@ describe('orchestrator smoke (agent-agnostic)', () => {
       label: 'at STORE_AND_CONFIRM',
       confidence: CONFIDENCE_THRESHOLDS.STORE_AND_CONFIRM,
       slotStatus: 'pending_confirmation',
-      decisionKind: 'confirm_field',
+      decisionKind: 'confirm_fields',
     },
     {
       label: 'just below AUTO_ACCEPT',
       confidence: CONFIDENCE_THRESHOLDS.AUTO_ACCEPT - Number.EPSILON,
       slotStatus: 'pending_confirmation',
-      decisionKind: 'confirm_field',
+      decisionKind: 'confirm_fields',
     },
     {
       label: 'at AUTO_ACCEPT',
@@ -731,14 +729,14 @@ describe('announcement delivery per turn (KAN-55)', () => {
     };
   }
 
-  /** Turn 1 asks to confirm a hedged value; returns the persisted confirm_field. */
+  /** Turn 1 asks to confirm a hedged value; returns the persisted confirm_fields. */
   async function reachConfirmation(core: Core, conversationId: string, agentId: string) {
     const turn1 = await runTurn(core, hedgedNameDelta(conversationId, agentId));
     expect(turn1).toEqual([
-      expect.objectContaining({ kind: 'confirm_field', agentId, fieldName: 'business_name' }),
+      expect.objectContaining({ kind: 'confirm_fields', entries: [expect.objectContaining({ agentId, fieldName: 'business_name' })] }),
     ]);
     const confirm = turn1[0];
-    if (confirm.kind !== 'confirm_field') throw new Error('expected confirm_field');
+    if (confirm.kind !== 'confirm_fields') throw new Error('expected confirm_fields');
     return confirm;
   }
 
@@ -754,7 +752,7 @@ describe('announcement delivery per turn (KAN-55)', () => {
     expect(await core.peekNextDecision(conversationId)).toEqual([confirm]);
     expect(dispatchSpy).not.toHaveBeenCalled();
 
-    const turn2 = await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue));
+    const turn2 = await runTurn(core, affirmationDelta(conversationId, agentId, confirm.entries[0].pendingValue));
     expect(turn2).toEqual([{ kind: 'offer_generation', agentId, deliverableKind: agentId }]);
     expect(dispatchSpy).not.toHaveBeenCalled();
 
@@ -779,7 +777,7 @@ describe('announcement delivery per turn (KAN-55)', () => {
     await core.startConversation(conversationId, randomUUID(), randomUUID());
 
     const confirm = await reachConfirmation(core, conversationId, agentId);
-    await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue));
+    await runTurn(core, affirmationDelta(conversationId, agentId, confirm.entries[0].pendingValue));
     expect(messages).toHaveLength(0);
     const taskId = await issueGenerate(core, conversationId, agentId);
     expect(messages).toHaveLength(1);
@@ -811,7 +809,7 @@ describe('announcement delivery per turn (KAN-55)', () => {
     await core.startConversation(conversationId, randomUUID(), randomUUID());
 
     const confirm = await reachConfirmation(core, conversationId, agentId);
-    await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue));
+    await runTurn(core, affirmationDelta(conversationId, agentId, confirm.entries[0].pendingValue));
     const taskId = await issueGenerate(core, conversationId, agentId);
     const turn2 = await runTurn(core, emptyDelta(conversationId), {
       // The worker settles after the controller peeked but before it checkpointed.
@@ -835,7 +833,7 @@ describe('announcement delivery per turn (KAN-55)', () => {
     await core.startConversation(conversationId, randomUUID(), randomUUID());
 
     const confirm = await reachConfirmation(core, conversationId, agentId);
-    await runTurn(core, affirmationDelta(conversationId, agentId, confirm.pendingValue));
+    await runTurn(core, affirmationDelta(conversationId, agentId, confirm.entries[0].pendingValue));
     expect(dispatchSpy).not.toHaveBeenCalled();
     const taskId = await issueGenerate(core, conversationId, agentId);
     const turn2 = await runTurn(core, emptyDelta(conversationId));

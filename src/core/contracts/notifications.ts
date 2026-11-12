@@ -118,7 +118,7 @@ export type Notification = { [K in NotificationKind]: NotificationOf<K> }[Notifi
 
 const PLANNER_DECISION_KINDS: ReadonlyArray<PlannerDecision['kind']> = [
   'request_fields',
-  'confirm_field',
+  'confirm_fields',
   'request_selection',
   'offer_generation',
   'request_upload',
@@ -128,12 +128,12 @@ const PLANNER_DECISION_KINDS: ReadonlyArray<PlannerDecision['kind']> = [
   'announce_all_complete',
 ];
 
-/** Shallow guard: known kind, and an `agentId` string wherever the variant has one. */
+/** Shallow guard: known kind, and an `agentId` string wherever the variant has one at its top level. */
 function isPlannerDecisionShape(value: unknown): value is PlannerDecision {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const { kind, agentId } = value as { kind?: unknown; agentId?: unknown };
   if (typeof kind !== 'string' || !(PLANNER_DECISION_KINDS as ReadonlyArray<string>).includes(kind)) return false;
-  return kind === 'announce_all_complete' || (typeof agentId === 'string' && agentId.length > 0);
+  return kind === 'announce_all_complete' || kind === 'confirm_fields' || (typeof agentId === 'string' && agentId.length > 0);
 }
 
 const id = z.string().min(1);

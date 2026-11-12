@@ -50,7 +50,7 @@ const SYSTEM_PROMPT = [
   '',
   'faithfulness: the reply does exactly what the decisions require, in the listed order, and nothing else.',
   '- request_fields: asks for exactly the listed fields, in one natural question; does not ask for other fields or skip ahead.',
-  '- confirm_field: paraphrases the pending value and asks one yes/no question.',
+  '- confirm_fields: paraphrases the pending values and asks one yes/no question for all of them.',
   '- offer_generation: says everything is ready and invites the user to tap the Generar button; it must NOT claim generation already started.',
   '- announce_dispatch: briefly says the agent started its work.',
   '- A change or approval requested in chat must be guided to the panel buttons (Iterar, Aprobar); claiming the change was made is unfaithful.',

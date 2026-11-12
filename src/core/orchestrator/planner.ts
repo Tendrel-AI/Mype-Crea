@@ -17,8 +17,9 @@
  * Decision rules (first match wins; one match produces the entire plan):
  *
  *   1. Any slot (required or optional) in `pending_confirmation`
- *      -> `[confirm_field]` (solo; never batched with anything else, since
- *         confirms are y/n turns). KAN-26: an ambiguous optional brief value
+ *      -> `[confirm_fields]` with ALL of them (solo; never batched with
+ *         anything else, since confirms are y/n turns; D35: one turn, one
+ *         entry per field name). KAN-26: an ambiguous optional brief value
  *         (rubro, producto, …) is confirmed too before it counts.
  *
  *   2. There exists a "focus agent" — the lex-first registered agent that
@@ -28,6 +29,11 @@
  *      -> `[request_fields]` carrying the lex-first up to
  *         `MAX_FIELD_BATCH_SIZE` (or the card's own `askBatchSize`) missing
  *         required field names from that agent.
+ *      D35: a card may declare a required field `delegable`. An EMPTY delegable
+ *      field is not "missing": it never makes an agent a focus agent and never
+ *      blocks generation. It rides in the batch (after the non-delegable
+ *      fields) only while some non-delegable required field of that agent is
+ *      still missing; when only delegables are empty, Rule 3 offers Generar.
  *      When the caller passes derived deliverable states, an agent whose
  *      deliverable is not `blocked` (approved, own-provided, generating,
  *      in review, failed) or is inherited read-only from the brand (product
@@ -202,19 +208,11 @@ export function planNextDecision(
   const pending = collectPendingConfirmations(snapshot, allSchemas);
   if (pending.length > 0) {
     pending.sort(byAgentThenField);
-    const head = pending[0];
-    return decide(
-      [
-        {
-          kind: 'confirm_field',
-          agentId: head.agentId,
-          fieldName: head.fieldName,
-          pendingValue: head.value,
-          reason: 'low_confidence',
-        },
-      ],
-      'pending_confirmation',
-    );
+    // One entry per field name: the adapter fans a confirmation out to every owner of the field.
+    const entries = pending
+      .filter((ref, i) => pending.findIndex((other) => other.fieldName === ref.fieldName) === i)
+      .map(({ agentId, fieldName, value }) => ({ agentId, fieldName, pendingValue: value }));
+    return decide([{ kind: 'confirm_fields', entries, reason: 'low_confidence' }], 'pending_confirmation');
   }
 
   // Rule 2: pick a focus agent and batch up to MAX_FIELD_BATCH_SIZE missing
@@ -224,12 +222,15 @@ export function planNextDecision(
   if (focusAgentId) {
     const schema = schemas.find((s) => s.agentId === focusAgentId)!;
     const agentState = snapshot.agentStates[focusAgentId];
-    const missing = schema.requiredFields
+    const empty = schema.requiredFields
       .filter((f) => {
         const slot = agentState?.requiredFields[f];
         return !slot || slot.status === 'empty';
       })
-      .sort()
+      .sort();
+    const delegable = new Set(schema.delegableFields);
+    // D35: non-delegable first; the delegable ones only ride along (focus agent implies a non-delegable one is missing).
+    const missing = [...empty.filter((f) => !delegable.has(f)), ...empty.filter((f) => delegable.has(f))]
       .slice(0, schema.askBatchSize ?? MAX_FIELD_BATCH_SIZE);
 
     const fields: RequestFieldEntry[] = missing.map((fieldName) => ({
@@ -350,7 +351,7 @@ function pickStatusReport(context: PlannerContext) {
  */
 export function findAgentReadyToGenerate(
   snapshot: ConversationSnapshot,
-  schemas: ReadonlyArray<{ readonly agentId: AgentId; readonly requiredFields: ReadonlyArray<string> }>,
+  schemas: ReadonlyArray<{ readonly agentId: AgentId; readonly requiredFields: ReadonlyArray<string>; readonly delegableFields?: ReadonlyArray<string> }>,
 ): AgentId | null {
   const candidates: AgentId[] = [];
   for (const schema of schemas) {
@@ -359,9 +360,11 @@ export function findAgentReadyToGenerate(
     if (!agentState) continue;
     if (agentState.lastDispatchedTaskId) continue;
     if (agentState.iterationCount > 0) continue;
-    const allRequiredFilled = schema.requiredFields.every(
-      (f) => agentState.requiredFields[f]?.status === 'filled',
-    );
+    // D35: an empty delegable field is satisfied (it is sent as the delegated value).
+    const allRequiredFilled = schema.requiredFields.every((f) => {
+      const status = agentState.requiredFields[f]?.status ?? 'empty';
+      return status === 'filled' || (status === 'empty' && schema.delegableFields?.includes(f) === true);
+    });
     if (allRequiredFilled) candidates.push(schema.agentId);
   }
   if (candidates.length === 0) return null;
@@ -382,7 +385,7 @@ export function findAgentReadyToGenerate(
  */
 function pickFocusAgent(
   snapshot: ConversationSnapshot,
-  schemas: ReadonlyArray<{ readonly agentId: AgentId; readonly requiredFields: ReadonlyArray<string> }>,
+  schemas: ReadonlyArray<{ readonly agentId: AgentId; readonly requiredFields: ReadonlyArray<string>; readonly delegableFields?: ReadonlyArray<string> }>,
   context: PlannerContext,
 ): AgentId | null {
   const candidates: AgentId[] = [];
@@ -394,9 +397,10 @@ function pickFocusAgent(
     // Only a `blocked`, non-inherited deliverable still needs its brief asked.
     const view = context.deliverableStates?.find((v) => v.agentId === schema.agentId);
     if (view && (view.state !== 'blocked' || view.inheritedFromBrand)) continue;
+    // D35: only a non-delegable empty field makes the agent worth asking.
     const hasMissing = schema.requiredFields.some((f) => {
       const slot = agentState?.requiredFields[f];
-      return !slot || slot.status === 'empty';
+      return (!slot || slot.status === 'empty') && !schema.delegableFields?.includes(f);
     });
     if (hasMissing) candidates.push(schema.agentId);
   }

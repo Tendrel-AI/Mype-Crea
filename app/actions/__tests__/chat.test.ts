@@ -288,14 +288,19 @@ describe('chatAction durable turn boundary', () => {
 
   it('takes the prior confirmation from the persisted turn and reads the core plan once, after effects (KAN-55)', async () => {
     const confirm: PlannerDecision = {
-      kind: 'confirm_field', agentId: 'logo-agent', fieldName: 'business_name', pendingValue: 'Sazón Andino', reason: 'low_confidence',
+      kind: 'confirm_fields', entries: [{ agentId: 'logo-agent', fieldName: 'business_name', pendingValue: 'Sazón Andino' }], reason: 'low_confidence',
     };
     const announcements: PlannerDecision[] = [
       { kind: 'announce_dispatch', agentId: 'logo-agent', taskId: 'task-1' },
       { kind: 'announce_completion', agentId: 'logo-agent', taskId: 'task-1', deliverableIds: [], artifacts: [] },
     ];
+    // listTurns is newest first: an older confirmation must not shadow the latest one (D35, bug 5).
+    const older: PlannerDecision = {
+      kind: 'confirm_fields', entries: [{ agentId: 'logo-agent', fieldName: 'visual_references', pendingValue: 'Nike' }], reason: 'low_confidence',
+    };
     mocks.listTurns.mockResolvedValue([
       { ...mocks.turn, id: 'turn-0', stage: 'responded', payload: { decisions: [confirm] } },
+      { ...mocks.turn, id: 'turn--1', stage: 'responded', payload: { decisions: [older] } },
     ] as never);
     mocks.peekNextDecision.mockImplementationOnce(async () => {
       mocks.calls.push('peekNextDecision');

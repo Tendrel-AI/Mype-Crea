@@ -14,10 +14,10 @@
  * Two paths:
  *
  *   1. Affirmation / denial fast-path: when the prior planner decision was
- *      `confirm_field` and the message is ONLY a yes ("sí", "correcto",
+ *      `confirm_fields` and the message is ONLY a yes ("sí", "correcto",
  *      "dale", "sí, así es") or ONLY a no ("no", "no, ese no es"), the LLM
- *      is skipped. The pending value (or reset) is fanned out to every agent
- *      that owns the field.
+ *      is skipped. EVERY pending value is confirmed (or reset) at once (D35),
+ *      fanned out to every agent that owns the field.
  *
  *   2. LLM extraction: otherwise, calls the extractor model with a deduped
  *      union of every required + optional field name across all agents. The
@@ -25,10 +25,10 @@
  *      `CONFIDENCE_THRESHOLDS.STORE_AND_CONFIRM`, and the survivors are
  *      fanned out to their owners.
  *
- *      When a `confirm_field` was pending and the message opens with a yes
+ *      When a `confirm_fields` was pending and the message opens with a yes
  *      or a no but carries more ("sí, y mis colores son azul y blanco",
  *      "no, se llama Dulce Casa"), the extraction runs and its result is
- *      combined with the reply (`resolveCompoundConfirmation`):
+ *      combined with the reply, entry by entry (`resolveCompoundConfirmation`):
  *        - yes, field not restated (or restated with the pending value)
  *          → the pending value is confirmed;
  *        - the field restated with a DIFFERENT value (after a yes or a no)
@@ -42,6 +42,14 @@
  *      Extra facts follow the normal extraction rules; unknown fields are
  *      stripped by the parser and rejected by merge, as for any turn.
  *
+ *      D35 (delegable fields): when the prior decision was `request_fields` and
+ *      the model flags `answers_pending`, every asked field a card declares
+ *      `delegable` that the extraction left empty is stored as
+ *      `DELEGATED_FIELD_VALUE` at 1.0, and a «Sin preferencia» / «No aplica»
+ *      answer on any delegable field is normalized to it (`delegateAnswers`).
+ *      Asked non-delegable fields left unaddressed stay empty and are re-asked.
+ *      This is code, not LLM: the model never fills a field the user did not address.
+ *
  * Contract conformance: implements `InputAdapter` (id + submit). Controllers
  * call `extract()` directly to obtain a delta, then either feed it through
  * `submit()` or hand it to `OrchestratorCore.applyDelta()` themselves.
@@ -54,7 +62,8 @@ import { z } from 'zod';
 import {
   CONFIDENCE_THRESHOLDS,
   type AgentId,
-  type ConfirmFieldDecision,
+  type ConfirmFieldEntry,
+  type ConfirmFieldsDecision,
   type ConversationId,
   type FieldDelta,
   type InputAdapter,
@@ -65,6 +74,7 @@ import {
   type FieldValueWithConfidence,
   type UserIntent,
 } from '../core/contracts';
+import { DELEGATED_FIELD_VALUE } from '../core/brief';
 import type { AgentRegistry } from '../core/orchestrator/agent-registry';
 import { getProvider } from '../services/llm';
 import {
@@ -137,7 +147,7 @@ export interface ConfirmationReply {
 }
 
 /**
- * Classify a reply to a `confirm_field` question. A simple reply takes the
+ * Classify a reply to a `confirm_fields` question. A simple reply takes the
  * fast path. Any other reply is extracted by the LLM, and its polarity comes
  * from the opening word (`polarity: 'none'` when there is no yes/no cue or
  * the yes/no words contradict each other).
@@ -183,6 +193,8 @@ interface FieldOwnership {
   readonly agents: ReadonlyArray<AgentId>;
   readonly required: boolean;
   readonly promptHint: string;
+  /** D35: every card that requires the field declares it delegable. */
+  readonly delegable: boolean;
 }
 
 type ExtractPath =
@@ -193,9 +205,9 @@ type ExtractPath =
 
 type MutableFieldValues = Record<string, Record<string, FieldValueWithConfidence>>;
 
-/** A `confirm_field` the user answered with more than a bare yes/no. */
+/** One entry of a `confirm_fields` the user answered with more than a bare yes/no. */
 interface PendingConfirmation {
-  readonly decision: ConfirmFieldDecision;
+  readonly decision: ConfirmFieldEntry;
   readonly owners: ReadonlyArray<AgentId>;
   readonly polarity: ConfirmationReply['polarity'];
 }
@@ -203,7 +215,7 @@ interface PendingConfirmation {
 /** Write the pending value as user-confirmed (confidence 1.0) on every owner. */
 function confirmPendingValue(
   fields: MutableFieldValues,
-  decision: ConfirmFieldDecision,
+  decision: ConfirmFieldEntry,
   owners: ReadonlyArray<AgentId>,
   rawInput: string,
 ): void {
@@ -225,7 +237,7 @@ function confirmPendingValue(
  * correction replaces whatever the field holds now.
  */
 function resetIntents(
-  decision: ConfirmFieldDecision,
+  decision: ConfirmFieldEntry,
   owners: ReadonlyArray<AgentId>,
   withCorrection = false,
 ): UserIntent[] {
@@ -247,7 +259,7 @@ function dropField(fields: MutableFieldValues, fieldName: string, owners: Readon
 }
 
 /**
- * Combine a compound reply to `confirm_field` with what the LLM extracted.
+ * Combine a compound reply to one entry of `confirm_fields` with what the LLM extracted.
  * Mutates `fields` (already fanned out) for the field under confirmation and
  * returns the intents to emit. Every other extracted field is left as is.
  *
@@ -367,50 +379,41 @@ export class ChatInputAdapter implements InputAdapter {
       return delta;
     };
 
-    // 1) Reply to a prior confirm_field: a bare yes/no takes the fast path;
-    //    anything more is extracted below and combined with the reply.
-    let pendingConfirmation: PendingConfirmation | undefined;
-    if (priorDecision?.kind === 'confirm_field') {
-      const owners =
-        ownership.get(priorDecision.fieldName)?.agents ?? [priorDecision.agentId];
+    // 1) Reply to a prior confirm_fields: a bare yes/no takes the fast path for EVERY entry (D35);
+    //    anything more is extracted below and combined with the reply, entry by entry.
+    let pendingConfirmations: PendingConfirmation[] = [];
+    if (priorDecision?.kind === 'confirm_fields') {
+      const entries = priorDecision.entries.map((decision) => ({
+        decision,
+        owners: ownership.get(decision.fieldName)?.agents ?? [decision.agentId],
+      }));
       const reply = classifyConfirmationReply(userMessage);
 
       if (reply.simple && reply.polarity === 'affirm') {
-        child.info(
-          { fieldName: priorDecision.fieldName, owners },
-          'extractor.fast_path.affirmation',
-        );
-        const fields: Record<string, Record<string, FieldValueWithConfidence>> = {};
-        confirmPendingValue(fields, priorDecision, owners, userMessage);
+        child.info({ fields: entries.map((e) => e.decision.fieldName) }, 'extractor.fast_path.affirmation');
+        const fields: MutableFieldValues = {};
+        for (const { decision, owners } of entries) confirmPendingValue(fields, decision, owners, userMessage);
         return emitOutput(
-          {
-            conversationId,
-            source: this.id,
-            timestamp: new Date().toISOString(),
-            fields,
-          },
+          { conversationId, source: this.id, timestamp: new Date().toISOString(), fields },
           'fast_path.affirmation',
         );
       }
       if (reply.simple && reply.polarity === 'deny') {
-        child.info(
-          { fieldName: priorDecision.fieldName, owners },
-          'extractor.fast_path.denial',
-        );
+        child.info({ fields: entries.map((e) => e.decision.fieldName) }, 'extractor.fast_path.denial');
         return emitOutput(
           {
             conversationId,
             source: this.id,
             timestamp: new Date().toISOString(),
             fields: {},
-            intents: resetIntents(priorDecision, owners),
+            intents: entries.flatMap(({ decision, owners }) => resetIntents(decision, owners)),
           },
           'fast_path.denial',
         );
       }
-      pendingConfirmation = { decision: priorDecision, owners, polarity: reply.polarity };
+      pendingConfirmations = entries.map((e) => ({ ...e, polarity: reply.polarity }));
       child.info(
-        { fieldName: priorDecision.fieldName, owners, polarity: reply.polarity },
+        { fields: entries.map((e) => e.decision.fieldName), polarity: reply.polarity },
         'extractor.confirm.compound',
       );
     }
@@ -432,7 +435,9 @@ export class ChatInputAdapter implements InputAdapter {
     }
 
     const fieldNames = fieldEntries.map((f) => f.name);
-    const extractedSchema = buildExtractedFieldsSchema(fieldNames);
+    // D35: frozen versions older than extractor.v8 have no `answers_pending` in their tool schema.
+    const withAnswersPending = hasAnswersPending(behavior.extractor.fieldSchemaTemplate);
+    const extractedSchema = buildExtractedFieldsSchema(fieldNames, withAnswersPending);
     const toolJsonSchema = renderExtractorToolSchema(
       behavior.extractor.fieldSchemaTemplate,
       fieldNames,
@@ -502,7 +507,7 @@ export class ChatInputAdapter implements InputAdapter {
       'extractor.llm.raw_response',
     );
 
-    const { accepted: groundedFields, mentioned, unasked } = validateAndFilterExtractedFields(
+    const { accepted: extractedFields, mentioned, unasked, answersPending } = validateAndFilterExtractedFields(
       rawArgs,
       extractedSchema,
       fieldNames,
@@ -512,6 +517,11 @@ export class ChatInputAdapter implements InputAdapter {
       child.warn({ unaskedFields: unasked.map((f) => f.name.slice(0, 64)) }, 'extractor.parse.unasked_fields');
       input.onUnaskedFields?.(unasked);
     }
+
+    const groundedFields =
+      priorDecision?.kind === 'request_fields'
+        ? delegateAnswers(extractedFields, ownership, priorDecision, answersPending, child)
+        : extractedFields;
 
     // Fan out: each grounded logical field is written into every agent that
     // requires (or optionally accepts) it.
@@ -524,13 +534,9 @@ export class ChatInputAdapter implements InputAdapter {
       }
     }
 
-    if (pendingConfirmation) {
-      const intents = resolveCompoundConfirmation(
-        pendingConfirmation,
-        fields,
-        mentioned,
-        userMessage,
-        child,
+    if (pendingConfirmations.length > 0) {
+      const intents = pendingConfirmations.flatMap((pending) =>
+        resolveCompoundConfirmation(pending, fields, mentioned, userMessage, child),
       );
       return emitOutput(
         {
@@ -578,16 +584,19 @@ export class ChatInputAdapter implements InputAdapter {
  * agent marks the field required.
  */
 function buildFieldOwnership(registry: AgentRegistry): Map<string, FieldOwnership> {
-  const out = new Map<string, { agents: AgentId[]; required: boolean; promptHint: string }>();
+  const out = new Map<string, { agents: AgentId[]; required: boolean; promptHint: string; delegable: boolean }>();
   for (const schema of registry.getFieldSchemas()) {
     for (const fieldName of schema.requiredFields) {
       const entry = out.get(fieldName);
       const hint = registry.getPromptHint(schema.agentId, fieldName);
+      const delegable = schema.delegableFields?.includes(fieldName) === true;
       if (entry) {
         entry.agents.push(schema.agentId);
+        // Delegable only if no card that requires the field insists on an answer.
+        entry.delegable = (entry.required ? entry.delegable : true) && delegable;
         entry.required = true;
       } else {
-        out.set(fieldName, { agents: [schema.agentId], required: true, promptHint: hint });
+        out.set(fieldName, { agents: [schema.agentId], required: true, promptHint: hint, delegable });
       }
     }
     for (const fieldName of schema.optionalFields) {
@@ -596,10 +605,43 @@ function buildFieldOwnership(registry: AgentRegistry): Map<string, FieldOwnershi
       if (entry) {
         entry.agents.push(schema.agentId);
       } else {
-        out.set(fieldName, { agents: [schema.agentId], required: false, promptHint: hint });
+        out.set(fieldName, { agents: [schema.agentId], required: false, promptHint: hint, delegable: false });
       }
     }
   }
+  return out;
+}
+
+/** «Sin preferencia» / «No aplica» in the normalized form of `normalizeReply`. */
+const NO_PREFERENCE_ANSWERS = new Set(['sin preferencia', 'no aplica']);
+
+/**
+ * D35: deterministic delegation of delegable required fields (never the LLM's job).
+ *   - A «Sin preferencia» / «No aplica» answer on a delegable field becomes `DELEGATED_FIELD_VALUE`.
+ *   - When the reply answers the pending questions (`answersPending`), every ASKED delegable field the
+ *     extraction left empty gets it too, at confidence 1.0.
+ * Asked non-delegable fields left unaddressed stay empty (re-asked); an explicit «no aplica» keeps its value.
+ */
+function delegateAnswers(
+  extracted: Record<string, FieldValueWithConfidence>,
+  ownership: ReadonlyMap<string, FieldOwnership>,
+  asked: RequestFieldsDecision,
+  answersPending: boolean,
+  logger: ReturnType<typeof loggerFor>,
+): Record<string, FieldValueWithConfidence> {
+  const delegated: FieldValueWithConfidence = { value: DELEGATED_FIELD_VALUE, confidence: 1.0 };
+  const out = { ...extracted };
+  const isDelegable = (name: string) => ownership.get(name)?.delegable === true;
+  for (const [name, value] of Object.entries(extracted)) {
+    if (isDelegable(name) && NO_PREFERENCE_ANSWERS.has(normalizeReply(String(value.value)))) out[name] = delegated;
+  }
+  if (answersPending) {
+    for (const { fieldName } of asked.fields) {
+      if (isDelegable(fieldName) && out[fieldName] === undefined) out[fieldName] = delegated;
+    }
+  }
+  const delegatedFields = Object.keys(out).filter((name) => out[name] === delegated);
+  if (delegatedFields.length > 0) logger.info({ delegatedFields, answersPending }, 'extractor.delegated');
   return out;
 }
 
@@ -687,7 +729,7 @@ const FieldValueZ = z
  * (after JSON-schema conversion) and reused to validate the tool arguments
  * the model returns.
  */
-function buildExtractedFieldsSchema(fieldNames: ReadonlyArray<string>) {
+function buildExtractedFieldsSchema(fieldNames: ReadonlyArray<string>, withAnswersPending: boolean) {
   const shape: Record<string, typeof FieldValueZ> = {};
   for (const name of fieldNames) {
     shape[name] = FieldValueZ;
@@ -695,8 +737,16 @@ function buildExtractedFieldsSchema(fieldNames: ReadonlyArray<string>) {
   return z
     .object({
       fields: z.object(shape),
+      // D35 (extractor.v8): true when the message answers the "Preguntas pendientes".
+      ...(withAnswersPending ? { answers_pending: z.boolean() } : {}),
     })
     .strict();
+}
+
+/** Does the frozen tool-schema template declare `answers_pending` (extractor.v8 onwards)? */
+function hasAnswersPending(template: Readonly<Record<string, unknown>>): boolean {
+  const properties = template.properties as Record<string, unknown> | undefined;
+  return properties !== undefined && 'answers_pending' in properties;
 }
 
 interface ExtractedFields {
@@ -709,6 +759,8 @@ interface ExtractedFields {
   readonly mentioned: Record<string, string>;
   /** Keys the model returned that were not asked for (KAN-44); the schema strips them. */
   readonly unasked: ReadonlyArray<{ readonly name: string; readonly value: unknown }>;
+  /** D35: the model says the message answers the pending questions (false when the schema has no such flag). */
+  readonly answersPending: boolean;
 }
 
 function validateAndFilterExtractedFields(
@@ -725,7 +777,7 @@ function validateAndFilterExtractedFields(
       { err: (err as Error).message, rawPreview: rawArgs.slice(0, 400) },
       'extractor.parse.failed',
     );
-    return { accepted: {}, mentioned: {}, unasked: [] };
+    return { accepted: {}, mentioned: {}, unasked: [], answersPending: false };
   }
 
   const returned = (parsed as { fields?: unknown } | null)?.fields;
@@ -736,6 +788,14 @@ function validateAndFilterExtractedFields(
           .map(([name, value]) => ({ name, value }))
       : [];
 
+  // The flag is required by the tool schema but must not cost the whole extraction when a model omits it.
+  if ('answers_pending' in schema.shape) {
+    const object = parsed as Record<string, unknown> | null;
+    if (object && typeof object === 'object' && !Array.isArray(object) && object.answers_pending === undefined) {
+      parsed = { ...object, answers_pending: false };
+    }
+  }
+
   const result = schema.safeParse(parsed);
   if (!result.success) {
     log.warn(
@@ -745,7 +805,7 @@ function validateAndFilterExtractedFields(
       },
       'extractor.parse.failed',
     );
-    return { accepted: {}, mentioned: {}, unasked };
+    return { accepted: {}, mentioned: {}, unasked, answersPending: false };
   }
 
   // Surface the validated, pre-threshold conversion: this is exactly what the
@@ -783,5 +843,5 @@ function validateAndFilterExtractedFields(
     out[name] = { value: slot.value.trim(), confidence: slot.confidence };
     log.debug({ fieldName: name, confidence: slot.confidence }, 'extractor.field.accepted');
   }
-  return { accepted: out, mentioned, unasked };
+  return { accepted: out, mentioned, unasked, answersPending: (result.data as { answers_pending?: boolean }).answers_pending === true };
 }

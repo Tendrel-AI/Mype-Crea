@@ -393,7 +393,7 @@ export async function executeDeliverableCommand(
 
       // Requirements always come from the current brief, never from the client.
       const requirements = {
-        ...requirementsFromSnapshot(snapshot, command.agentId),
+        ...requirementsFromSnapshot(snapshot, command.agentId, spec.delegableFields),
         ...(await ctx.taskInputs?.(command.conversationId, command.agentId)),
       };
       // RF-07 (KAN-35): a stable reference to the upstream approvals this task is

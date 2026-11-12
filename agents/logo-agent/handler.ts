@@ -42,7 +42,7 @@ import { agentPrompt } from '../../src/services/prompts';
 const log = loggerFor('agent.logo-agent');
 
 /** Recorded on every logo (KAN-29 provenance). Bump it when `LOGO_PROMPT_TEMPLATE` wording changes. */
-export const LOGO_PROMPT_VERSION = 'logo-agent.v2';
+export const LOGO_PROMPT_VERSION = 'logo-agent.v3';
 
 /**
  * The working logo prompt; `npm run prompt:freeze` writes it to `prompts/logo-agent/`. Placeholders:
@@ -82,7 +82,7 @@ export const LOGO_PROMPT_TEMPLATE = [
   '',
   'DECISIONES DE DISEÑO',
   '1. Prioriza los requisitos obligatorios y las aplicaciones principales. Si hay una contradicción, resuélvela a favor de ellos.',
-  '2. Cuando una preferencia esté sin definir o indicada como «sin preferencia» o «no aplica», elige una solución basada en el resto del brief. No inventes hechos sobre la marca.',
+  '2. Cuando una preferencia esté sin definir o indicada como «sin preferencia», «no aplica» o «A criterio del diseñador», elige una solución basada en el resto del brief. No inventes hechos sobre la marca.',
   '3. Elige un concepto visual central. No intentes representar todos los productos, historias o valores dentro de un solo símbolo.',
   '4. No reproduzcas símbolos, lettering ni composiciones de las marcas de referencia. Usa únicamente las características descritas como orientación.',
   '5. Evita los motivos identificados como repetidos en los competidores.',

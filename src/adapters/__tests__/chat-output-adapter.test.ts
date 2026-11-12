@@ -190,16 +190,17 @@ describe('ChatOutputAdapter', () => {
     expect(provider.captured[0].systemPrompt).not.toContain('Café Andino');
   });
 
-  it('renders confirm_field with the pending value in the prompt', async () => {
+  it('renders confirm_fields with every pending value in the prompt (D35)', async () => {
     setProvider(provider = makeResponderProvider('¿Confirmas que tu negocio se llama "Café Andino"?'));
     const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
 
     const decisions: ReadonlyArray<PlannerDecision> = [
       {
-        kind: 'confirm_field',
-        agentId: 'test-fixture-agent',
-        fieldName: 'business_name',
-        pendingValue: 'Café Andino',
+        kind: 'confirm_fields',
+        entries: [
+          { agentId: 'test-fixture-agent', fieldName: 'business_name', pendingValue: 'Café Andino' },
+          { agentId: 'test-fixture-agent', fieldName: 'tone', pendingValue: 'cálido' },
+        ],
         reason: 'low_confidence',
       },
     ];
@@ -212,7 +213,31 @@ describe('ChatOutputAdapter', () => {
 
     expect(content).toContain('Café Andino');
     expect(provider.captured[0].systemPrompt).toContain('Café Andino');
-    expect(provider.captured[0].systemPrompt).toContain('confirm_field');
+    const prompt = provider.captured[0].systemPrompt;
+    expect(prompt).toContain('kind=confirm_fields');
+    expect(prompt).toContain('business_name: "Café Andino"');
+    expect(prompt).toContain('tone: "cálido"');
+    expect(prompt).toContain('UNA sola pregunta cerrada');
+  });
+
+  it('v12 guardrails: never claims something was saved, never asks about a field outside the decision (D35)', async () => {
+    setProvider(provider = makeResponderProvider('ok'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+    await adapter.render({ decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx });
+    const prompt = provider.captured[0].systemPrompt;
+    expect(prompt).toContain('NUNCA afirmes que algo "ya quedó registrado"');
+    expect(prompt).toContain('NUNCA preguntes por un campo o tema que no esté en la decisión actual');
+  });
+
+  it('a conversation pinned to v11 still renders confirm_fields through the fragment fallback', async () => {
+    setProvider(provider = makeResponderProvider('ok'));
+    const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
+    await adapter.render({
+      decisions: [{ kind: 'confirm_fields', entries: [{ agentId: 'test-fixture-agent', fieldName: 'tone', pendingValue: 'cálido' }], reason: 'low_confidence' }],
+      recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
+      promptVersions: { responder: 'responder.chat-step1.v12' },
+    });
+    expect(provider.captured[0].systemPrompt).toContain('tone: "cálido"');
   });
 
   it('renders announce_dispatch with explicit bans on greetings and waiting filler', async () => {
@@ -280,10 +305,8 @@ describe('ChatOutputAdapter', () => {
         fields: [{ fieldName: 'business_name', promptHint: 'q' }],
       },
       {
-        kind: 'confirm_field',
-        agentId: 'test-fixture-agent',
-        fieldName: 'business_name',
-        pendingValue: 'X',
+        kind: 'confirm_fields',
+        entries: [{ agentId: 'test-fixture-agent', fieldName: 'business_name', pendingValue: 'X' }],
         reason: 'low_confidence',
       },
       {
@@ -478,7 +501,7 @@ describe('ChatOutputAdapter', () => {
   });
 
   it('bumps the responder prompt version for the command guidance', () => {
-    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v11');
+    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v12');
   });
 
   it('a release frozen before v6 still renders offer_generation through the fragment fallbacks', async () => {
@@ -513,7 +536,7 @@ describe('ChatOutputAdapter', () => {
 
     await adapter.render(base);
     await adapter.render({ ...base, promptVersions: { responder: 'responder.chat-step1.v6' } });
-    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v11', 'responder.chat-step1.v6']);
+    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v12', 'responder.chat-step1.v6']);
   });
 
   it('falls back to the active version when the pinned one no longer exists', async () => {
@@ -525,7 +548,7 @@ describe('ChatOutputAdapter', () => {
       decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
       promptVersions: { responder: 'responder.chat-step1.v0' },
     });
-    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v11');
+    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v12');
   });
 
   describe('KAN-93 conversation context', () => {

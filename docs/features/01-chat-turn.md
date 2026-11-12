@@ -45,7 +45,7 @@ most two missing items at a time, and, once the brief is complete, invites the o
    `lastDispatchedTaskId`.
 5. **Planner (pure).** `src/core/orchestrator/planner.ts:planNextDecision` returns
    `PlannerDecision[]` (`src/core/contracts/decisions.ts:PlannerDecision`). First match wins:
-   a pending slot → `confirm_field` (alone); else the lexically first agent with missing required
+   a pending slot → `confirm_fields` (alone, all pending slots at once, D35); else the lexically first agent with missing required
    fields → `request_fields` with up to `MAX_FIELD_BATCH_SIZE` (2) fields; else an agent whose
    deliverable state is `enabled` and never dispatched → `offer_generation`; else a
    non-inherited deliverable that is `failed`, `in_review` or `generating` (in that priority) →
@@ -83,7 +83,7 @@ most two missing items at a time, and, once the brief is complete, invites the o
   New agents must work by adding a card. Enforced by the fixture-agent smoke test
   `src/core/__tests__/orchestrator-smoke.test.ts` ("orchestrator smoke (agent-agnostic)").
 - **Facts and commands are separate; the Extractor never produces intents.** Intents come from
-  state (a reply to `confirm_field`) or typed UI commands. This is the prompt-injection defense:
+  state (a reply to `confirm_fields`) or typed UI commands. This is the prompt-injection defense:
   chat text can fill a slot but cannot start, approve or cancel anything. Enforced by
   `src/adapters/__tests__/chat-input-adapter.test.ts` and, for generation,
   `src/core/orchestrator/__tests__/deliverable-commands.test.ts` ("no dispatch without a command").

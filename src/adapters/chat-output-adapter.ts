@@ -210,10 +210,11 @@ function describeDecision(
           : decision.fields.length > 2 ? fragments.requestFieldsListAction : fragments.requestFieldsMultiAction,
       });
     }
-    case 'confirm_field':
-      return applyPromptTemplate(fragments.confirmFieldDecision, {
-        kind: kindTag, agentId: decision.agentId, fieldName: decision.fieldName,
-        pendingValue: String(decision.pendingValue), reason: decision.reason,
+    case 'confirm_fields':
+      return applyPromptTemplate(fragments.confirmFieldsDecision, {
+        kind: kindTag,
+        entryLines: decision.entries.map((e) => `  - ${e.fieldName}: "${String(e.pendingValue)}"`).join('\n'),
+        reason: decision.reason,
       });
     case 'request_selection':
       return applyPromptTemplate(fragments.requestSelectionDecision, {
@@ -343,8 +344,8 @@ function applyPromptTemplate(template: string, values: Readonly<Record<string, s
 
 /**
  * Status-only summary: filled / pending / empty per field, never the value.
- * Values reach the responder only through the decision block (confirm_field's
- * `pendingValue`), which is the one place value paraphrase is expected.
+ * Values reach the responder only through the decision block (confirm_fields'
+ * `pendingValue`s), which is the one place value paraphrase is expected.
  */
 function describeFieldStatus(snapshot: ConversationSnapshot): string {
   const lines: string[] = [];

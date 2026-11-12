@@ -59,6 +59,12 @@ export const BRIEF_CATALOG: ReadonlyArray<BriefFieldSpec> = Object.freeze([
   { name: 'product_name', type: 'string', label: 'Producto', maxLength: 120 },
 ]);
 
+/**
+ * D35: the value a delegable required field (Agent Card `delegable: true`) takes when the user leaves it to the
+ * agent. The ONE definition: the chat adapter stores it, the command snapshot sends it, the agent prompt reads it.
+ */
+export const DELEGATED_FIELD_VALUE = 'A criterio del diseñador';
+
 export function briefFieldSpec(name: string): BriefFieldSpec | undefined {
   return BRIEF_CATALOG.find((field) => field.name === name);
 }
