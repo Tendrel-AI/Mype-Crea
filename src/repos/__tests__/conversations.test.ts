@@ -334,3 +334,21 @@ describe('KAN-88 brief <-> brand/product records', () => {
       .toBeLessThan(sqls.findIndex((s) => s.includes('FROM products') && s.includes('FOR UPDATE')));
   });
 });
+
+describe('conversationsRepo.latestBrandConversationId (D34)', () => {
+  beforeEach(() => mocked.query.mockReset());
+
+  it('looks up the owner\'s brand-level conversation directly, scoped by tenant, owner and brand', async () => {
+    mocked.query.mockResolvedValue({ rows: [{ id: 'brand-chat' }] });
+    const id = await conversationsRepo({ id: 'tenant-a' }, { id: 'user-a' }).latestBrandConversationId('brand-a');
+    expect(id).toBe('brand-chat');
+    const [sql, params] = mocked.query.mock.calls[0];
+    expect(String(sql)).toMatch(/tenant_id = \$1 AND user_id = \$2 AND brand_id = \$3 AND product_id IS NULL/);
+    expect(params).toEqual(['tenant-a', 'user-a', 'brand-a']);
+  });
+
+  it('undefined when the brand has no brand conversation', async () => {
+    mocked.query.mockResolvedValue({ rows: [] });
+    expect(await conversationsRepo({ id: 't' }, { id: 'u' }).latestBrandConversationId('b')).toBeUndefined();
+  });
+});

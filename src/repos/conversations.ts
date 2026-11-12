@@ -472,6 +472,20 @@ export function conversationsRepo(tenant: Tenant, user: User) {
       });
     },
 
+    /** D34: the caller's newest pinned brand-level conversation (no product) of a brand; undefined when none. */
+    async latestBrandConversationId(brandId: UUID): Promise<ConversationId | undefined> {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<{ id: ConversationId }>(
+          `SELECT id FROM conversations
+            WHERE tenant_id = $1 AND user_id = $2 AND brand_id = $3 AND product_id IS NULL
+              AND configuration_state = 'pinned'
+            ORDER BY started_at DESC, id DESC LIMIT 1`,
+          [tenant.id, user.id, brandId],
+        );
+        return res.rows[0]?.id;
+      });
+    },
+
     /** KAN-87: the brand and product (ids and names) of the caller's own conversation; undefined when foreign or missing. */
     async context(conversationId: ConversationId): Promise<ConversationContextRow | undefined> {
       return withTenantTransaction(tenant, user, async (tx) => {
