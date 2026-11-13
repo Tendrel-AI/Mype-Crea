@@ -7,19 +7,25 @@ const mocks = vi.hoisted(() => ({
   requireGlobalMfa: vi.fn(),
   resolveHomeConversation: vi.fn(),
   currentTermsStatus: vi.fn(),
+  resolveIdentity: vi.fn(),
   redirect: vi.fn((to: string) => { throw new Error(`redirect:${to}`); }),
 }));
 
 vi.mock('@workos-inc/authkit-nextjs', () => ({ withAuth: mocks.withAuth }));
 vi.mock('next/navigation', () => ({ redirect: mocks.redirect }));
 vi.mock('../../src/auth/resolve-identity', () => ({
+  AccessRefusedError: class AccessRefusedError extends Error {
+    constructor(readonly reason: string, message: string) { super(message); }
+  },
+  resolveIdentity: mocks.resolveIdentity,
   requireGlobalAdmin: mocks.requireGlobalAdmin,
   requireGlobalMfa: mocks.requireGlobalMfa,
 }));
 vi.mock('../../src/conversations/selection', () => ({ resolveHomeConversation: mocks.resolveHomeConversation }));
 vi.mock('../../components/CreaMype', () => ({ default: () => null }));
+vi.mock('../../components/crea-mype/NoAccess', () => ({ NoAccess: () => null }));
 vi.mock('../../components/crea-mype/TermsConsent', () => ({ TermsConsent: () => null }));
-vi.mock('../../src/consent/gate', () => ({ currentTermsStatus: mocks.currentTermsStatus }));
+vi.mock('../../src/consent/gate', () => ({ checkCurrentTerms: mocks.currentTermsStatus }));
 
 import Home from '../page';
 import { CURRENT_TERMS } from '../../src/consent/terms';
@@ -36,6 +42,29 @@ describe('/ conversation selection (KAN-25)', () => {
     mocks.withAuth.mockResolvedValue({ user: { email: 'ana@example.invalid', firstName: 'Ana', lastName: 'Quispe' } });
     mocks.requireGlobalAdmin.mockRejectedValue(new Error('not a platform admin'));
     mocks.currentTermsStatus.mockResolvedValue('accepted');
+    mocks.resolveIdentity.mockResolvedValue({ tenantRole: 'member' });
+  });
+
+  it('D52: an access refusal renders the no-access screen, not the terms error', async () => {
+    const { AccessRefusedError } = await import('../../src/auth/resolve-identity');
+    mocks.resolveIdentity.mockRejectedValueOnce(new AccessRefusedError('no_organization', 'x'));
+    const element = await page() as ReactElement<Props>;
+    expect(element.props).toEqual({ email: 'ana@example.invalid', reason: 'no_organization' });
+    expect(mocks.currentTermsStatus).not.toHaveBeenCalled();
+  });
+
+  it('D52: a transient identity failure stays a retryable error', async () => {
+    mocks.resolveIdentity.mockRejectedValueOnce(new Error('db down'));
+    const element = await page() as ReactElement<Props>;
+    expect(element.props).toMatchObject({ creationBlocked: true, initialError: 'No pudimos verificar el acceso de tu cuenta. Inténtalo de nuevo.' });
+  });
+
+  it('D52: passes the effective tenant role down as isTenantAdmin', async () => {
+    mocks.resolveHomeConversation.mockResolvedValueOnce({ kind: 'empty', brands: [] });
+    mocks.resolveIdentity.mockResolvedValueOnce({ tenantRole: 'admin' });
+    expect((await page() as ReactElement<Props>).props).toMatchObject({ isTenantAdmin: true });
+    mocks.resolveHomeConversation.mockResolvedValueOnce({ kind: 'empty', brands: [] });
+    expect((await page() as ReactElement<Props>).props).toMatchObject({ isTenantAdmin: false });
   });
 
   it('KAN-27: shows the current terms before any conversation is selected or created', async () => {

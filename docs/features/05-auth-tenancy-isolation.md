@@ -11,8 +11,10 @@ even with a forged id. Platform operators sign in separately and must pass a TOT
 ## How it works
 
 1. **Gate every route.** `proxy.ts` (WorkOS AuthKit middleware, Next 16 "proxy") protects every
-   route except `/login`, `/callback` and the two exact health paths `/api/health` and
-   `/api/health/ready`. Login lives in `app/login/page.tsx` and `app/callback/route.ts`.
+   route except `/login`, `/sign-in`, `/callback`, `/auth/callback` and the two exact health paths
+   `/api/health` and `/api/health/ready`. Login lives in `app/login/page.tsx` and
+   `app/callback/route.ts`. There is no self sign-up (no `/sign-up`): access is granted by the
+   organization's administrator (D52).
 2. **Session → (tenant, user).** `src/auth/resolve-identity.ts:resolveIdentity` takes the
    organization id from the signed WorkOS session, looks up the registered organization and its
    status (`src/repos/global-organizations.ts:globalOrganizationsRepo`), checks a fresh active
@@ -21,6 +23,12 @@ even with a forged id. Platform operators sign in separately and must pass a TOT
    inside the same tenant, role-synced, always through the narrow `app.sync_member` function; an
    inactive local row denies. It returns a `ResolvedIdentity` with the tenant, the user, the tenant
    role and, separately, the persisted platform role. It never creates tenants; any miss fails closed.
+   An access refusal (no active organization, organization not enabled or paused, no active
+   membership) throws the typed `AccessRefusedError`; the home page then shows the «sin acceso»
+   screen (`components/crea-mype/NoAccess.tsx`, email + sign-out) instead of a generic error.
+   Any other failure stays a retryable error. Tenant admins get an «Administración» sidebar link;
+   the role is resolved on the server. The usage gateway also refuses reservations of inactive
+   users (`user_inactive`).
 3. **Scoped repositories.** All tenant data goes through `src/repos/index.ts:repos(tenant, user)`
    (or `systemRepos(tenant)` for workers without a user). Each repository closes over the tenant
    and user, so no method can skip them.

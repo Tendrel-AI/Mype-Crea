@@ -21,7 +21,7 @@ export const USAGE_POLICY = Object.freeze({
 
 export type UsagePolicy = typeof USAGE_POLICY;
 export type UsageKind = 'llm' | 'image';
-export type UsageDenialReason = 'tenant_credits' | 'user_llm_hourly' | 'user_image_daily' | 'input_too_long';
+export type UsageDenialReason = 'tenant_credits' | 'user_llm_hourly' | 'user_image_daily' | 'input_too_long' | 'user_inactive';
 
 /** What the ledger has already committed, read under the tenant lock. */
 export interface UsageCounters {
@@ -74,6 +74,8 @@ export function usageLimitMessage(reason: UsageDenialReason): string {
       return 'Alcanzaste el límite de mensajes por hora. Espera un momento e inténtalo de nuevo.';
     case 'user_image_daily':
       return 'Alcanzaste el límite de imágenes de hoy. Podrás generar más mañana.';
+    case 'user_inactive':
+      return 'Tu cuenta está desactivada. Contacta al administrador de tu organización.';
     case 'input_too_long':
       return `Tu mensaje es demasiado largo. Escribe hasta ${USAGE_POLICY.maxInputChars} caracteres.`;
   }

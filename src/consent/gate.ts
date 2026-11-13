@@ -3,7 +3,7 @@
  * to an LLM or an agent calls `checkCurrentTerms` after `resolveIdentity()` and before any
  * processing; only `accepted` lets the request through (fail closed). Server-only.
  */
-import { resolveIdentity, type ResolvedIdentity } from '../auth/resolve-identity';
+import type { ResolvedIdentity } from '../auth/resolve-identity';
 import { repos } from '../repos';
 import { CURRENT_TERMS_VERSION } from './terms';
 import { loggerFor } from '../services/logger';
@@ -21,16 +21,4 @@ export async function checkCurrentTerms(identity: ResolvedIdentity): Promise<Ter
     log.error({ err: error instanceof Error ? error.message : String(error), tenantId: identity.tenant.id }, 'consent.terms_lookup_failed');
     return 'unavailable';
   }
-}
-
-/** The home page's view of the signed-in caller's consent (identity failures are `unavailable`). */
-export async function currentTermsStatus(): Promise<TermsStatus> {
-  let identity: ResolvedIdentity;
-  try {
-    identity = await resolveIdentity();
-  } catch (error) {
-    log.error({ err: error instanceof Error ? error.message : String(error) }, 'consent.identity_failed');
-    return 'unavailable';
-  }
-  return checkCurrentTerms(identity);
 }

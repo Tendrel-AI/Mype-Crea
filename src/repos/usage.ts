@@ -86,8 +86,11 @@ export function usageRepo(tenant: Tenant, user: User): UsageRepo {
   async function decide(request: UsageRequest, hold: boolean): Promise<UsageVerdict> {
     return withTenantTransaction(tenant, user, async (tx) => {
       await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended('usage_reservations:' || $1::text, 0))`, [tenant.id]);
-      const counters = await readUsageCounters(tx, tenant.id, user.id);
-      const reason = evaluateUsage(counters, request);
+      // D52 backstop: an inactive owner never reserves (callers also run assertOwnerActive).
+      const active = await tx.query(`SELECT 1 FROM users WHERE tenant_id = $1 AND id = $2 AND status = 'active'`, [tenant.id, user.id]);
+      const reason: UsageDenialReason | null = (active.rowCount ?? 0) === 0
+        ? 'user_inactive'
+        : evaluateUsage(await readUsageCounters(tx, tenant.id, user.id), request);
       if (!reason && !hold) return { allowed: true, reservationId: null };
       const id = await insertRow(tx, request, reason);
       return reason ? { allowed: false, reason, reservationId: id } : { allowed: true, reservationId: id };

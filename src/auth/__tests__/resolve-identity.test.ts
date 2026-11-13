@@ -47,7 +47,7 @@ vi.mock('../../services/logger', () => ({
   }),
 }));
 
-import { getRoleSwitcherState, repositoryActor, requireGlobalAdmin, requireGlobalMfa, requirePlatformAdmin, requirePlatformStepUp, requireTenantAdmin, resolveIdentity, signMfaPending, signMfaProof, verifyActiveMembership, verifyMfaPending } from '../resolve-identity';
+import { AccessRefusedError, getRoleSwitcherState, repositoryActor, requireGlobalAdmin, requireGlobalMfa, requirePlatformAdmin, requirePlatformStepUp, requireTenantAdmin, resolveIdentity, signMfaPending, signMfaProof, verifyActiveMembership, verifyMfaPending } from '../resolve-identity';
 import { aiConfigRepo } from '../../repos/ai-config';
 import { LEGACY_MFA_PROOF_COOKIE, MFA_PROOF_COOKIE, MfaRequiredError } from '../platform-mfa';
 
@@ -208,11 +208,14 @@ describe('resolveIdentity', () => {
     mocks.memberships.mockResolvedValueOnce({
       data: [{ organizationId: orgA, userId, status: 'inactive' }],
     });
-    await expect(resolveIdentity()).rejects.toThrow('Tu cuenta no tiene acceso activo a esta organización.');
+    await expect(resolveIdentity()).rejects.toMatchObject({ name: 'AccessRefusedError', reason: 'no_active_membership' });
     expect(mocks.resolveMember).not.toHaveBeenCalled();
 
     mocks.memberships.mockRejectedValueOnce(new Error('remote failure'));
-    await expect(resolveIdentity()).rejects.toThrow('No pudimos verificar el acceso de tu cuenta. Inténtalo de nuevo.');
+    const transient = await resolveIdentity().catch((error: unknown) => error);
+    // D52: a transient failure is NOT an access refusal (the page keeps it retryable).
+    expect(transient).not.toBeInstanceOf(AccessRefusedError);
+    expect(transient).toMatchObject({ message: 'No pudimos verificar el acceso de tu cuenta. Inténtalo de nuevo.' });
     expect(mocks.resolveMember).not.toHaveBeenCalled();
   });
 
