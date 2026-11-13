@@ -26,6 +26,8 @@ interface Fake {
   isAdmin: boolean;
   /** Product ids that belong to BRAND. */
   ownedProducts?: string[];
+  /** An active chat already exists for the brand/product (KAN-97). */
+  existingChat?: boolean;
   attributes?: Record<string, unknown>;
 }
 
@@ -41,6 +43,7 @@ function fakeDb(state: Fake) {
     if (sql.includes('INSERT INTO products')) {
       return { rows: [{ id: 'new-product', brand_id: BRAND, name: params[3], attributes: {}, created_at: new Date('2026-01-01T00:00:00Z') }] };
     }
+    if (sql.includes('FROM conversations')) return { rows: state.existingChat ? [{ '?column?': 1 }] : [] };
     if (sql.includes('FROM products WHERE id')) return { rows: state.ownedProducts?.includes(String(params[0])) ? [{ id: params[0] }] : [] };
     if (sql.includes('FROM products WHERE tenant_id')) return { rows: [{ n: state.products }] };
     if (sql.includes('FROM brands WHERE id')) {
@@ -101,20 +104,25 @@ describe('brandsRepo.createConversation (no conversation limit, product consiste
   const input = { brandId: BRAND as never, conversationId: 'c-1' as never, schemas: [] };
   const PRODUCT = '88888888-8888-4888-8888-888888888888';
 
-  it('locks the active owned brand and pins under it, however many conversations it already has', async () => {
+  it('locks the active owned brand and pins under it when it has no active chat yet', async () => {
     fakeDb({ brands: [{ id: BRAND, status: 'active' }], products: 0, limits: { b: 3, p: 5 }, isAdmin: false });
     expect(await repo().createConversation(input)).toMatchObject({ ok: true });
     expect(mocked.pin).toHaveBeenCalledWith(expect.anything(), TENANT, USER, expect.anything(), BRAND, null);
     const lock = mocked.query.mock.calls.map(([sql]) => String(sql)).find((sql) => sql.includes('FOR SHARE'))!;
     expect(lock).toContain("status = 'active'");
     expect(lock).toContain('user_id = $3');
-    expect(mocked.query.mock.calls.some(([sql]) => String(sql).includes('FROM conversations'))).toBe(false);
   });
 
   it('pins a product conversation only when the product belongs to that brand and owner', async () => {
     fakeDb({ brands: [{ id: BRAND, status: 'active' }], products: 0, limits: { b: 3, p: 5 }, isAdmin: false, ownedProducts: [PRODUCT] });
     expect(await repo().createConversation({ ...input, productId: PRODUCT as never })).toMatchObject({ ok: true });
     expect(mocked.pin).toHaveBeenCalledWith(expect.anything(), TENANT, USER, expect.anything(), BRAND, PRODUCT);
+  });
+
+  it('KAN-97: an existing active chat yields conversation_exists and pins nothing', async () => {
+    fakeDb({ brands: [{ id: BRAND, status: 'active' }], products: 0, limits: { b: 3, p: 5 }, isAdmin: false, existingChat: true });
+    expect(await repo().createConversation(input)).toEqual({ ok: false, code: 'conversation_exists' });
+    expect(mocked.pin).not.toHaveBeenCalled();
   });
 
   it('refuses a product of another brand (or another user) and pins nothing', async () => {
