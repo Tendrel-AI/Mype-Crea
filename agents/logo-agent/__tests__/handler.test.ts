@@ -1,6 +1,8 @@
 /**
- * Unit tests for the logo-agent handler. Inject a fake IImageGenerator via
- * setImageGenerator so we never call fal. Verify:
+ * Unit tests for the logo-agent handler. Inject a fake IAgentLlm (the v4 art director) and a fake
+ * IImageGenerator via setters so we never call a real model. Verify:
+ *   - v4: the image prompt is the English formula from the director slots + the exact upper-cased name
+ *   - pinned v1-v3 (frozen prompt without a schema) render the legacy template with no LLM call
  *   - returned A2ATaskResult is completed with one image artifact
  *   - artifact metadata includes provider, model, prompt, purpose
  *   - the frozen v2 template renders per line (empty lines dropped, multi-field lines joined)
@@ -8,8 +10,9 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { INPUT_FIELDS, LOGO_PROMPT_TEMPLATE, LOGO_PROMPT_VERSION, handler, renderLogoPrompt } from '../handler';
+import { INPUT_FIELDS, LOGO_LEGACY_TEMPLATE, LOGO_PROMPT_VERSION, LOGO_SYSTEM_PROMPT, LOGO_TOOL, buildLogoMessages, handler, renderLogoFormula, renderLogoPrompt } from '../handler';
 import { getFrozenPrompt } from '../../../src/services/prompts';
+import { resetAgentLlm, setAgentLlm, type AgentCompletionRequest } from '../../../src/services/llm/agent-completion';
 import { resetImageGenerator, setImageGenerator } from '../../../src/services/image';
 import type { ImageRequest, ImageResult } from '../../../src/services/image';
 import type { A2AMessage } from '../../../src/core/agent-types';
@@ -51,72 +54,102 @@ function fakeGenerator(captured: ImageRequest[]) {
   };
 }
 
+const SLOTS = {
+  format_style: 'Bold block-stamp flat vector',
+  purpose_industry: 'sustainable direct-trade coffee',
+  primary_entity: 'an anthropomorphic bear intertwined with a coffee branch',
+  cultural_anchor: 'bold pre-Columbian block prints',
+  structural_mechanics: 'thick, chunky shapes and high-contrast negative space cutouts',
+  motifs: 'oversized coffee cherries',
+  layout: 'dynamically asymmetric',
+  typography: 'chunky serif lettering curving around the top',
+  palette: 'deep forest green and warm cream',
+  voice: 'earthy, ethical, and warm',
+};
+
+function fakeLlm(args: string = JSON.stringify(SLOTS)) {
+  const calls: AgentCompletionRequest[] = [];
+  setAgentLlm({
+    complete: vi.fn(async (request: AgentCompletionRequest) => {
+      calls.push(request);
+      return {
+        provider: 'openrouter' as const,
+        model: 'fake/naming-1',
+        completion: { id: 'c', choices: [{ message: { role: 'assistant' as const, content: null, tool_calls: [{ id: 't', type: 'function' as const, function: { name: 'fill_logo_prompt', arguments: args } }] }, finish_reason: 'tool_calls' }] },
+      };
+    }),
+  });
+  return calls;
+}
+
 describe('logo-agent handler', () => {
   afterEach(() => {
     resetImageGenerator();
+    resetAgentLlm();
   });
 
-  it('returns one image artifact with provider + model + prompt + purpose metadata', async () => {
+  it('v4: renders the formula from the director slots with the exact upper-cased name and records provenance', async () => {
     const captured: ImageRequest[] = [];
     setImageGenerator(fakeGenerator(captured));
+    const llmCalls = fakeLlm();
+    const reqs = { business_name: 'Café "Andino"', style_keywords: 'minimalista, andino', color_palette: 'tierra y verde' };
 
-    const result = await handler(
-      makeMessage({
-        business_name: 'Café Andino',
-        style_keywords: 'minimalista, andino',
-        color_palette: 'tierra y verde',
-      }),
-      undefined,
-    );
+    const result = await handler(makeMessage(reqs), undefined);
 
     expect(result.status).toBe('completed');
     if (result.status !== 'completed') return;
-    expect(result.artifacts).toHaveLength(1);
     const [artifact] = result.artifacts;
     expect(artifact.kind).toBe('image');
     expect(artifact.url).toBe('https://fake.cdn/logo.png');
+    expect(captured[0].prompt).toBe(renderLogoFormula({ ...SLOTS, brand_name: "CAFÉ 'ANDINO'" }));
+    expect(captured[0]).toMatchObject({ purpose: 'logo', usage: { tenantId: '22222222-2222-2222-2222-222222222222', agentTaskId: '11111111-1111-1111-1111-111111111111' } });
+    expect(llmCalls[0]).toMatchObject({ purpose: 'naming', promptVersion: LOGO_PROMPT_VERSION, usage: { agentTaskId: '11111111-1111-1111-1111-111111111111' } });
     expect(artifact.metadata).toMatchObject({
       provider: 'fake-provider',
       model: 'fake-model/1',
       purpose: 'logo',
-      // KAN-29: the provenance the deliverables panel shows.
       promptVersion: LOGO_PROMPT_VERSION,
       agentCardVersion: '0.1.0',
+      slots: { ...SLOTS, brand_name: "CAFÉ 'ANDINO'" },
+      director: { provider: 'openrouter', model: 'fake/naming-1' },
+      // KAN-35: the fields the prompt used, with the shared sha256 fingerprint.
+      inputs: Object.fromEntries(Object.entries(reqs).map(([k, v]) => [k, { value: v, version: inputVersion(v) }])),
+      // KAN-33: the classifier result is recorded as-is, even when it is not `passed`.
+      safety: FAKE_SAFETY,
     });
-    expect(artifact.metadata?.prompt).toContain('Café Andino');
-    expect(artifact.metadata?.prompt).toContain('tierra y verde');
-    // KAN-35: the fields the prompt used, with the shared sha256 fingerprint.
-    expect(artifact.metadata?.inputs).toEqual({
-      business_name: { value: 'Café Andino', version: inputVersion('Café Andino') },
-      style_keywords: { value: 'minimalista, andino', version: inputVersion('minimalista, andino') },
-      color_palette: { value: 'tierra y verde', version: inputVersion('tierra y verde') },
-    });
-    // KAN-33: the classifier result is recorded as-is, even when it is not `passed`.
-    expect(artifact.metadata?.safety).toEqual(FAKE_SAFETY);
-    expect(inputVersion('Café Andino')).toMatch(/^sha256:[0-9a-f]{64}$/);
-    // KAN-43: the image is charged through the usage gate to this task's tenant.
-    expect(captured[0].usage).toEqual({ tenantId: '22222222-2222-2222-2222-222222222222', agentTaskId: '11111111-1111-1111-1111-111111111111' });
   });
 
-  it('passes a prompt to the generator that includes business_name, style_keywords, and color_palette', async () => {
+  it('v4: the director sees the filled brief and the quoted «Iterar» observations', () => {
+    const [system, user] = buildLogoMessages({ business_name: 'Sol', logo_composition: 'A criterio del diseñador' }, { observations: ['más "azul"', ' '] });
+    expect(system).toEqual({ role: 'system', content: LOGO_SYSTEM_PROMPT });
+    expect(user.content).toContain('- Nombre exacto: "Sol"');
+    expect(user.content).toContain('- Composición preferida: "A criterio del diseñador"');
+    expect(user.content).toContain('Ajustes pedidos sobre la versión anterior: "más \'azul\'".');
+  });
+
+  it('v4: unusable tool arguments fail the task with invalid_output and never reach the image generator', async () => {
     const captured: ImageRequest[] = [];
     setImageGenerator(fakeGenerator(captured));
+    fakeLlm('not json');
+    const result = await handler(makeMessage({ business_name: 'Sol' }), undefined);
+    expect(result).toMatchObject({ status: 'failed', error: { kind: 'invalid_output' } });
+    expect(captured).toHaveLength(0);
+  });
 
-    await handler(
-      makeMessage({
-        business_name: 'Café Andino',
-        style_keywords: 'minimalista, andino',
-        color_palette: 'tierra y verde',
-      }),
-      undefined,
-    );
+  it('a conversation pinned to logo-agent.v3 renders the legacy template and makes no LLM call', async () => {
+    const captured: ImageRequest[] = [];
+    setImageGenerator(fakeGenerator(captured));
+    const llmCalls = fakeLlm();
+    const v3 = getFrozenPrompt('logo-agent', 'logo-agent.v3')!;
 
-    expect(captured).toHaveLength(1);
-    const sent = captured[0];
-    expect(sent.purpose).toBe('logo');
-    expect(sent.prompt).toContain('Café Andino');
-    expect(sent.prompt).toContain('minimalista, andino');
-    expect(sent.prompt).toContain('tierra y verde');
+    const result = await handler({ ...makeMessage({ business_name: 'Café Andino', style_keywords: 'minimalista, andino', color_palette: 'tierra y verde' }), prompt: v3 }, undefined);
+
+    expect(result.status).toBe('completed');
+    if (result.status !== 'completed') return;
+    expect(llmCalls).toHaveLength(0);
+    expect(captured[0].prompt).toBe(renderLogoPrompt(LOGO_LEGACY_TEMPLATE, { business_name: 'Café Andino', style_keywords: 'minimalista, andino', color_palette: 'tierra y verde' }));
+    expect(result.artifacts[0].metadata).toMatchObject({ promptVersion: 'logo-agent.v3', purpose: 'logo' });
+    expect(result.artifacts[0].metadata).not.toHaveProperty('slots');
   });
 
   it.each([
@@ -126,6 +159,7 @@ describe('logo-agent handler', () => {
     ['handler_threw', new Error('unexpected')],
   ] as const)('returns a failed result with kind %s when image generation fails (KAN-58)', async (kind, err) => {
     setImageGenerator({ generate: vi.fn(async () => { throw err; }) });
+    fakeLlm();
 
     const result = await handler(
       makeMessage({ business_name: 'Café Andino', style_keywords: 'minimalista' }),
@@ -140,8 +174,17 @@ describe('logo-agent handler', () => {
   });
 });
 
-describe('frozen logo template v2 (D22)', () => {
-  const frozen = getFrozenPrompt('logo-agent', LOGO_PROMPT_VERSION)!;
+describe('frozen logo prompts', () => {
+  it('v4 frozen text and tool are the working director prompt and tool', () => {
+    const v4 = getFrozenPrompt('logo-agent', 'logo-agent.v4')!;
+    expect(v4.text).toBe(LOGO_SYSTEM_PROMPT);
+    expect(v4.schema).toEqual(JSON.parse(JSON.stringify(LOGO_TOOL)));
+    expect(LOGO_PROMPT_VERSION).toBe('logo-agent.v4');
+  });
+});
+
+describe('frozen legacy logo template v3 (D22)', () => {
+  const frozen = getFrozenPrompt('logo-agent', 'logo-agent.v3')!;
   const sparse = { business_name: 'Café "Andino". Sur' };
   const full = {
     business_name: 'Café Andino', existing_tagline: 'Sabor de altura', business_category: 'Café', market_proposition: 'Café de origen',
@@ -153,8 +196,8 @@ describe('frozen logo template v2 (D22)', () => {
     logo_restrictions: 'Sin rojo',
   };
 
-  it('is the frozen text of the working template', () => {
-    expect(frozen.text).toBe(LOGO_PROMPT_TEMPLATE);
+  it('is the frozen v3 text of the legacy template', () => {
+    expect(frozen.text).toBe(LOGO_LEGACY_TEMPLATE);
   });
 
   it('INPUT_FIELDS covers every placeholder of the template', () => {
