@@ -47,6 +47,7 @@ import { buildDefaultRegistry } from './bootstrap-registry';
 import { PostgresConversationStore } from './postgres-store';
 import { PostgresDeliverableWorkflowStore } from './postgres-workflow';
 import { createPostgresApprovalStore } from '../../repos/approval-store';
+import { isUserActive } from '../../services/account-status';
 import { createOwnApproval } from '../../services/own-approval';
 import type { IApprovalStore } from '../approvals';
 import {
@@ -133,6 +134,7 @@ export function buildTransport(
     subscriber,
     registry,
     systemReposFor: systemRepos,
+    isUserActive,
     resolveConversationOwner: (tenantId: UUID, conversationId: ConversationId) =>
       getConversationOwnerUserId({ id: tenantId }, conversationId),
     // D22: first read pins the active versions of a conversation that predates the pin.

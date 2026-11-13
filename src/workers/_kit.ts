@@ -50,6 +50,11 @@ export interface WorkerContext {
     conversationId: ConversationId,
   ) => Promise<UUID | null>;
   /**
+   * D43: live status of the conversation owner. A still-pending task of an inactive owner is
+   * canceled at pickup and never started. Optional: when omitted (unit tests) no check runs.
+   */
+  readonly isUserActive?: (tenantId: string, userId: string) => Promise<boolean>;
+  /**
    * Build a user-scoped deliverables repo. Called after resolveConversationOwner
    * so the worker can persist artifacts under the correct (tenant, user) RLS
    * context. Optional: when omitted (unit tests), persistence is skipped and

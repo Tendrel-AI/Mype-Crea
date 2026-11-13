@@ -13,6 +13,7 @@ vi.mock('../../../repos', () => ({
 }));
 
 import { AgentLlmService, type AgentCompletionRequest } from '../agent-completion';
+import { TaskError, classifyTaskError } from '../../../core/task-errors';
 import { ProviderCallError } from '../provider-error';
 import { FakeLLMProvider } from '../../../core/__tests__/_fixtures';
 import type { UsageLedger } from '../../usage/gateway';
@@ -38,7 +39,7 @@ function ledger(allowed: boolean) {
 }
 
 function service(provider: ILLMProvider, usage: UsageLedger, available: () => Promise<boolean> = async () => true) {
-  return new AgentLlmService(() => provider, async () => ({ ledger: usage, conversationId: CONVERSATION, ownerUserId: OWNER }), available);
+  return new AgentLlmService(() => provider, async () => ({ ledger: usage, conversationId: CONVERSATION, ownerUserId: OWNER }), available, async () => {});
 }
 
 describe('AgentLlmService', () => {
@@ -64,6 +65,25 @@ describe('AgentLlmService', () => {
       expect(usage.reserve).not.toHaveBeenCalled();
     },
   );
+
+  it('refuses the second call of a task once the owner is deactivated between calls (D43)', async () => {
+    const provider = new FakeLLMProvider({ purpose: 'naming' }).scriptContent('one').scriptContent('two');
+    const usage = ledger(true);
+    let active = true;
+    const assertActive = vi.fn(async () => {
+      if (!active) throw new TaskError('account_inactive', 'blocked');
+    });
+    const svc = new AgentLlmService(() => provider, async () => ({ ledger: usage, conversationId: CONVERSATION, ownerUserId: OWNER }), async () => true, assertActive);
+
+    await svc.complete(REQUEST);
+    active = false;
+    await expect(svc.complete(REQUEST)).rejects.toMatchObject({ kind: 'account_inactive' });
+
+    expect(assertActive).toHaveBeenCalledWith(TENANT, OWNER);
+    expect(provider.create).toHaveBeenCalledTimes(1);
+    expect(usage.reserve).toHaveBeenCalledTimes(1);
+    expect(classifyTaskError({ kind: 'account_inactive' })).toBe('permanent_bug');
+  });
 
   it('reserves, calls, settles and audits the call with the naming purpose', async () => {
     const provider = new FakeLLMProvider({ purpose: 'naming', modelId: 'fake/naming-1' }).scriptContent('ok');

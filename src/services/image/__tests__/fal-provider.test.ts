@@ -18,6 +18,7 @@ vi.mock('../../../repos', () => ({
   systemRepos: () => ({ agentTasks: { findById: async () => ({ conversationId: 'conversation-a' }) } }),
   repos: () => ({ usage: { reserve: reserveSpy, settle: settleSpy } }),
 }));
+vi.mock('../../account-status', () => ({ assertOwnerActive: async () => {} }));
 vi.mock('../../../repos/conversations', () => ({ getConversationOwnerUserId: async () => 'owner-a' }));
 
 vi.mock('@fal-ai/client', () => ({

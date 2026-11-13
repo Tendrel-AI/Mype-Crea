@@ -11,12 +11,13 @@
  */
 import { TaskError } from '../../core/task-errors';
 import { loggerFor } from '../logger';
+import { assertOwnerActive, type OwnerActiveCheck } from '../account-status';
 import { runWithUsage, UsageLimitError, type UsageLedger } from '../usage/gateway';
 import { IMAGE_PRICE_USD } from '../usage/policy';
 import type { IImageGenerator, IImageProvider, ImagePurpose, ImageRequest, ImageResult, ImageUsageScope } from './types';
 
 /** KAN-43: the ledger of the user who pays for an image, plus its conversation for correlation. */
-export type ImageUsageResolver = (scope: ImageUsageScope) => Promise<{ readonly ledger: UsageLedger; readonly conversationId?: string }>;
+export type ImageUsageResolver = (scope: ImageUsageScope) => Promise<{ readonly ledger: UsageLedger; readonly conversationId?: string; readonly ownerUserId?: string }>;
 
 const log = loggerFor('service.image.generator');
 
@@ -26,6 +27,7 @@ export class ImageGeneratorService implements IImageGenerator {
   constructor(
     private readonly defaultProvider: IImageProvider,
     private readonly usageFor?: ImageUsageResolver,
+    private readonly assertActive: OwnerActiveCheck = assertOwnerActive,
   ) {}
 
   registerForPurpose(purpose: ImagePurpose, provider: IImageProvider): void {
@@ -59,7 +61,9 @@ export class ImageGeneratorService implements IImageGenerator {
   private async gated(provider: IImageProvider, req: ImageRequest): Promise<ImageResult> {
     if (!this.usageFor) return provider.generate(req);
     if (!req.usage) throw new TaskError('config_missing', 'Image request has no usage scope; refusing an ungated provider call.');
-    const { ledger, conversationId } = await this.usageFor(req.usage);
+    const { ledger, conversationId, ownerUserId } = await this.usageFor(req.usage);
+    // D43: checked before EACH provider call.
+    if (ownerUserId) await this.assertActive(req.usage.tenantId, ownerUserId);
     try {
       return await runWithUsage(ledger, {
         request: {

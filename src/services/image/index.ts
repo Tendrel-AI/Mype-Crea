@@ -44,7 +44,7 @@ const resolveImageUsage: ImageUsageResolver = async ({ tenantId, agentTaskId }) 
   const task = await systemRepos(tenant).agentTasks.findById(agentTaskId as TaskId);
   const owner = task ? await getConversationOwnerUserId(tenant, task.conversationId as ConversationId) : null;
   if (!task || !owner) throw new Error('Cannot attribute image usage: task or conversation owner not found.');
-  return { ledger: repos(tenant, { id: owner }).usage, conversationId: task.conversationId };
+  return { ledger: repos(tenant, { id: owner }).usage, conversationId: task.conversationId, ownerUserId: owner };
 };
 
 /** Test hook: swap in a fake or clear the cached singleton. */

@@ -105,6 +105,7 @@ export function buildWorkerTestContext(
     resolveConversationOwner:
       overrides.resolveConversationOwner ?? vi.fn(async () => '22222222-2222-2222-2222-222222222222' as UUID),
     onTaskSettled: overrides.onTaskSettled ?? vi.fn(),
+    isUserActive: overrides.isUserActive,
     pinnedPromptFor: overrides.pinnedPromptFor,
     deliverablesFor: overrides.deliverablesFor,
     settleTaskFor: overrides.settleTaskFor,

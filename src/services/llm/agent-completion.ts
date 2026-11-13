@@ -24,6 +24,7 @@ import { isProviderEnvEnabled } from '../ai-config/provider-registry';
 import { usageGatedCompletion } from '../ai-config/execution';
 import type { ProviderId } from '../ai-config/manifest';
 import { loggerFor } from '../logger';
+import { assertOwnerActive, type OwnerActiveCheck } from '../account-status';
 import { withLlmLogging } from '../llm-logger';
 import { UsageLimitError, type UsageLedger } from '../usage/gateway';
 import { getProvider } from './index';
@@ -80,6 +81,7 @@ export class AgentLlmService implements IAgentLlm {
     private readonly provider: () => ILLMProvider = getProvider,
     private readonly usageFor: AgentUsageResolver = resolveAgentUsage,
     private readonly availability: ProviderAvailabilityReader = readTenantAvailability,
+    private readonly assertActive: OwnerActiveCheck = assertOwnerActive,
   ) {}
 
   async complete(input: AgentCompletionRequest): Promise<AgentCompletionResult> {
@@ -90,6 +92,8 @@ export class AgentLlmService implements IAgentLlm {
       throw new TaskError('config_missing', 'The LLM provider is not configured.', { cause: err });
     }
     const scope = await this.usageFor(input.usage);
+    // D43: checked before EACH provider call; an agent may call the model several times per task.
+    await this.assertActive(input.usage.tenantId, scope.ownerUserId);
     const provider: ProviderId = resolved.provider ?? 'openrouter';
     await this.assertProviderEnabled(input.usage.tenantId, scope.ownerUserId, provider);
     const gated: IChatClient = {

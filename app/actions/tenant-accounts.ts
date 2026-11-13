@@ -75,7 +75,13 @@ export async function provisionTenantMember(input: { email: string; reason?: str
 }
 
 export async function deactivateTenantMember(input: { userId: string; reason?: string }): Promise<AccountResult> {
-  return asAdmin('deactivate', NOT_ADMIN, FAILED, (identity) => service(identity).deactivate(actor(identity), { userId: input?.userId, reason: input?.reason }));
+  return asAdmin('deactivate', NOT_ADMIN, FAILED, async (identity) => {
+    const result = await service(identity).deactivate(actor(identity), { userId: input?.userId, reason: input?.reason });
+    // D43: nothing else to trigger. The DB status flip gates in-flight work on its own: the worker
+    // cancels queued tasks and refuses new provider calls, and the user's SSE closes on its next poll.
+    if (result.ok) log.info({ tenantId: identity.tenant.id, targetUserId: input?.userId, code: result.code }, 'tenant_accounts.deactivated_inflight_gated');
+    return result;
+  });
 }
 
 export async function reactivateTenantMember(input: { userId: string; reason?: string }): Promise<AccountResult> {
