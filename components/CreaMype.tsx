@@ -12,6 +12,8 @@ import { LabelCard, labelCommandAfterUpload } from './crea-mype/label-card';
 import { SocialCard, SOCIAL_AGENT_ID } from './crea-mype/social-card';
 import { LAB_UPLOAD_WAIT_MESSAGE } from './crea-mype/lab-upload-copy';
 import { ConversationMenu } from './crea-mype/ConversationMenu';
+import { BrandTree } from './crea-mype/BrandTree';
+import { useIsMobile } from '../hooks/use-mobile';
 import { ChatPanel } from './crea-mype/ChatPanel';
 import { Dashboard } from './crea-mype/Dashboard';
 import { LandingPreview } from './crea-mype/LandingPreview';
@@ -108,6 +110,7 @@ const EMPTY_ASSETS: BrandAssets = {
 export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialBrief = [], initialStates = [], landingPageContent, initialError, initialConversations = [], initialBrands = [], initialContext = null, initialWelcome = '', creationBlocked = false, conversationNotFound = false }: CreaMypeProps) {
   const [activeTab, setActiveTab] = useState<'create' | 'gallery' | 'landing'>('create');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const isMobile = useIsMobile();
 
   const [assets, setAssets] = useState<BrandAssets>(() => ({
     ...EMPTY_ASSETS,
@@ -591,6 +594,18 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     />
   ) : undefined;
 
+  // KAN-111: a brand chat whose logo, name and tagline are all approved offers «Crear producto» in one click.
+  const brandComplete = Boolean(brandId) && !productId
+    && [LOGO_AGENT_ID, NAME_AGENT_ID, TAGLINE_AGENT_ID].every((agentId) => deliverableStates.find((view) => view.agentId === agentId)?.state === 'approved');
+  const createProductCta = brandComplete && brandId ? (
+    <section aria-label="Siguiente paso" className="rounded-xl border border-orange-200 bg-orange-50 p-4 flex items-center justify-between gap-3">
+      <p className="text-sm text-neutral-700">Tu marca está lista. El siguiente paso es crear tu primer producto.</p>
+      <button type="button" onClick={() => void openNewProduct(brandId)} className="shrink-0 rounded-full bg-orange-500 px-4 py-2 text-sm font-medium text-white hover:bg-orange-600">
+        Crear producto
+      </button>
+    </section>
+  ) : undefined;
+
   const briefPanel = (
     <BriefPanel fields={briefFields} savingField={briefSaving} error={briefError} onSave={saveBriefField} />
   );
@@ -804,6 +819,9 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       )}
       {activeTab === 'create' && (
         <>
+          {!isMobile && !creationBlocked && (
+            <BrandTree initialBrands={initialBrands} initialConversations={initialConversations} currentConversationId={conversationId} refreshKey={`${conversationId}:${formModal ? 'form' : 'idle'}`} loadConversations={listConversationsAction} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} onNewProduct={(brandId) => void openNewProduct(brandId)} onEditBrand={(brandId) => void openEditBrand(brandId)} onEditProduct={(productId) => void openEditProduct(productId)} onArchiveBrand={handleArchiveBrand} />
+          )}
           <ChatPanel photoUpload={productId ? { busy: photoUploading || commandBusy, onFiles: (files) => void handlePhotoUpload(files) } : undefined} labUpload={productId ? { busy: labUploading || commandBusy, onFiles: (files) => void handleLabUpload(files) } : undefined} assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} context={context} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || productId || logoView || nameView || taglineView || labelView ? (
             <>
               {briefFields.length > 0 && (
@@ -820,6 +838,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
                 </>
               ) : (
                 <>
+                  {createProductCta}
                   {renderNameCommands()}
                   {renderTextCommands(LOGO_AGENT_ID, logoView, 'Logo', 'logo')}
                 </>
@@ -828,7 +847,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
           ) : undefined} conversationNotFound={notFound} liveConnectionLost={liveLost} creationBlocked={creationBlocked} conversationMenu={creationBlocked ? undefined :
             <ConversationMenu initialConversations={initialConversations} initialBrands={initialBrands} currentConversationId={conversationId} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} onNewProduct={(brandId) => void openNewProduct(brandId)} onEditBrand={(brandId) => void openEditBrand(brandId)} onEditProduct={(productId) => void openEditProduct(productId)} onArchiveBrand={handleArchiveBrand} loadConversations={listConversationsAction} />
           } />
-          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} labelControls={renderLabelCard()} socialControls={renderSocialCard()} brandAssetsPanel={renderBrandAssets()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
+          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} labelControls={renderLabelCard()} socialControls={renderSocialCard()} brandAssetsPanel={renderBrandAssets()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} nextStep={createProductCta} />
       </>
       )}
 

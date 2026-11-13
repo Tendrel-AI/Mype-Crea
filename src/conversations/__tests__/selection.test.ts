@@ -204,7 +204,7 @@ describe('resolveHomeConversation (KAN-25)', () => {
   it('without an id and with no resumable conversation (only legacy or foreign rows), shows the empty state and creates nothing (KAN-87)', async () => {
     mocks.store = seed().filter((row) => row.id !== ids.latest && row.id !== ids.older);
     const result = await resolveHomeConversation(undefined);
-    expect(result).toEqual({ kind: 'empty', brands: [{ brandId: BRAND, name: 'Café Andino', products: [{ productId: PRODUCT, name: 'Café molido' }] }] });
+    expect(result).toEqual({ kind: 'empty', brands: [{ brandId: BRAND, name: 'Café Andino', chatConversationId: null, products: [{ productId: PRODUCT, name: 'Café molido', chatConversationId: null }] }] });
     expect(mocks.brandCreate).not.toHaveBeenCalled();
     expect(mocks.startConversation).not.toHaveBeenCalled();
   });
@@ -262,7 +262,7 @@ describe('resolveHomeConversation (KAN-25)', () => {
     ];
     const results = [];
     for (const id of requested) results.push(await resolveHomeConversation(id));
-    const expected = { kind: 'not_found', message: CONVERSATION_NOT_FOUND_MESSAGE, conversations: OWN_LIST, brands: [{ brandId: BRAND, name: 'Café Andino', products: [{ productId: PRODUCT, name: 'Café molido' }] }] };
+    const expected = { kind: 'not_found', message: CONVERSATION_NOT_FOUND_MESSAGE, conversations: OWN_LIST, brands: [{ brandId: BRAND, name: 'Café Andino', chatConversationId: null, products: [{ productId: PRODUCT, name: 'Café molido', chatConversationId: null }] }] };
     for (const result of results) expect(result).toEqual(expected);
     expect(CONVERSATION_NOT_FOUND_MESSAGE).toBe('No encontramos esta conversación.');
     // Nothing of the foreign conversations is ever read.

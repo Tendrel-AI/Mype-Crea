@@ -8,7 +8,7 @@ import { type BrandAssets, type Tab } from './types';
 import { LandingPageRenderer } from './LandingPageRenderer';
 
 
-export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls, nameControls, labelControls, socialControls, briefPanel, brandAssetsPanel }: {
+export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls, nameControls, labelControls, socialControls, briefPanel, brandAssetsPanel, nextStep }: {
   assets: BrandAssets;
   processingAgents: Set<string>;
   step: number;
@@ -25,6 +25,8 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
   briefPanel?: React.ReactNode;
   /** D34: product conversations only. Read-only brand assets; replaces the logo/name command panels. */
   brandAssetsPanel?: React.ReactNode;
+  /** KAN-111: the «Crear producto» call to action of a completed brand chat. */
+  nextStep?: React.ReactNode;
 }) {
   const landingContent = assets.typedLandingPage ?? assets.landingPage;
   const hasLandingPage = Boolean(assets.typedLandingPage || assets.landingPage);
@@ -41,6 +43,7 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
       {/* Right Panel: Brand Dashboard */}
       <div className="hidden md:flex flex-1 flex-col bg-neutral-50 overflow-y-auto">
         <div className="p-8 max-w-4xl mx-auto w-full space-y-10">
+          {nextStep}
 
           {/* Progress Tracker — clickable; scrolls the right panel to the matching section. */}
           <div className="flex items-center justify-between relative">

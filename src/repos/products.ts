@@ -22,6 +22,8 @@ export interface ProductRow {
   readonly name: string | null;
   readonly attributes: Record<string, unknown>;
   readonly createdAt: string;
+  /** KAN-111: the product's own chat, set by `listActive`; null when it has none. */
+  readonly chatConversationId?: UUID | null;
 }
 
 export type ProductLimitRefusal = { readonly ok: false; readonly code: 'product_limit_reached'; readonly limit: number };
@@ -119,14 +121,18 @@ export function productsRepo(tenant: Tenant, user: User): ProductsRepo {
 
     async listActive() {
       return withTenantTransaction(tenant, user, async (tx) => {
-        const res = await tx.query<ProductRowDb>(
-          `SELECT p.id, p.brand_id, p.name, p.attributes, p.created_at FROM products p
+        const res = await tx.query<ProductRowDb & { chat_id: UUID | null }>(
+          `SELECT p.id, p.brand_id, p.name, p.attributes, p.created_at,
+                  (SELECT c.id FROM conversations c
+                    WHERE c.tenant_id = p.tenant_id AND c.product_id = p.id AND c.status = 'active'
+                    ORDER BY c.started_at, c.id LIMIT 1) AS chat_id
+             FROM products p
              JOIN brands b ON b.tenant_id = p.tenant_id AND b.id = p.brand_id AND b.status = 'active'
             WHERE p.tenant_id = $1 AND p.user_id = $2
             ORDER BY p.created_at, p.id`,
           [tenant.id, user.id],
         );
-        return res.rows.map(toRow);
+        return res.rows.map((row) => ({ ...toRow(row), chatConversationId: row.chat_id }));
       });
     },
   };
