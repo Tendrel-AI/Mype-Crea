@@ -13,6 +13,8 @@ export const USAGE_POLICY = Object.freeze({
   userImagesPerDay: 15,
   /** Characters (Unicode code points) per user chat message. */
   maxInputChars: 4000,
+  /** At or below this balance (USD) the tenant admin is told to ask for a recharge (F21). */
+  lowBalanceUsd: 5,
   /** Calendar month/day boundaries are taken in this zone (pilot users are in Peru). */
   timeZone: 'America/Lima',
 });
