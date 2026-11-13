@@ -34,7 +34,7 @@ describe('proxy.ts matcher and the health probes', () => {
 
   it('keeps the AuthKit allowlist limited to the OAuth flow', () => {
     expect(authkit.authkitMiddleware).toHaveBeenCalledWith({
-      middlewareAuth: { enabled: true, unauthenticatedPaths: ['/login', '/callback'] },
+      middlewareAuth: { enabled: true, unauthenticatedPaths: ['/login', '/callback', '/auth/callback', '/sign-in', '/sign-up'] },
     });
   });
 });

@@ -6,6 +6,9 @@
 import { resolveIdentity, type ResolvedIdentity } from '../auth/resolve-identity';
 import { repos } from '../repos';
 import { CURRENT_TERMS_VERSION } from './terms';
+import { loggerFor } from '../services/logger';
+
+const log = loggerFor('consent.gate');
 
 export type TermsStatus = 'accepted' | 'required' | 'unavailable';
 
@@ -14,7 +17,8 @@ export async function checkCurrentTerms(identity: ResolvedIdentity): Promise<Ter
   try {
     const accepted = await repos(identity.tenant, identity.user).termsAcceptances.hasAccepted(CURRENT_TERMS_VERSION);
     return accepted ? 'accepted' : 'required';
-  } catch {
+  } catch (error) {
+    log.error({ err: error instanceof Error ? error.message : String(error), tenantId: identity.tenant.id }, 'consent.terms_lookup_failed');
     return 'unavailable';
   }
 }
@@ -24,7 +28,8 @@ export async function currentTermsStatus(): Promise<TermsStatus> {
   let identity: ResolvedIdentity;
   try {
     identity = await resolveIdentity();
-  } catch {
+  } catch (error) {
+    log.error({ err: error instanceof Error ? error.message : String(error) }, 'consent.identity_failed');
     return 'unavailable';
   }
   return checkCurrentTerms(identity);

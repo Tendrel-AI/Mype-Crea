@@ -6,11 +6,15 @@ import { authkitMiddleware } from '@workos-inc/authkit-nextjs';
 // `/callback` is the WorkOS OAuth redirect target (app/callback/route.ts in
 // App Router resolves to /callback — the `app/` prefix is the directory, not
 // part of the URL). It must be unauthenticated, otherwise the middleware
-// loops the user back to /login during the OAuth handshake.
+// loops the user back to /login during the OAuth handshake. `/auth/callback`
+// serves the same handler for environments whose redirect URI uses that path.
+// `/sign-in` (the
+// WorkOS Initiate login URI) and `/sign-up` start the hosted AuthKit flow and
+// must be reachable without a session as well.
 export default authkitMiddleware({
   middlewareAuth: {
     enabled: true,
-    unauthenticatedPaths: ['/login', '/callback'],
+    unauthenticatedPaths: ['/login', '/callback', '/auth/callback', '/sign-in', '/sign-up'],
   },
 });
 

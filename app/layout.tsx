@@ -1,4 +1,5 @@
 import type {Metadata} from 'next';
+import { AuthKitProvider } from '@workos-inc/authkit-nextjs/components';
 import './globals.css'; // Global styles
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { DevRoleSwitcher } from '../components/DevRoleSwitcher';
@@ -23,10 +24,12 @@ export default async function RootLayout({children}: {children: React.ReactNode}
         />
       </head>
       <body suppressHydrationWarning>
-        <ErrorBoundary>
-          {children}
-        </ErrorBoundary>
-        {roleSwitcher && <DevRoleSwitcher state={roleSwitcher} />}
+        <AuthKitProvider>
+          <ErrorBoundary>
+            {children}
+          </ErrorBoundary>
+          {roleSwitcher && <DevRoleSwitcher state={roleSwitcher} />}
+        </AuthKitProvider>
       </body>
     </html>
   );

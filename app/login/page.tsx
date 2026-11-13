@@ -1,4 +1,4 @@
-import { getSignInUrl, getSignUpUrl, withAuth } from '@workos-inc/authkit-nextjs';
+import { withAuth } from '@workos-inc/authkit-nextjs';
 import { redirect } from 'next/navigation';
 import { Sparkles } from 'lucide-react';
 import { requireGlobalAdmin, requireGlobalMfa } from '../../src/auth/resolve-identity';
@@ -15,8 +15,10 @@ export default async function LoginPage() {
     }
     redirect('/');
   }
-  const signInUrl = await getSignInUrl();
-  const signUpUrl = await getSignUpUrl();
+  // The AuthKit URLs set a PKCE cookie, so they are built in the /sign-in and
+  // /sign-up route handlers rather than during this render.
+  const signInUrl = '/sign-in';
+  const signUpUrl = '/sign-up';
 
   return (
     <div className="flex h-screen items-center justify-center bg-neutral-50 text-neutral-900 font-sans">
