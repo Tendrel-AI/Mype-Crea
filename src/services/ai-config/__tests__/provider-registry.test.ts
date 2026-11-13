@@ -15,7 +15,7 @@ const profile = (overrides: Partial<ModelProfile> = {}): ModelProfile => ({
   ...overrides,
 });
 
-function fakeProvider(create: ReturnType<typeof vi.fn>): ILLMProvider {
+function fakeProvider(create: ResolvedModel['client']['chat']['completions']['create']): ILLMProvider {
   const client: ResolvedModel['client'] = {
     chat: { completions: { create } },
   };

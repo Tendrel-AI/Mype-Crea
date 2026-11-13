@@ -15,10 +15,10 @@ export async function withGlobalTransaction<T>(
   try {
     await client.query('BEGIN');
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-    log.debug({ mode: 'global' }, 'tx.begin');
+    log.trace({ mode: 'global' }, 'tx.begin');
     const result = await fn(client);
     await client.query('COMMIT');
-    log.debug({ mode: 'global', durationMs: Date.now() - startedAt }, 'tx.commit');
+    log.trace({ mode: 'global', durationMs: Date.now() - startedAt }, 'tx.commit');
     return result;
   } catch (error) {
     try {

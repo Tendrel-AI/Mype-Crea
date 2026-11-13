@@ -41,13 +41,13 @@ export async function withTenantTransaction<T>(
     if (user) {
       await client.query(`SELECT set_config('app.user_id', $1, true)`, [user.id]);
     }
-    log.debug(
+    log.trace( // fires ~1x/s per open tab (SSE poll); trace keeps debug readable
       { tenantId: tenant.id, userId: user?.id, mode: 'tenant' },
       'tx.begin',
     );
     const result = await fn(client);
     await client.query('COMMIT');
-    log.debug(
+    log.trace(
       { tenantId: tenant.id, userId: user?.id, mode: 'tenant', durationMs: Date.now() - t0 },
       'tx.commit',
     );

@@ -13,6 +13,9 @@ CLAUDE.local.md
 /claude/
 /.claude/
 /docs/agents/
+/docs/specs/
 /docs/capstone/
 
 /.data/
+.env.local.bak
+.env.local
