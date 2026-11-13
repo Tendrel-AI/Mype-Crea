@@ -11,7 +11,7 @@
  */
 import type { UsageRepo, UsageRequest } from '../../repos/usage';
 import { loggerFor } from '../logger';
-import { usageLimitMessage, type UsageDenialReason } from './policy';
+import { usageLimitMessage, type ActualCost, type UsageDenialReason } from './policy';
 
 const log = loggerFor('service.usage-gateway');
 
@@ -29,8 +29,8 @@ export class UsageLimitError extends Error {
 export interface GatedCall<T> {
   readonly request: UsageRequest;
   readonly call: () => Promise<T>;
-  /** Real cost of a successful call. */
-  readonly actualCostUsd: (result: T) => number;
+  /** Real cost of a successful call, with where it came from (provider-reported, estimate, flat price). */
+  readonly actualCost: (result: T) => ActualCost;
   /** Cost to record when the call throws. */
   readonly failureCostUsd: (error: unknown) => number;
 }
@@ -44,32 +44,32 @@ export async function runWithUsage<T>(ledger: UsageLedger, gated: GatedCall<T>):
   }
   const reservationId = verdict.reservationId!;
   // A lost settlement leaves the row `reserved` at its estimate: conservative, never fatal.
-  const settle = async (compute: () => number, outcome: 'succeeded' | 'failed') => {
-    const actualCostUsd = safeCost(compute, gated.request.estimatedCostUsd);
+  const settle = async (compute: () => ActualCost, outcome: 'succeeded' | 'failed') => {
+    const { usd: actualCostUsd, source: costSource } = safeCost(compute, gated.request.estimatedCostUsd);
     try {
-      await ledger.settle({ reservationId, actualCostUsd, outcome });
-      child.info({ actualCostUsd, outcome }, 'usage.settled');
+      await ledger.settle({ reservationId, actualCostUsd, costSource, outcome });
+      child.debug({ actualCostUsd, costSource, outcome }, 'usage.settled');
     } catch (err) {
-      child.error({ err, actualCostUsd, outcome }, 'usage.settle_failed');
+      child.error({ err, actualCostUsd, costSource, outcome }, 'usage.settle_failed');
     }
   };
   let result: T;
   try {
     result = await gated.call();
   } catch (error) {
-    await settle(() => gated.failureCostUsd(error), 'failed');
+    await settle(() => ({ usd: gated.failureCostUsd(error), source: 'estimate' }), 'failed');
     throw error;
   }
-  await settle(() => gated.actualCostUsd(result), 'succeeded');
+  await settle(() => gated.actualCost(result), 'succeeded');
   return result;
 }
 
-function safeCost(compute: () => number, fallback: number): number {
+function safeCost(compute: () => ActualCost, fallback: number): ActualCost {
   try {
-    const value = compute();
-    return Number.isFinite(value) && value >= 0 ? value : fallback;
+    const cost = compute();
+    return Number.isFinite(cost.usd) && cost.usd >= 0 ? cost : { usd: fallback, source: 'estimate' };
   } catch {
-    return fallback;
+    return { usd: fallback, source: 'estimate' };
   }
 }
 

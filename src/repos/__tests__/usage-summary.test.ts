@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { summarizeUsage } from '../usage-summary';
 
-const budget = { committedUsd: 4.5, periodStart: '2026-11-01T05:00:00.000Z' };
+const budget = { balanceUsd: 30, reservedUsd: 4.5 };
 
 function aggregate(overrides: Partial<Parameters<typeof summarizeUsage>[0]> = {}) {
   return {
@@ -17,16 +17,16 @@ function aggregate(overrides: Partial<Parameters<typeof summarizeUsage>[0]> = {}
 }
 
 describe('summarizeUsage', () => {
-  it('reports complete cost accounting and the real monthly budget status (KAN-43)', () => {
+  it('reports complete cost accounting and the credit status (D36)', () => {
     expect(summarizeUsage(aggregate(), budget)).toMatchObject({
       costAccountingStatus: 'complete',
-      budgetStatus: { state: 'within_budget', limitUsd: 30, committedUsd: 4.5, remainingUsd: 25.5, periodStart: budget.periodStart },
+      budgetStatus: { state: 'within_budget', balanceUsd: 30, reservedUsd: 4.5, availableUsd: 25.5 },
       knownCost: 0.25,
     });
-    expect(summarizeUsage(aggregate(), { ...budget, committedUsd: 30 }).budgetStatus).toMatchObject({ state: 'exhausted', remainingUsd: 0 });
-    // Concurrent reservations can settle a little above the cap; remaining never goes negative.
-    expect(summarizeUsage(aggregate(), { ...budget, committedUsd: 30.2 }).budgetStatus).toMatchObject({ state: 'exhausted', remainingUsd: 0 });
-    expect(summarizeUsage(aggregate(), { ...budget, committedUsd: 29.7 }).budgetStatus.remainingUsd).toBe(0.3);
+    expect(summarizeUsage(aggregate(), { balanceUsd: 4.5, reservedUsd: 4.5 }).budgetStatus).toMatchObject({ state: 'exhausted', availableUsd: 0 });
+    // A settlement above the estimate can leave a negative balance: still exhausted, shown as is.
+    expect(summarizeUsage(aggregate(), { balanceUsd: -0.2, reservedUsd: 0 }).budgetStatus).toMatchObject({ state: 'exhausted', availableUsd: -0.2 });
+    expect(summarizeUsage(aggregate(), { balanceUsd: 30, reservedUsd: 29.7 }).budgetStatus.availableUsd).toBe(0.3);
   });
 
   it('distinguishes partial and wholly unknown cost accounting', () => {

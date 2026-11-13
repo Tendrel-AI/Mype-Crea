@@ -1,9 +1,14 @@
 import { createHash } from 'node:crypto';
+import { defaultTenantKeyService, type TenantKeyService } from '../openrouter/tenant-keys';
+import { loggerFor } from '../logger';
 import type { ILLMProvider, ModelPurpose, ProviderModelIds, ResolvedModel } from '../llm/types';
 import { AnthropicProvider } from '../llm/anthropic-provider';
 import { OpenRouterProvider } from '../llm/openrouter-provider';
 import { isAnthropicModelId, isOpenRouterModelId } from '../llm/model-config';
 import type { ModelProfile, Purpose } from './manifest';
+
+const log = loggerFor('service.provider-registry');
+const TENANT_KEY_TTL_MS = 60_000;
 
 export type ProfileUnavailableReason = 'provider_disabled' | 'credential_missing' | 'model_unavailable' | 'model_unsupported' | 'capability_mismatch';
 
@@ -55,12 +60,35 @@ export function isProviderEnvEnabled(provider: ModelProfile['provider']): boolea
 
 export class ProviderRegistry {
   private readonly clients = new Map<string, ILLMProvider>();
+  private readonly tenantKeys = new Map<string, { key: string | undefined; at: number }>();
 
   constructor(
     private readonly credentialResolver: CredentialResolver = resolvePlatformCredential,
     private readonly providerFactory: ProviderFactory = createProvider,
     private readonly capabilityResolver: (profile: ModelProfile) => TrustedModelCapabilities | undefined = trustedCapabilities,
+    private readonly tenantKeyService: () => Pick<TenantKeyService, 'resolveKey' | 'scheduleSync'> | null = defaultTenantKeyService,
   ) {}
+
+  /**
+   * D36: load the tenant's OpenRouter sub-key (when it has one) so the sync `resolve` can use it.
+   * Fails open to the platform key: attribution is lost, the ledger still debits the tenant.
+   */
+  async warmTenantKey(tenantId: string): Promise<void> {
+    const cached = this.tenantKeys.get(tenantId);
+    if (cached && Date.now() - cached.at < TENANT_KEY_TTL_MS) return;
+    let key: string | undefined;
+    try {
+      key = await this.tenantKeyService()?.resolveKey(tenantId);
+    } catch (err) {
+      log.error({ tenantId, err: err instanceof Error ? err.name : 'unknown' }, 'tenant_key.resolve_failed');
+    }
+    this.tenantKeys.set(tenantId, { key, at: Date.now() });
+  }
+
+  /** After a provider call: keep the tenant's key limit mirrored to its balance (throttled, never throws). */
+  noteCall(tenantId: string, provider: ModelProfile['provider']): void {
+    if (provider === 'openrouter' && this.tenantKeys.get(tenantId)?.key) this.tenantKeyService()?.scheduleSync(tenantId);
+  }
 
   assertProfileSupported(profile: ModelProfile, purpose: Purpose): void {
     if (profile.purpose !== purpose) throw new ProfileUnavailableError('capability_mismatch');
@@ -90,7 +118,8 @@ export class ProviderRegistry {
     if (profile.credentialRef !== ALLOWED_CREDENTIAL_REFS[profile.provider]) {
       throw new ProfileUnavailableError('credential_missing');
     }
-    const apiKey = this.credentialResolver(profile.credentialRef)?.trim();
+    const tenantKey = profile.provider === 'openrouter' ? this.tenantKeys.get(context.tenantId)?.key : undefined;
+    const apiKey = (tenantKey ?? this.credentialResolver(profile.credentialRef))?.trim();
     if (!apiKey) throw new ProfileUnavailableError('credential_missing');
 
     const keyHash = createHash('sha256').update(apiKey).digest('hex');

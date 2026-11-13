@@ -174,7 +174,7 @@ describe('chatAction durable turn boundary', () => {
     });
 
     it.each([
-      ['tenant_budget', 'Alcanzaste el límite de uso de este mes. Avísale al administrador de tu organización.'],
+      ['tenant_credits', 'Tu organización debe recargar créditos. Avísale al administrador de tu organización.'],
       ['user_llm_hourly', 'Alcanzaste el límite de mensajes por hora. Espera un momento e inténtalo de nuevo.'],
       ['input_too_long', 'Tu mensaje es demasiado largo. Escribe hasta 4000 caracteres.'],
     ])('a %s denial returns the Spanish message and leaves no turn and no model call', async (reason, message) => {

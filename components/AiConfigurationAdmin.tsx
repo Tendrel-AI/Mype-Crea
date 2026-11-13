@@ -57,7 +57,7 @@ type AdminData = {
     knownCost: number;
     unknownCostAttempts: number;
     costAccountingStatus: 'no_attempts' | 'complete' | 'partial' | 'unknown';
-    budgetStatus: { state: 'within_budget' | 'exhausted'; limitUsd: number; committedUsd: number; remainingUsd: number; periodStart: string };
+    budgetStatus: { state: 'within_budget' | 'exhausted'; balanceUsd: number; reservedUsd: number; availableUsd: number };
   } | null;
   turns: Array<{ id: string; conversationId: string; stage: string; failureCategory: string | null; createdAt: string }>;
 };
@@ -201,7 +201,7 @@ export default function AiConfigurationAdmin({ initialData }: { initialData: Rec
           <h2 className="font-semibold">Uso y presupuesto</h2>
           {data.usage ? <>
             <p className="text-sm text-slate-600">
-              Presupuesto de la organización este mes: USD {data.usage.budgetStatus.committedUsd.toFixed(2)} gastados o reservados de USD {data.usage.budgetStatus.limitUsd.toFixed(2)}; quedan USD {data.usage.budgetStatus.remainingUsd.toFixed(2)}
+              Créditos de la organización: USD {data.usage.budgetStatus.balanceUsd.toFixed(2)} de saldo, USD {data.usage.budgetStatus.reservedUsd.toFixed(2)} reservados; disponibles USD {data.usage.budgetStatus.availableUsd.toFixed(2)}
               {data.usage.budgetStatus.state === 'exhausted' ? ' (agotado: se rechazan nuevas llamadas a modelos e imágenes)' : ''}.
               {' '}Estado del costo: {data.usage.costAccountingStatus === 'complete' ? 'completo' : data.usage.costAccountingStatus === 'partial' ? 'parcial' : data.usage.costAccountingStatus === 'unknown' ? 'desconocido' : 'sin intentos'}.
             </p>

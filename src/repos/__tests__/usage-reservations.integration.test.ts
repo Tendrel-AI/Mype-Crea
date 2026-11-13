@@ -49,12 +49,12 @@ SUITE('KAN-43 usage reservations (integration)', () => {
     return { tenant: { id: tenantId }, member: await mk('member'), other: await mk('member'), admin: await mk('admin') };
   }
 
-  /** Spend already settled this month, inserted by the owner (bypasses the gateway on purpose). */
-  async function seedSettled(tenant: Tenant, user: User, usd: number): Promise<void> {
+  /** Credits the tenant holds, inserted by the owner (the product path is the `/platform` recharge). */
+  async function seedCredits(tenant: Tenant, usd: number): Promise<void> {
     await owner.query(
-      `INSERT INTO usage_reservations (tenant_id, user_id, kind, status, estimated_cost_usd, actual_cost_usd, outcome, settled_at, pricing_version)
-       VALUES ($1, $2, 'llm', 'settled', $3, $3, 'succeeded', now(), 'seed')`,
-      [tenant.id, user.id, usd],
+      `INSERT INTO tenant_credit_entries (tenant_id, kind, amount_usd, source, idempotency_key, actor_workos_user_id)
+       VALUES ($1, 'recharge', $2, 'manual', $3, 'seed')`,
+      [tenant.id, usd, `seed:${randomUUID()}`],
     );
   }
 
@@ -81,7 +81,7 @@ SUITE('KAN-43 usage reservations (integration)', () => {
             await new Promise((resolve) => setTimeout(resolve, 5));
             return 'ok';
           },
-          actualCostUsd: () => estimatedCostUsd,
+          actualCost: () => ({ usd: estimatedCostUsd, source: 'estimate' }),
           failureCostUsd: () => estimatedCostUsd,
         }),
       ),
@@ -126,18 +126,19 @@ SUITE('KAN-43 usage reservations (integration)', () => {
 
   it('concurrency: 20 parallel calls near the budget run the provider exactly as often as the budget allows', async () => {
     const t = await createTenant();
-    await seedSettled(t.tenant, t.other, USAGE_POLICY.tenantMonthlyBudgetUsd - 1);
+    await seedCredits(t.tenant, 1);
     const { providerCalls, denials } = await parallelCalls(t.tenant, t.member, 20, 'llm', 0.25);
     expect(providerCalls).toBe(4);
     expect(denials).toHaveLength(16);
-    expect(new Set(denials.map((d) => d.reason))).toEqual(new Set(['tenant_budget']));
+    expect(new Set(denials.map((d) => d.reason))).toEqual(new Set(['tenant_credits']));
     expect(await statusCounts(t.tenant)).toEqual({ settled: 4, denied: 16 });
     const summary = await repos(t.tenant, t.admin, adminActor(t.admin)).aiTurns.adminGetUsage();
-    expect(summary.budgetStatus).toMatchObject({ state: 'exhausted', limitUsd: 30, committedUsd: 30, remainingUsd: 0 });
+    expect(summary.budgetStatus).toMatchObject({ state: 'exhausted', balanceUsd: 0, reservedUsd: 0, availableUsd: 0 });
   });
 
   it('concurrency: 20 parallel images for one user stop at the daily limit of 15', async () => {
     const t = await createTenant();
+    await seedCredits(t.tenant, 10);
     const { providerCalls, denials } = await parallelCalls(t.tenant, t.member, 20, 'image', 0.08);
     expect(providerCalls).toBe(USAGE_POLICY.userImagesPerDay);
     expect(denials.map((d) => d.reason)).toEqual(Array(5).fill('user_image_daily'));
@@ -147,6 +148,7 @@ SUITE('KAN-43 usage reservations (integration)', () => {
 
   it('concurrency: 65 parallel LLM calls for one user stop at the hourly limit of 60', async () => {
     const t = await createTenant();
+    await seedCredits(t.tenant, 10);
     const { providerCalls, denials } = await parallelCalls(t.tenant, t.member, 65, 'llm', 0.001);
     expect(providerCalls).toBe(USAGE_POLICY.userLlmCallsPerHour);
     expect(denials.map((d) => d.reason)).toEqual(Array(5).fill('user_llm_hourly'));
@@ -154,12 +156,13 @@ SUITE('KAN-43 usage reservations (integration)', () => {
 
   it('reconciles: a failed call settles at its failure cost, once, and only by its owner', async () => {
     const t = await createTenant();
+    await seedCredits(t.tenant, 30);
     const ledger = repos(t.tenant, t.member).usage;
     await expect(
       runWithUsage(ledger, {
         request: { kind: 'llm', estimatedCostUsd: 0.5 },
         call: async () => { throw new Error('provider rejected'); },
-        actualCostUsd: () => 0.5,
+        actualCost: () => ({ usd: 0.5, source: 'estimate' }),
         failureCostUsd: () => 0,
       }),
     ).rejects.toThrow('provider rejected');
@@ -168,19 +171,23 @@ SUITE('KAN-43 usage reservations (integration)', () => {
       [t.tenant.id],
     );
     expect(row.rows[0]).toMatchObject({ status: 'settled', actual_cost_usd: '0.000000', outcome: 'failed' });
-    expect(await ledger.settle({ reservationId: row.rows[0].id, actualCostUsd: 9, outcome: 'succeeded' })).toBe(false);
+    expect(await ledger.settle({ reservationId: row.rows[0].id, actualCostUsd: 9, costSource: 'estimate', outcome: 'succeeded' })).toBe(false);
 
     const held = await ledger.reserve({ kind: 'llm', estimatedCostUsd: 0.1 });
     expect(held.allowed).toBe(true);
     // Another member of the same tenant cannot settle it (RLS: own rows only).
-    expect(await repos(t.tenant, t.other).usage.settle({ reservationId: held.reservationId!, actualCostUsd: 0, outcome: 'succeeded' })).toBe(false);
-    expect(await ledger.settle({ reservationId: held.reservationId!, actualCostUsd: 0.04, outcome: 'succeeded' })).toBe(true);
+    expect(await repos(t.tenant, t.other).usage.settle({ reservationId: held.reservationId!, actualCostUsd: 0, costSource: 'estimate', outcome: 'succeeded' })).toBe(false);
+    expect(await ledger.settle({ reservationId: held.reservationId!, actualCostUsd: 0.04, costSource: 'estimate', outcome: 'succeeded' })).toBe(true);
     const summary = await repos(t.tenant, t.admin, adminActor(t.admin)).aiTurns.adminGetUsage();
-    expect(summary.budgetStatus).toMatchObject({ state: 'within_budget', committedUsd: 0.04, remainingUsd: 29.96 });
+    expect(summary.budgetStatus).toMatchObject({ state: 'within_budget', balanceUsd: 29.96, reservedUsd: 0, availableUsd: 29.96 });
+    // The settlement wrote exactly one consumption entry (idempotent on the reservation).
+    const entries = await owner.query(`SELECT amount_usd::text FROM tenant_credit_entries WHERE tenant_id = $1 AND kind = 'consumption'`, [t.tenant.id]);
+    expect(entries.rows).toEqual([{ amount_usd: '-0.040000' }]);
   });
 
   it('preflight writes nothing when allowed and records a denial when not', async () => {
     const t = await createTenant();
+    await seedCredits(t.tenant, 1);
     const ledger = repos(t.tenant, t.member).usage;
     expect(await ledger.preflight({ kind: 'llm', calls: 2, estimatedCostUsd: 0, inputChars: 10 })).toEqual({ allowed: true, reservationId: null });
     expect(await statusCounts(t.tenant)).toEqual({});
@@ -189,11 +196,11 @@ SUITE('KAN-43 usage reservations (integration)', () => {
     expect(await statusCounts(t.tenant)).toEqual({ denied: 1 });
   });
 
-  it('isolation: one tenant exhausting its budget neither blocks nor exposes another tenant', async () => {
+  it('isolation: one tenant without credits neither blocks nor exposes another tenant', async () => {
     const a = await createTenant();
     const b = await createTenant();
-    await seedSettled(a.tenant, a.member, USAGE_POLICY.tenantMonthlyBudgetUsd);
-    expect(await repos(a.tenant, a.member).usage.reserve({ kind: 'llm', estimatedCostUsd: 0.01 })).toMatchObject({ allowed: false, reason: 'tenant_budget' });
+    await seedCredits(b.tenant, 1);
+    expect(await repos(a.tenant, a.member).usage.reserve({ kind: 'llm', estimatedCostUsd: 0.01 })).toMatchObject({ allowed: false, reason: 'tenant_credits' });
     expect((await repos(b.tenant, b.member).usage.reserve({ kind: 'llm', estimatedCostUsd: 0.01 })).allowed).toBe(true);
     const visible = await getPool().connect();
     try {
