@@ -1,9 +1,10 @@
 /**
- * KAN-41 (SYS-06) tenant account management against a disposable PostgreSQL database, through
- * the real `TenantAccountService` + `tenantAccountsRepo` as app_user, with a fake WorkOS client.
- * Proves the goal flow (provision → listed → deactivate → identity fails closed → reactivate,
- * one audit row each), every refusal changing nothing, the concurrent last-admin race, and the
- * grants/RLS on `users` and `tenant_account_audit_events`. DATABASE_URL (owner) only seeds and
+ * KAN-41 / D52 tenant account management against a disposable PostgreSQL database, through
+ * the real `TenantAccountService` + `tenantAccountsRepo` + `identityRepo` as app_user, with a
+ * fake WorkOS client. Proves the goal flow (WorkOS-only provision → first sign-in mirrors the row
+ * through `app.sync_member` → deactivate blocks the mirror → reactivate), the sync function's
+ * rules (role sync, verified-email relink, never activating an inactive row, no cross-tenant
+ * effect), and the grants/RLS on `users` and `tenant_account_audit_events`. DATABASE_URL (owner) only seeds and
  * inspects. Refuses to run unless both URLs point at the same database ending in _ci or _test.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -13,7 +14,7 @@ import { closePool, getPool } from '../../db/pool';
 import { withTenantTransaction } from '../../db/with-transaction';
 import { repos, systemRepos, type Tenant, type User } from '..';
 import { NotTenantAdminError } from '../tenant-accounts';
-import { TenantAccountService, type WorkosAccountsClient } from '../../services/tenant-accounts';
+import { TenantAccountService, type WorkosAccountsClient, type WorkosMember } from '../../services/tenant-accounts';
 
 vi.mock('@workos-inc/authkit-nextjs', () => ({ getWorkOS: vi.fn(() => { throw new Error('real WorkOS must not be called'); }) }));
 
@@ -35,15 +36,21 @@ function assertDisposableTarget(ownerUrl: string, appUrl: string): void {
 
 class FakeWorkos implements WorkosAccountsClient {
   users = new Map<string, string>();
-  memberships = new Map<string, 'active' | 'inactive'>();
-  calls = 0;
+  members = new Map<string, WorkosMember>();
+  sessionsRevoked: string[] = [];
   async ensureUser(email: string) {
-    this.calls++;
     if (!this.users.has(email)) this.users.set(email, `user_${randomUUID().replace(/-/g, '')}`);
     return { id: this.users.get(email)! };
   }
-  async activateMembership(org: string, userId: string) { this.calls++; this.memberships.set(`${org}:${userId}`, 'active'); }
-  async deactivateMembership(org: string, userId: string) { this.calls++; this.memberships.set(`${org}:${userId}`, 'inactive'); }
+  async listMemberships() { return [...this.members.values()]; }
+  async activateMembership(_org: string, userId: string, role: 'admin' | 'member') {
+    const email = [...this.users].find(([, id]) => id === userId)?.[0] ?? `${userId}@ejemplo.pe`;
+    const existing = this.members.get(userId);
+    this.members.set(userId, { workosUserId: userId, email, role: existing?.role ?? role, status: 'active', createdAt: new Date().toISOString() });
+    return existing?.status === 'active' ? 'already_active' as const : existing ? 'reactivated' as const : 'created' as const;
+  }
+  async deactivateMembership(_org: string, userId: string) { this.members.set(userId, { ...this.members.get(userId)!, status: 'inactive' }); }
+  async revokeSessions(_org: string, userId: string) { this.sessionsRevoked.push(userId); }
 }
 
 interface Fixture { tenant: Tenant; org: string; admin: User; member: User }
@@ -67,7 +74,7 @@ SUITE('KAN-41 tenant accounts (integration)', () => {
   }
 
   const service = (f: Fixture, actor: User, workos: WorkosAccountsClient) =>
-    ({ svc: new TenantAccountService(repos(f.tenant, actor).tenantAccounts, workos), actor: { tenant: f.tenant, user: actor, organizationId: f.org } });
+    ({ svc: new TenantAccountService(repos(f.tenant, actor).tenantAccounts, workos), actor: { tenant: f.tenant, user: actor, workosUserId: 'user_actor', organizationId: f.org } });
 
   const usersOf = async (tenantId: string) =>
     (await owner.query(`SELECT id, role, status FROM users WHERE tenant_id = $1 ORDER BY id`, [tenantId])).rows;
@@ -111,107 +118,77 @@ SUITE('KAN-41 tenant accounts (integration)', () => {
     await expect(owner.query(`UPDATE users SET status = 'paused' WHERE id = $1`, [f.member.id])).rejects.toMatchObject({ code: '23514' });
   });
 
-  it('goal: provision → listed → deactivate (identity fails closed) → reactivate, one audit row per step', async () => {
+  it('goal: WorkOS-only provision → first sign-in mirrors the row → deactivate blocks → reactivate', async () => {
     const f = await createTenant();
     const workos = new FakeWorkos();
     const { svc, actor } = service(f, f.admin, workos);
     const identity = systemRepos(f.tenant).identity!;
 
     expect(await svc.provision(actor, { email: 'Ana@Ejemplo.pe', reason: 'Piloto' })).toMatchObject({ ok: true, code: 'provisioned' });
-    const listed = await repos(f.tenant, f.admin).tenantAccounts.listMembers();
-    const ana = listed.find((m) => m.email === 'ana@ejemplo.pe')!;
-    expect(ana).toMatchObject({ role: 'member', status: 'active', workosUserId: workos.users.get('ana@ejemplo.pe') });
-    expect(await identity.resolveMember(f.org, ana.workosUserId)).toEqual({ userId: ana.id, role: 'member' });
-    expect(await svc.provision(actor, { email: 'ana@ejemplo.pe' })).toMatchObject({ ok: true, code: 'already_active' });
+    const anaId = workos.users.get('ana@ejemplo.pe')!;
+    expect((await usersOf(f.tenant.id)).length).toBe(2); // no local insert at provisioning time
+    expect(await identity.resolveMember(f.org, anaId)).toBeUndefined();
 
-    expect(await svc.deactivate(actor, { userId: ana.id })).toEqual({ ok: true, code: 'deactivated', message: 'Desactivaste la cuenta de ana@ejemplo.pe. Sus conversaciones se conservan.' });
-    expect(await identity.resolveMember(f.org, ana.workosUserId)).toBeUndefined();
-    expect(workos.memberships.get(`${f.org}:${ana.workosUserId}`)).toBe('inactive');
+    const first = await identity.syncMember({ workosUserId: anaId, email: 'Ana@Ejemplo.pe', emailVerified: true, role: 'member' });
+    expect(first).toMatchObject({ outcome: 'created', role: 'member', status: 'active' });
+    expect(await identity.resolveMember(f.org, anaId)).toMatchObject({ userId: first!.userId, role: 'member', status: 'active' });
+    expect((await owner.query(`SELECT email FROM users WHERE id = $1`, [first!.userId])).rows[0].email).toBe('ana@ejemplo.pe');
 
-    expect(await svc.reactivate(actor, { userId: ana.id })).toMatchObject({ ok: true, code: 'reactivated' });
-    expect(await identity.resolveMember(f.org, ana.workosUserId)).toEqual({ userId: ana.id, role: 'member' });
-    expect(workos.memberships.get(`${f.org}:${ana.workosUserId}`)).toBe('active');
+    workos.members.set('user_actor', { workosUserId: 'user_actor', email: 'a@x.pe', role: 'admin', status: 'active', createdAt: '' });
+    workos.members.set('user_actor2', { workosUserId: 'user_actor2', email: 'b@x.pe', role: 'admin', status: 'active', createdAt: '' });
+    expect(await svc.deactivate(actor, { workosUserId: anaId })).toMatchObject({ ok: true, code: 'deactivated' });
+    expect(await identity.resolveMember(f.org, anaId)).toMatchObject({ status: 'inactive' });
+    expect(workos.sessionsRevoked).toEqual([anaId]);
+    // Sync never reactivates a blocked row.
+    expect(await identity.syncMember({ workosUserId: anaId, email: 'ana@ejemplo.pe', emailVerified: true, role: 'admin' }))
+      .toMatchObject({ outcome: 'existing', role: 'member', status: 'inactive' });
 
-    expect(await auditOf(f.tenant.id)).toEqual([
-      { action: 'member.provision', target_user_id: ana.id, before_status: null, after_status: 'active', outcome: 'success', outcome_code: null },
-      { action: 'member.deactivate', target_user_id: ana.id, before_status: 'active', after_status: 'inactive', outcome: 'success', outcome_code: null },
-      { action: 'member.reactivate', target_user_id: ana.id, before_status: 'inactive', after_status: 'active', outcome: 'success', outcome_code: null },
+    expect(await svc.reactivate(actor, { workosUserId: anaId })).toMatchObject({ ok: true, code: 'reactivated' });
+    expect(await identity.resolveMember(f.org, anaId)).toMatchObject({ status: 'active' });
+    expect((await auditOf(f.tenant.id)).map((r) => [r.action, r.outcome])).toEqual([
+      ['member.provision', 'success'], ['member.deactivate', 'success'], ['member.reactivate', 'success'],
     ]);
   });
 
-  it('a member is refused on every operation and nothing changes', async () => {
+  it('app.sync_member: role sync, verified-email relink, unverified refusal, inactive never relinked', async () => {
+    const f = await createTenant();
+    const identity = systemRepos(f.tenant).identity!;
+    const memberWos = await workosIdOf(f.member.id);
+    // Role sync on an active row.
+    expect(await identity.syncMember({ workosUserId: memberWos, email: 'x@ejemplo.pe', emailVerified: false, role: 'admin' })).toMatchObject({ outcome: 'existing', role: 'admin', status: 'active' });
+    // Relink: same tenant, verified email, new WorkOS id.
+    const email = (await owner.query<{ email: string }>(`SELECT email FROM users WHERE id = $1`, [f.member.id])).rows[0].email.toUpperCase();
+    const fresh = `user_${randomUUID().replace(/-/g, '')}`;
+    expect(await identity.syncMember({ workosUserId: fresh, email, emailVerified: false, role: 'member' })).toBeUndefined();
+    expect(await identity.syncMember({ workosUserId: fresh, email, emailVerified: true, role: 'member' })).toMatchObject({ outcome: 'relinked', userId: f.member.id });
+    expect(await identity.resolveMember(f.org, fresh)).toMatchObject({ userId: f.member.id });
+    // Inactive rows are never relinked or activated.
+    await owner.query(`UPDATE users SET status = 'inactive' WHERE id = $1`, [f.member.id]);
+    expect(await identity.syncMember({ workosUserId: `user_${randomUUID().replace(/-/g, '')}`, email, emailVerified: true, role: 'member' }))
+      .toMatchObject({ outcome: 'denied_inactive', status: 'inactive', userId: f.member.id });
+    expect((await usersOf(f.tenant.id)).find((u) => u.id === f.member.id)!.status).toBe('inactive');
+    // Invalid role is rejected by the function.
+    await expect(withTenantTransaction(f.tenant, undefined, (tx) => tx.query(`SELECT * FROM app.sync_member('user_x', 'a@b.pe', true, 'owner')`))).rejects.toThrow('invalid role');
+  });
+
+  it('app.sync_member is not callable without a bound tenant and app_user cannot write users directly', async () => {
+    const f = await createTenant();
+    await expect(getPool().query(`SELECT * FROM app.sync_member('user_x', 'a@b.pe', true, 'member')`)).rejects.toThrow();
+    expect(await sqlState(withTenantTransaction(f.tenant, f.admin, (tx) => tx.query(
+      `INSERT INTO users (tenant_id, workos_user_id, email, role, status) VALUES ($1, 'user_forged', 'f@ejemplo.pe', 'admin', 'active')`, [f.tenant.id])))).toBe('42501');
+  });
+
+  it('a member is refused on every account operation and nothing changes', async () => {
     const f = await createTenant();
     const before = await usersOf(f.tenant.id);
     const repo = repos(f.tenant, f.member).tenantAccounts;
     for (const call of [
-      () => repo.listMembers(),
       () => repo.listAudit(),
-      () => repo.addMember({ workosUserId: 'user_x', email: 'x@ejemplo.pe', reason: null }),
-      () => repo.setStatus({ targetUserId: f.admin.id, status: 'inactive', reason: null }),
+      () => repo.setMirrorStatus({ workosUserId: 'user_x', status: 'inactive' }),
       () => repo.recordAudit({ action: 'member.deactivate', targetUserId: null, targetEmail: null, beforeStatus: null, afterStatus: null, reason: null, outcome: 'refused', outcomeCode: 'x' }),
     ]) await expect(call()).rejects.toBeInstanceOf(NotTenantAdminError);
     expect(await usersOf(f.tenant.id)).toEqual(before);
     expect(await auditOf(f.tenant.id)).toEqual([]);
-  });
-
-  it('an admin targeting another tenant\'s user is refused (audited), and the other tenant is untouched', async () => {
-    const a = await createTenant();
-    const b = await createTenant();
-    const workos = new FakeWorkos();
-    const { svc, actor } = service(a, a.admin, workos);
-    const beforeB = await usersOf(b.tenant.id);
-    expect(await svc.deactivate(actor, { userId: b.member.id })).toMatchObject({ ok: false, code: 'not_found' });
-    expect(await svc.reactivate(actor, { userId: b.member.id })).toMatchObject({ ok: false, code: 'not_found' });
-    expect(await svc.deactivate(actor, { userId: b.admin.id })).toMatchObject({ ok: false, code: 'not_found' });
-    expect(workos.calls).toBe(0);
-    expect(await usersOf(b.tenant.id)).toEqual(beforeB);
-    expect((await auditOf(a.tenant.id)).map((r) => [r.outcome, r.outcome_code, r.target_user_id])).toEqual([
-      ['refused', 'not_found', b.member.id], ['refused', 'not_found', b.member.id], ['refused', 'not_found', b.admin.id],
-    ]);
-    expect(await auditOf(b.tenant.id)).toEqual([]);
-    expect(await repos(b.tenant, b.admin).tenantAccounts.listAudit()).toEqual([]);
-  });
-
-  it('self-deactivation and removing the last admin are refused, audited, and change nothing', async () => {
-    const f = await createTenant();
-    const { svc, actor } = service(f, f.admin, new FakeWorkos());
-    const before = await usersOf(f.tenant.id);
-    expect(await svc.deactivate(actor, { userId: f.admin.id })).toMatchObject({ ok: false, code: 'self_deactivation' });
-    // Below the service guard: the repository refuses the last active admin on its own.
-    expect(await repos(f.tenant, f.admin).tenantAccounts.setStatus({ targetUserId: f.admin.id, status: 'inactive', reason: null }))
-      .toEqual({ kind: 'refused', code: 'last_admin' });
-    expect(await usersOf(f.tenant.id)).toEqual(before);
-    expect((await auditOf(f.tenant.id)).map((r) => [r.outcome, r.outcome_code])).toEqual([['refused', 'self_deactivation'], ['refused', 'last_admin']]);
-  });
-
-  it('two admins deactivating each other concurrently leave exactly one active admin', async () => {
-    const f = await createTenant();
-    const second = { id: randomUUID() };
-    await owner.query(
-      `INSERT INTO users (id, tenant_id, workos_user_id, email, role, status) VALUES ($1, $2, $3, $4, 'admin', 'active')`,
-      [second.id, f.tenant.id, `user_${second.id.replace(/-/g, '')}`, `${second.id}@example.invalid`],
-    );
-    // Hold both admin rows so the two transactions start before either can finish.
-    const holder = new pg.Client({ connectionString: process.env.DATABASE_URL! });
-    await holder.connect();
-    await holder.query('BEGIN');
-    await holder.query('SELECT id FROM users WHERE id = ANY($1::uuid[]) FOR UPDATE', [[f.admin.id, second.id]]);
-    const pending = Promise.allSettled([
-      repos(f.tenant, f.admin).tenantAccounts.setStatus({ targetUserId: second.id, status: 'inactive', reason: null }),
-      repos(f.tenant, second).tenantAccounts.setStatus({ targetUserId: f.admin.id, status: 'inactive', reason: null }),
-    ]);
-    for (let waiting = 0; waiting < 2;) {
-      waiting = (await owner.query<{ n: number }>(
-        `SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename = 'app_user' AND wait_event_type = 'Lock'`,
-      )).rows[0].n;
-    }
-    await holder.query('COMMIT');
-    await holder.end();
-    const results = await pending;
-    expect(results.filter((r) => r.status === 'fulfilled' && r.value.kind === 'changed')).toHaveLength(1);
-    expect(results.filter((r) => r.status === 'rejected' && r.reason instanceof NotTenantAdminError)).toHaveLength(1);
-    const admins = (await usersOf(f.tenant.id)).filter((u) => u.role === 'admin' && u.status === 'active');
-    expect(admins).toHaveLength(1);
   });
 
   it('RLS and grants: no role change, no admin insert, no delete, no member writes, audit append-only', async () => {
@@ -242,20 +219,5 @@ SUITE('KAN-41 tenant accounts (integration)', () => {
     expect(await sqlState(asUser(f.admin,
       `INSERT INTO tenant_account_audit_events (tenant_id, actor_user_id, action, outcome) VALUES ($1, $2, 'member.provision', 'success')`, [f.tenant.id, f.member.id]))).toBe('42501');
     expect((await asUser(f.admin, `SELECT * FROM tenant_account_audit_events`)).rowCount).toBe(1);
-  });
-
-  it('a WorkOS-side failure on deactivation keeps access off and a repeat re-syncs', async () => {
-    const f = await createTenant();
-    const workos = new FakeWorkos();
-    let fail = true;
-    const flaky: WorkosAccountsClient = { ...workos, ensureUser: (e) => workos.ensureUser(e), activateMembership: (o, u) => workos.activateMembership(o, u),
-      deactivateMembership: async (o, u) => { if (fail) { fail = false; throw new Error('workos down'); } return workos.deactivateMembership(o, u); } };
-    const { svc, actor } = service(f, f.admin, flaky);
-    const wos = await workosIdOf(f.member.id);
-    expect(await svc.deactivate(actor, { userId: f.member.id })).toMatchObject({ ok: true, code: 'deactivated' });
-    expect(await systemRepos(f.tenant).identity!.resolveMember(f.org, wos)).toBeUndefined();
-    expect(await svc.deactivate(actor, { userId: f.member.id })).toMatchObject({ ok: true, code: 'already_inactive' });
-    expect(workos.memberships.get(`${f.org}:${wos}`)).toBe('inactive');
-    expect((await auditOf(f.tenant.id)).map((r) => [r.outcome, r.outcome_code])).toEqual([['success', null], ['failed', 'workos_sync_failed']]);
   });
 });

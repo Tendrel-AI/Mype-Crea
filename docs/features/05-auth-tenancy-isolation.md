@@ -16,9 +16,11 @@ even with a forged id. Platform operators sign in separately and must pass a TOT
 2. **Session → (tenant, user).** `src/auth/resolve-identity.ts:resolveIdentity` takes the
    organization id from the signed WorkOS session, looks up the registered organization and its
    status (`src/repos/global-organizations.ts:globalOrganizationsRepo`), checks a fresh active
-   WorkOS membership and an existing active local user (`src/repos/identity.ts`). It returns a
-   `ResolvedIdentity` with the tenant, the user, the tenant role from the database and, separately,
-   the persisted platform role. It never creates tenants or users; any miss fails closed.
+   WorkOS membership and takes the tenant role from its `role.slug` (D52). The local `users` row is a
+   just-in-time mirror (`src/repos/identity.ts`): created on first sign-in, relinked by verified email
+   inside the same tenant, role-synced, always through the narrow `app.sync_member` function; an
+   inactive local row denies. It returns a `ResolvedIdentity` with the tenant, the user, the tenant
+   role and, separately, the persisted platform role. It never creates tenants; any miss fails closed.
 3. **Scoped repositories.** All tenant data goes through `src/repos/index.ts:repos(tenant, user)`
    (or `systemRepos(tenant)` for workers without a user). Each repository closes over the tenant
    and user, so no method can skip them.

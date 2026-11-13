@@ -3,7 +3,7 @@
 /**
  * KAN-41 controllers for `/admin/accounts`. Every call re-resolves the live identity and requires
  * an effective tenant admin; tenant, actor and role come only from that identity. A refused
- * non-admin call is logged and touches nothing (the audit table accepts only admin rows).
+ * non-admin call is logged and touches nothing (the audit table accepts only admin rows). The members list comes from WorkOS (D52); a member's id is its WorkOS user id.
  */
 import { unstable_rethrow } from 'next/navigation';
 import { requireTenantAdmin, TenantAdminRequiredError, type ResolvedIdentity } from '../../src/auth/resolve-identity';
@@ -54,17 +54,19 @@ function service(identity: ResolvedIdentity): TenantAccountService {
 }
 
 function actor(identity: ResolvedIdentity) {
-  return { tenant: identity.tenant, user: identity.user, organizationId: identity.organizationId };
+  return { tenant: identity.tenant, user: identity.user, workosUserId: identity.workosUserId, organizationId: identity.organizationId };
 }
 
 export async function getTenantAccounts(): Promise<TenantAccountsView> {
   return asAdmin<TenantAccountsView>('list', { ok: false, error: NOT_ADMIN.message }, { ok: false, error: FAILED.message }, async (identity) => {
-    const repo = repos(identity.tenant, identity.user).tenantAccounts;
-    const [members, audit] = await Promise.all([repo.listMembers(), repo.listAudit(50)]);
+    const [members, audit] = await Promise.all([
+      service(identity).listMembers(actor(identity)),
+      repos(identity.tenant, identity.user).tenantAccounts.listAudit(50),
+    ]);
     return {
       ok: true,
-      currentUserId: identity.user.id,
-      members: members.map(({ id, email, role, status, createdAt }) => ({ id, email, role, status, createdAt })),
+      currentUserId: identity.workosUserId,
+      members: members.map(({ workosUserId, email, role, status, createdAt }) => ({ id: workosUserId, email, role, status, createdAt })),
       audit,
     };
   });
@@ -74,16 +76,16 @@ export async function provisionTenantMember(input: { email: string; reason?: str
   return asAdmin('provision', NOT_ADMIN, FAILED, (identity) => service(identity).provision(actor(identity), { email: input?.email, reason: input?.reason }));
 }
 
-export async function deactivateTenantMember(input: { userId: string; reason?: string }): Promise<AccountResult> {
+export async function deactivateTenantMember(input: { workosUserId: string; reason?: string }): Promise<AccountResult> {
   return asAdmin('deactivate', NOT_ADMIN, FAILED, async (identity) => {
-    const result = await service(identity).deactivate(actor(identity), { userId: input?.userId, reason: input?.reason });
-    // D43: nothing else to trigger. The DB status flip gates in-flight work on its own: the worker
-    // cancels queued tasks and refuses new provider calls, and the user's SSE closes on its next poll.
-    if (result.ok) log.info({ tenantId: identity.tenant.id, targetUserId: input?.userId, code: result.code }, 'tenant_accounts.deactivated_inflight_gated');
+    const result = await service(identity).deactivate(actor(identity), { workosUserId: input?.workosUserId, reason: input?.reason });
+    // D43/D4: nothing else to trigger. The mirror flip gates in-flight work (worker, usage gateway),
+    // WorkOS membership gates every new call, and the service already revoked the WorkOS sessions.
+    if (result.ok) log.info({ tenantId: identity.tenant.id, targetWorkosUserId: input?.workosUserId, code: result.code }, 'tenant_accounts.deactivated_inflight_gated');
     return result;
   });
 }
 
-export async function reactivateTenantMember(input: { userId: string; reason?: string }): Promise<AccountResult> {
-  return asAdmin('reactivate', NOT_ADMIN, FAILED, (identity) => service(identity).reactivate(actor(identity), { userId: input?.userId, reason: input?.reason }));
+export async function reactivateTenantMember(input: { workosUserId: string; reason?: string }): Promise<AccountResult> {
+  return asAdmin('reactivate', NOT_ADMIN, FAILED, (identity) => service(identity).reactivate(actor(identity), { workosUserId: input?.workosUserId, reason: input?.reason }));
 }

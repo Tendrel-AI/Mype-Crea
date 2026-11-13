@@ -1,6 +1,7 @@
 import { globalRepos } from '../../repos/global';
 import { getWorkOS } from '@workos-inc/authkit-nextjs';
 import { loggerFor } from '../logger';
+import { EMAIL_PATTERN, errorName, type WorkosAccountsClient, type WorkosMember } from '../tenant-accounts';
 
 const log = loggerFor('platform.organizations');
 
@@ -19,10 +20,13 @@ export interface WorkosOrganizationsClient {
 export function createWorkosOrganizationsClient(): WorkosOrganizationsClient {
   return {
     async findByExternalId(externalId) {
-      const page = await getWorkOS().organizations.listOrganizations({ limit: 100 });
-      const organizations = await page.autoPagination();
-      const found = organizations.find((organization) => organization.externalId === externalId);
-      return found ? { id: found.id, externalId: found.externalId } : undefined;
+      try {
+        const found = await getWorkOS().organizations.getOrganizationByExternalId(externalId);
+        return { id: found.id, externalId: found.externalId };
+      } catch (error) {
+        if (error && typeof error === 'object' && 'status' in error && error.status === 404) return undefined;
+        throw error;
+      }
     },
     async create(input) {
       const organization = await getWorkOS().organizations.createOrganization(
@@ -155,6 +159,54 @@ export class PlatformOrganizationService {
       });
     } catch (recordError) {
       log.error({ operationKey: input.operationKey, err: safeErrorCode(recordError) }, 'create.reconciliation_record_failed');
+    }
+  }
+}
+
+export type AdminProvisionCode = 'provisioned' | 'already_admin' | 'invalid_email' | 'invalid_reason' | 'failed';
+export interface AdminProvisionResult { readonly ok: boolean; readonly code: AdminProvisionCode; readonly message: string }
+
+/**
+ * D52: a platform operator provisions an organization admin WorkOS-only (user + active membership
+ * with role `admin`; no `users` insert, identity resolution mirrors it on first sign-in). The
+ * outcome is always audited as `organization.admin_provision`. Idempotent: a retry finds the same
+ * WorkOS user and membership. Callers must have passed `requireGlobalMfa()` first.
+ */
+export class PlatformOrganizationAdminService {
+  private readonly repositories = globalRepos();
+
+  constructor(private readonly workos: WorkosAccountsClient) {}
+
+  async provision(input: { tenantId: string; workosOrgId: string; email: unknown; actorWorkosUserId: string; reason: string }): Promise<AdminProvisionResult> {
+    const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : '';
+    if (email.length > 254 || !EMAIL_PATTERN.test(email)) return { ok: false, code: 'invalid_email', message: 'Escribe un correo electrónico válido.' };
+    const audit = (outcome: 'success' | 'failure', metadata: Record<string, unknown>) => this.safeAudit({
+      actorWorkosUserId: input.actorWorkosUserId, action: 'organization.admin_provision', scopeType: 'organization',
+      scopeId: input.tenantId, outcome, reason: input.reason, metadata: { email, ...metadata },
+    });
+    try {
+      const user = await this.workos.ensureUser(email);
+      const outcome = await this.workos.activateMembership(input.workosOrgId, user.id, 'admin');
+      await audit('success', { result: outcome });
+      log.info({ tenantId: input.tenantId, workosUserId: user.id, outcome }, 'admin_provision.done');
+      return outcome === 'already_active'
+        ? { ok: true, code: 'already_admin', message: `${email} ya es administrador de la organización.` }
+        : { ok: true, code: 'provisioned', message: `${email} quedó como administrador. Comparte con esa persona el enlace de inicio de sesión.` };
+    } catch (error) {
+      log.error({ tenantId: input.tenantId, err: errorName(error) }, 'admin_provision.failed');
+      await audit('failure', { error: safeErrorCode(error) });
+      return { ok: false, code: 'failed', message: 'No pudimos crear al administrador. Puedes reintentarlo desde el detalle de la organización.' };
+    }
+  }
+
+  /** Active admin memberships, straight from WorkOS. */
+  async listAdmins(workosOrgId: string): Promise<ReadonlyArray<WorkosMember>> {
+    return (await this.workos.listMemberships(workosOrgId)).filter((item) => item.status === 'active' && item.role === 'admin');
+  }
+
+  private async safeAudit(event: Parameters<typeof this.repositories.audit.record>[0]): Promise<void> {
+    try { await this.repositories.audit.record(event); } catch (error) {
+      log.error({ tenantId: event.scopeId, err: safeErrorCode(error) }, 'admin_provision.audit_failed');
     }
   }
 }

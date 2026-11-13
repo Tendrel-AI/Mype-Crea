@@ -1,8 +1,9 @@
 /**
- * KAN-41 tenant account management (`users` + `tenant_account_audit_events`). Every method runs
- * as the acting admin inside `withTenantTransaction(tenant, actor)` as app_user; each one first
- * checks `app.has_tenant_admin()` (persisted, active admin role) and RLS repeats that check on
- * every write. Tenant and role come from the session identity, never from the caller's input.
+ * KAN-41 / D52 tenant account management. Membership and role live in WorkOS; this repo only
+ * flips the local `users` mirror status (the block workers and the usage gateway read) and writes
+ * `tenant_account_audit_events`. Every method runs as the acting admin inside
+ * `withTenantTransaction(tenant, actor)` as app_user; each one first checks `app.has_tenant_admin()`
+ * and RLS repeats that check on every write. Tenant comes from the session identity.
  */
 import type { UUID } from '../core/contracts';
 import { withTenantTransaction, type Tenant, type TxClient, type User } from '../db/with-transaction';
@@ -11,15 +12,6 @@ export type AccountStatus = 'active' | 'inactive';
 export type AccountRole = 'admin' | 'member';
 export type AccountAction = 'member.provision' | 'member.deactivate' | 'member.reactivate';
 export type AccountOutcome = 'success' | 'refused' | 'failed';
-
-export interface TenantMember {
-  readonly id: UUID;
-  readonly workosUserId: string;
-  readonly email: string;
-  readonly role: AccountRole;
-  readonly status: AccountStatus;
-  readonly createdAt: string;
-}
 
 export interface AccountAuditEntry {
   readonly action: AccountAction;
@@ -39,41 +31,21 @@ export interface AccountAuditRow extends AccountAuditEntry {
   readonly createdAt: string;
 }
 
-export type SetStatusResult =
-  | { readonly kind: 'changed'; readonly member: TenantMember; readonly before: AccountStatus }
-  | { readonly kind: 'unchanged'; readonly member: TenantMember }
-  | { readonly kind: 'refused'; readonly code: 'not_found' | 'last_admin' };
-
 /** The session user is not an active admin of the tenant (persisted role, checked in the DB). */
 export class NotTenantAdminError extends Error {
   constructor() { super('Tenant admin required.'); }
 }
 
 export interface TenantAccountsRepo {
-  listMembers(): Promise<ReadonlyArray<TenantMember>>;
-  findMember(id: UUID): Promise<TenantMember | undefined>;
-  findByEmail(email: string): Promise<TenantMember | undefined>;
-  /** Insert an active `member` plus its success audit row in one transaction; idempotent by email. */
-  addMember(input: { workosUserId: string; email: string; reason: string | null }): Promise<{ member: TenantMember; created: boolean }>;
   /**
-   * Change one member's status with its audit row (success or refused) in one transaction.
-   * Locks the tenant's active admins first, so two admins removing each other cannot leave the
-   * tenant without one.
+   * Set the local mirror status of a member found by WorkOS user id. Returns the local user id, or
+   * undefined when the person never signed in (no row yet: nothing to block).
    */
-  setStatus(input: { targetUserId: UUID; status: AccountStatus; reason: string | null }): Promise<SetStatusResult>;
+  setMirrorStatus(input: { workosUserId: string; status: AccountStatus }): Promise<{ userId: UUID } | undefined>;
   /** Standalone audit row for refusals and failures decided outside `setStatus`. */
   recordAudit(entry: AccountAuditEntry): Promise<void>;
   /** Newest first, at most `limit` (≤ 200). */
   listAudit(limit?: number): Promise<ReadonlyArray<AccountAuditRow>>;
-}
-
-interface MemberRowDb {
-  id: UUID;
-  workos_user_id: string;
-  email: string;
-  role: AccountRole;
-  status: AccountStatus;
-  created_at: Date;
 }
 
 interface AuditRowDb {
@@ -88,19 +60,6 @@ interface AuditRowDb {
   outcome: AccountOutcome;
   outcome_code: string | null;
   created_at: Date;
-}
-
-const MEMBER_COLUMNS = 'id, workos_user_id, email, role, status, created_at';
-
-function toMember(row: MemberRowDb): TenantMember {
-  return {
-    id: row.id,
-    workosUserId: row.workos_user_id,
-    email: row.email,
-    role: row.role,
-    status: row.status,
-    createdAt: row.created_at.toISOString(),
-  };
 }
 
 export function tenantAccountsRepo(tenant: Tenant, actor: User): TenantAccountsRepo {
@@ -118,79 +77,18 @@ export function tenantAccountsRepo(tenant: Tenant, actor: User): TenantAccountsR
     );
   }
 
-  async function selectMember(tx: TxClient, where: string, value: string, lock = ''): Promise<TenantMember | undefined> {
-    const res = await tx.query<MemberRowDb>(
-      `SELECT ${MEMBER_COLUMNS} FROM users WHERE tenant_id = $1 AND ${where} = $2 ${lock}`,
-      [tenant.id, value],
-    );
-    return res.rows[0] ? toMember(res.rows[0]) : undefined;
-  }
-
   const run = <T>(fn: (tx: TxClient) => Promise<T>) => withTenantTransaction(tenant, actor, async (tx) => {
     await assertAdmin(tx);
     return fn(tx);
   });
 
   return {
-    listMembers: () => run(async (tx) => {
-      const res = await tx.query<MemberRowDb>(
-        `SELECT ${MEMBER_COLUMNS} FROM users WHERE tenant_id = $1 ORDER BY created_at, id`,
-        [tenant.id],
+    setMirrorStatus: ({ workosUserId, status }) => run(async (tx) => {
+      const res = await tx.query<{ id: UUID }>(
+        'UPDATE users SET status = $3 WHERE tenant_id = $1 AND workos_user_id = $2 RETURNING id',
+        [tenant.id, workosUserId, status],
       );
-      return res.rows.map(toMember);
-    }),
-
-    findMember: (id) => run((tx) => selectMember(tx, 'id', id)),
-
-    findByEmail: (email) => run((tx) => selectMember(tx, 'email', email)),
-
-    addMember: ({ workosUserId, email, reason }) => run(async (tx) => {
-      const inserted = await tx.query<MemberRowDb>(
-        `INSERT INTO users (tenant_id, workos_user_id, email, role, status)
-         VALUES ($1, $2, $3, 'member', 'active')
-         ON CONFLICT DO NOTHING
-         RETURNING ${MEMBER_COLUMNS}`,
-        [tenant.id, workosUserId, email],
-      );
-      if (inserted.rows[0]) {
-        const member = toMember(inserted.rows[0]);
-        await insertAudit(tx, {
-          action: 'member.provision', targetUserId: member.id, targetEmail: member.email,
-          beforeStatus: null, afterStatus: 'active', reason, outcome: 'success', outcomeCode: null,
-        });
-        return { member, created: true };
-      }
-      // A concurrent or earlier provision won; the same email is the same account.
-      const existing = await selectMember(tx, 'email', email);
-      if (!existing) throw new Error('tenant_accounts.add_member_conflict');
-      return { member: existing, created: false };
-    }),
-
-    setStatus: ({ targetUserId, status, reason }) => run(async (tx) => {
-      const admins = await tx.query<{ id: UUID }>(
-        `SELECT id FROM users WHERE tenant_id = $1 AND role = 'admin' AND status = 'active' ORDER BY id FOR UPDATE`,
-        [tenant.id],
-      );
-      // Re-read under the lock: an admin deactivated by a concurrent call is no longer one.
-      if (!admins.rows.some((row) => row.id === actor.id)) throw new NotTenantAdminError();
-      const action: AccountAction = status === 'inactive' ? 'member.deactivate' : 'member.reactivate';
-      const target = await selectMember(tx, 'id', targetUserId, 'FOR UPDATE');
-      const refuse = async (code: 'not_found' | 'last_admin'): Promise<SetStatusResult> => {
-        await insertAudit(tx, {
-          action, targetUserId, targetEmail: target?.email ?? null, beforeStatus: target?.status ?? null,
-          afterStatus: target?.status ?? null, reason, outcome: 'refused', outcomeCode: code,
-        });
-        return { kind: 'refused', code };
-      };
-      if (!target) return refuse('not_found');
-      if (target.status === status) return { kind: 'unchanged', member: target };
-      if (status === 'inactive' && target.role === 'admin' && admins.rows.length <= 1) return refuse('last_admin');
-      await tx.query('UPDATE users SET status = $3 WHERE tenant_id = $1 AND id = $2', [tenant.id, target.id, status]);
-      await insertAudit(tx, {
-        action, targetUserId: target.id, targetEmail: target.email, beforeStatus: target.status,
-        afterStatus: status, reason, outcome: 'success', outcomeCode: null,
-      });
-      return { kind: 'changed', member: { ...target, status }, before: target.status };
+      return res.rows[0] ? { userId: res.rows[0].id } : undefined;
     }),
 
     recordAudit: (entry) => run((tx) => insertAudit(tx, entry)),

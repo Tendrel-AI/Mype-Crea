@@ -2,9 +2,9 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { requireGlobalMfa } from '../../../../src/auth/resolve-identity';
 import { globalRepos } from '../../../../src/repos/global';
-import { CreditRechargeForm, OrganizationEditForm } from '../../../../components/PlatformConsole';
+import { CreditRechargeForm, OrganizationAdminForm, OrganizationEditForm } from '../../../../components/PlatformConsole';
 import { currentCalendarMonth, getPlatformAuditTrail, getPlatformMonthlyMetrics } from '../../../../src/services/platform/metrics/monthly';
-import { getTenantCreditsView, getTenantReconciliation } from '../../../actions/platform-admin';
+import { getPlatformOrganizationAdmins, getTenantCreditsView, getTenantReconciliation } from '../../../actions/platform-admin';
 import { listOrganizationModuleRolloutHistory, getOrganizationEffectiveModuleVersion } from '../../../actions/platform-modules';
 import { listPlatformModules } from '../../../../src/services/platform/modules/registry';
 import { platformActionLabel, platformReasonLabel } from '../../labels';
@@ -16,16 +16,22 @@ export default async function PlatformOrganizationDetailPage({ params }: { param
   const organization = await globalRepos().organizations.getById(tenantId);
   if (!organization) notFound();
   const moduleDefinitions = listPlatformModules();
-  const [counters, credits, reconciliation, metrics, audit, rolloutHistory, effectiveVersions] = await Promise.all([
+  const [counters, credits, reconciliation, metrics, audit, rolloutHistory, effectiveVersions, admins] = await Promise.all([
     globalRepos().counters.forTenant(actorWorkosUserId, tenantId),
     getTenantCreditsView(tenantId), getTenantReconciliation(tenantId).catch(() => null),
     getPlatformMonthlyMetrics(actorWorkosUserId), getPlatformAuditTrail(actorWorkosUserId),
     listOrganizationModuleRolloutHistory(tenantId),
     Promise.all(moduleDefinitions.map((module) => getOrganizationEffectiveModuleVersion({ moduleId: module.id, organizationId: tenantId }))),
+    // WorkOS being unreachable must not break the page; the section then shows `null`.
+    getPlatformOrganizationAdmins(tenantId).catch(() => null),
   ]);
   const monthly = metrics.find((row) => row.organizationId === tenantId);
   const activity = audit.filter((row) => row.scopeId === tenantId);
   return <main className="mx-auto max-w-4xl space-y-6 px-5 py-10"><header><Link href="/platform/organizations" className="text-sm underline">← Organizaciones</Link><h1 className="mt-3 text-3xl font-semibold">{organization.name}</h1><p className="mt-2 text-sm text-neutral-600">ID de organización: <span className="font-mono">{organization.tenantId}</span></p><p className="text-sm text-neutral-600">Estado: {organization.status === 'active' ? 'Activa' : 'Inactiva'}</p></header><OrganizationEditForm tenantId={organization.tenantId} name={organization.name} active={organization.status === 'active'} />
+    <section className="space-y-3"><h2 className="text-xl font-semibold">Administradores</h2>
+      {admins === null ? <p className="text-sm text-red-700">No pudimos consultar los administradores. Inténtalo de nuevo.</p> : admins.length === 0 ? <p className="text-sm text-neutral-600">Esta organización todavía no tiene administradores activos.</p> : <ul className="rounded-xl border bg-white divide-y text-sm">{admins.map((admin) => <li key={admin.workosUserId} className="p-3">{admin.email}</li>)}</ul>}
+      <OrganizationAdminForm tenantId={organization.tenantId} />
+      <p className="text-xs text-neutral-600">No se envían correos: comparte el enlace de inicio de sesión (<code>/login</code>) con la persona.</p></section>
     <section className="space-y-3"><h2 className="text-xl font-semibold">Contadores</h2><div className="grid gap-3 sm:grid-cols-3">{[
       ['Marcas', counters.brands], ['Productos', counters.products], ['Conversaciones', counters.conversations],
       ['Mensajes (turnos)', counters.turns], ['Retoques', counters.alterations], ['Turnos por conversación (prom.)', counters.avgTurnsPerConversation],

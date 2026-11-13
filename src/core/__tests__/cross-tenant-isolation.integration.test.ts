@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { closePool } from '../../db/pool';
-import { repos, type Tenant, type User } from '../../repos';
+import { repos, systemRepos, type Tenant, type User } from '../../repos';
 import { withTenantTransaction } from '../../db/with-transaction';
 import type { UUID } from '../contracts';
 import { CURRENT_TERMS_VERSION } from '../../consent/terms';
@@ -478,23 +478,32 @@ describe('cross-tenant isolation (PostgreSQL integration)', () => {
     expect(await ownA.termsAcceptances.hasAccepted(CURRENT_TERMS_VERSION)).toBe(true);
   });
 
-  it('KAN-41: a tenant admin manages only their own tenant\'s accounts and audit rows', async () => {
+  it('KAN-41: a tenant admin flips only their own tenant\'s mirror rows and reads only their own audit rows', async () => {
     const adminA = repos(tenantA.tenant, tenantA.user).tenantAccounts;
-    const memberIds = (await adminA.listMembers()).map((member) => member.id);
-    expect(memberIds).toEqual(expect.arrayContaining([tenantA.user.id, tenantA.otherUser.id]));
-    expect(memberIds).not.toContain(tenantB.user.id);
-
-    expect(await adminA.setStatus({ targetUserId: tenantB.user.id, status: 'inactive', reason: null }))
-      .toEqual({ kind: 'refused', code: 'not_found' });
+    const foreignWorkosId = (await owner.query<{ workos_user_id: string }>(`SELECT workos_user_id FROM users WHERE id = $1`, [tenantB.user.id])).rows[0].workos_user_id;
+    // A foreign WorkOS user id matches no row in tenant A: nothing is changed.
+    expect(await adminA.setMirrorStatus({ workosUserId: foreignWorkosId, status: 'inactive' })).toBeUndefined();
     const statusB = await owner.query(`SELECT status FROM users WHERE id = $1`, [tenantB.user.id]);
     expect(statusB.rows[0].status).toBe('active');
-    expect((await adminA.listAudit()).map((row) => row.targetUserId)).toContain(tenantB.user.id);
+    await adminA.recordAudit({ action: 'member.deactivate', targetUserId: null, targetEmail: null, beforeStatus: null, afterStatus: null, reason: null, outcome: 'refused', outcomeCode: 'not_found' });
+    expect((await adminA.listAudit()).length).toBeGreaterThan(0);
     expect(await repos(tenantB.tenant, tenantB.user).tenantAccounts.listAudit()).toEqual([]);
 
     // A member of tenant A is not an admin: every account operation is refused in the database.
-    await expect(repos(tenantA.tenant, tenantA.otherUser).tenantAccounts.listMembers()).rejects.toThrow('Tenant admin required.');
+    await expect(repos(tenantA.tenant, tenantA.otherUser).tenantAccounts.listAudit()).rejects.toThrow('Tenant admin required.');
     const memberAudit = await withTenantTransaction(tenantA.tenant, tenantA.otherUser, (tx) =>
       tx.query(`SELECT id FROM tenant_account_audit_events`));
     expect(memberAudit.rowCount).toBe(0);
+  });
+
+  it('D52: app.sync_member never relinks or inserts across tenants', async () => {
+    const emailB = (await owner.query<{ email: string }>(`SELECT email FROM users WHERE id = $1`, [tenantB.user.id])).rows[0].email;
+    // Tenant A's context with tenant B's verified email: a new row is created in A, B is untouched.
+    const workosUserId = `user_sync_${randomUUID().replace(/-/g, '')}`;
+    const synced = await systemRepos(tenantA.tenant).identity!.syncMember({ workosUserId, email: emailB, emailVerified: true, role: 'member' });
+    expect(synced).toMatchObject({ outcome: 'created', role: 'member' });
+    const rows = await owner.query(`SELECT tenant_id FROM users WHERE email = $1`, [emailB]);
+    expect(rows.rows.map((r) => r.tenant_id).sort()).toEqual([tenantA.tenant.id, tenantB.tenant.id].sort());
+    await owner.query(`DELETE FROM users WHERE tenant_id = $1 AND workos_user_id = $2`, [tenantA.tenant.id, workosUserId]);
   });
 });

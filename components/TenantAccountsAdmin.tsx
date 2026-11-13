@@ -21,11 +21,14 @@ export default function TenantAccountsAdmin({ members, audit, currentUserId }: {
   const [message, setMessage] = useState('');
   const [email, setEmail] = useState('');
   const [reason, setReason] = useState('');
+  const [loginLink, setLoginLink] = useState('');
 
   function run(work: () => Promise<{ ok: boolean; message: string }>, clear = false) {
     start(async () => {
       const result = await work();
       setMessage(result.message);
+      // The link carries no token: security comes from proving ownership of the email at sign-in.
+      setLoginLink(result.ok && clear ? `${window.location.origin}/login` : '');
       if (result.ok && clear) { setEmail(''); setReason(''); }
       router.refresh();
     });
@@ -39,7 +42,7 @@ export default function TenantAccountsAdmin({ members, audit, currentUserId }: {
         <h1 className="mt-3 text-2xl font-semibold">Cuentas de tu organización</h1>
         <p className="mt-1 text-neutral-600">
           Crea cuentas de emprendedores y desactívalas o reactívalas cuando haga falta. No se envían correos:
-          comparte tú el enlace de inicio de sesión <code>/login</code> de CreaMype.
+          comparte tú el enlace de inicio de sesión <code>/login</code> de CreaMype. La persona entra con Google o con un código enviado a su correo.
         </p>
       </header>
 
@@ -51,7 +54,7 @@ export default function TenantAccountsAdmin({ members, audit, currentUserId }: {
         <label className="grid gap-1 text-sm">Motivo (opcional)<input value={reason} maxLength={500} onChange={(event) => setReason(event.target.value)} className="rounded border p-2" /></label>
         <div className="flex items-end"><button disabled={pending} className="rounded bg-orange-600 px-4 py-2 text-white">Crear cuenta</button></div>
       </form>
-      <p role="status" className="text-sm">{message}</p>
+      <p role="status" className="text-sm">{message}{loginLink && <> Enlace para compartir: <code className="select-all">{loginLink}</code></>}</p>
 
       <section className="overflow-x-auto rounded-xl border bg-white">
         <table className="w-full text-left text-sm">
@@ -66,9 +69,9 @@ export default function TenantAccountsAdmin({ members, audit, currentUserId }: {
                 {member.id !== currentUserId && (member.status === 'active'
                   ? <button disabled={pending} className="rounded border px-3 py-1" onClick={() => {
                     if (!window.confirm(`¿Desactivar la cuenta de ${member.email}? Sus conversaciones se conservan.`)) return;
-                    run(() => deactivateTenantMember({ userId: member.id }));
+                    run(() => deactivateTenantMember({ workosUserId: member.id }));
                   }}>Desactivar</button>
-                  : <button disabled={pending} className="rounded border px-3 py-1" onClick={() => run(() => reactivateTenantMember({ userId: member.id }))}>Reactivar</button>)}
+                  : <button disabled={pending} className="rounded border px-3 py-1" onClick={() => run(() => reactivateTenantMember({ workosUserId: member.id }))}>Reactivar</button>)}
               </td>
             </tr>
           ))}</tbody>

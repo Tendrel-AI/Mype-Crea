@@ -4,6 +4,9 @@ const mocks = vi.hoisted(() => ({
   auth: vi.fn(),
   memberships: vi.fn(),
   resolveMember: vi.fn(),
+  syncMember: vi.fn(),
+  logWarn: vi.fn(),
+  workosRole: { slug: 'member' },
   isSuperadmin: vi.fn(),
   bootstrapSuperadmin: vi.fn(),
   findByWorkosOrgId: vi.fn(),
@@ -28,7 +31,7 @@ vi.mock('@workos-inc/authkit-nextjs', () => ({
   }),
 }));
 vi.mock('../../repos', () => ({
-  systemRepos: vi.fn(() => ({ identity: { resolveMember: mocks.resolveMember } })),
+  systemRepos: vi.fn(() => ({ identity: { resolveMember: mocks.resolveMember, syncMember: mocks.syncMember } })),
 }));
 vi.mock('../../repos/global', () => ({
   globalRepos: () => ({
@@ -40,6 +43,7 @@ vi.mock('../../services/logger', () => ({
   loggerFor: () => ({
     info: mocks.logInfo,
     error: vi.fn(),
+    warn: mocks.logWarn,
   }),
 }));
 
@@ -57,7 +61,7 @@ const tenantB = '22222222-2222-4222-8222-222222222222';
 const localUserId = '33333333-3333-4333-8333-333333333333';
 
 function activeMembership(organizationId: string, memberUserId = userId) {
-  return { data: [{ organizationId, userId: memberUserId, status: 'active' }] };
+  return { data: [{ organizationId, userId: memberUserId, status: 'active', role: { slug: mocks.workosRole.slug } }] };
 }
 
 describe('resolveIdentity', () => {
@@ -66,7 +70,9 @@ describe('resolveIdentity', () => {
     process.env.WORKOS_COOKIE_PASSWORD = 'test-session-cookie-password-that-is-long-enough';
     mocks.auth.mockResolvedValue({ user: { id: userId, email: 'user@example.test' }, organizationId: orgA, sessionId: 'session_1' });
     mocks.memberships.mockImplementation(({ organizationId }: { organizationId: string }) => activeMembership(organizationId));
-    mocks.resolveMember.mockResolvedValue({ userId: localUserId, role: 'member' });
+    mocks.resolveMember.mockResolvedValue({ userId: localUserId, role: 'member', status: 'active' }); mocks.workosRole.slug = 'member';
+    mocks.workosRole.slug = 'member';
+    mocks.syncMember.mockImplementation(async (input: { role: string }) => ({ userId: localUserId, role: input.role, status: 'active', outcome: 'existing' }));
     mocks.isSuperadmin.mockResolvedValue(false);
     mocks.bootstrapSuperadmin.mockResolvedValue('granted');
     mocks.findByWorkosOrgId.mockImplementation(async (id: string) => id === orgA || id === orgB ? { tenantId: id === orgA ? tenantA : tenantB, status: 'active' } : undefined);
@@ -109,13 +115,93 @@ describe('resolveIdentity', () => {
     expect(mocks.resolveMember).not.toHaveBeenCalled();
   });
 
-  it('requires a registered organization and never provisions a local user', async () => {
+  it('requires a registered organization and never mirrors a user for an unknown one', async () => {
     mocks.findByWorkosOrgId.mockResolvedValueOnce(undefined);
     await expect(resolveIdentity()).rejects.toThrow('La organización de tu cuenta no está habilitada.');
     expect(mocks.memberships).not.toHaveBeenCalled();
-    mocks.resolveMember.mockResolvedValueOnce(undefined);
-    await expect(resolveIdentity()).rejects.toThrow('Tu cuenta no tiene acceso activo a esta organización.');
-    expect(mocks.resolveMember).toHaveBeenCalledWith(orgA, userId);
+    expect(mocks.syncMember).not.toHaveBeenCalled();
+  });
+
+  describe('D52 just-in-time mirror', () => {
+    it('first sign-in inserts the mirror row with the WorkOS role (admin) and verified flag', async () => {
+      mocks.workosRole.slug = 'admin';
+      mocks.auth.mockResolvedValue({ user: { id: userId, email: 'New@Example.test', emailVerified: true }, organizationId: orgA, sessionId: 's' });
+      mocks.resolveMember.mockResolvedValueOnce(undefined);
+      mocks.syncMember.mockResolvedValueOnce({ userId: localUserId, role: 'admin', status: 'active', outcome: 'created' });
+      expect(await resolveIdentity()).toMatchObject({ tenantRole: 'admin', user: { id: localUserId }, tenant: { id: tenantA } });
+      expect(mocks.syncMember).toHaveBeenCalledWith({ workosUserId: userId, email: 'New@Example.test', emailVerified: true, role: 'admin' });
+    });
+
+    it('an unknown WorkOS role slug is a plain member', async () => {
+      mocks.workosRole.slug = 'billing';
+      mocks.resolveMember.mockResolvedValueOnce(undefined);
+      expect(await resolveIdentity()).toMatchObject({ tenantRole: 'member' });
+      expect(mocks.syncMember).toHaveBeenCalledWith(expect.objectContaining({ role: 'member' }));
+    });
+
+    it('a deactivated WorkOS membership blocks the very next call (no cache between calls)', async () => {
+      await expect(resolveIdentity()).resolves.toMatchObject({ tenantRole: 'member' });
+      mocks.memberships.mockResolvedValueOnce({ data: [] });
+      await expect(resolveIdentity()).rejects.toThrow('Tu cuenta no tiene acceso activo a esta organización.');
+      mocks.resolveMember.mockResolvedValueOnce({ userId: localUserId, role: 'member', status: 'inactive' });
+      await expect(resolveIdentity()).rejects.toThrow('Tu cuenta no tiene acceso activo a esta organización.');
+    });
+
+    it('normal path is a read: no write when the mirror already matches', async () => {
+      await resolveIdentity();
+      expect(mocks.syncMember).not.toHaveBeenCalled();
+    });
+
+    it.each([['member', 'admin'], ['admin', 'member']] as const)('syncs the role %s -> %s from WorkOS', async (local, workos) => {
+      mocks.resolveMember.mockResolvedValueOnce({ userId: localUserId, role: local, status: 'active' });
+      mocks.workosRole.slug = workos;
+      expect(await resolveIdentity()).toMatchObject({ tenantRole: workos });
+      expect(mocks.syncMember).toHaveBeenCalledWith(expect.objectContaining({ role: workos }));
+    });
+
+    it('an inactive local row denies even with an active WorkOS membership, and nothing is written', async () => {
+      mocks.resolveMember.mockResolvedValueOnce({ userId: localUserId, role: 'member', status: 'inactive' });
+      await expect(resolveIdentity()).rejects.toThrow('Tu cuenta no tiene acceso activo a esta organización.');
+      expect(mocks.syncMember).not.toHaveBeenCalled();
+    });
+
+    it('an inactive WorkOS membership denies before any local read or write', async () => {
+      mocks.memberships.mockResolvedValueOnce({ data: [{ organizationId: orgA, userId, status: 'inactive', role: { slug: 'member' } }] });
+      await expect(resolveIdentity()).rejects.toThrow('Tu cuenta no tiene acceso activo a esta organización.');
+      expect(mocks.resolveMember).not.toHaveBeenCalled();
+      expect(mocks.syncMember).not.toHaveBeenCalled();
+    });
+
+    it('relinks by verified email in the same tenant and logs identity.relinked', async () => {
+      mocks.auth.mockResolvedValue({ user: { id: userId, email: 'a@example.test', emailVerified: true }, organizationId: orgA, sessionId: 's' });
+      mocks.resolveMember.mockResolvedValueOnce(undefined);
+      mocks.syncMember.mockResolvedValueOnce({ userId: localUserId, role: 'member', status: 'active', outcome: 'relinked' });
+      await resolveIdentity();
+      expect(mocks.syncMember).toHaveBeenCalledWith(expect.objectContaining({ emailVerified: true }));
+      expect(mocks.logInfo).toHaveBeenCalledWith(expect.objectContaining({ userId: localUserId, tenantId: tenantA }), 'identity.relinked');
+    });
+
+    it('never relinks with an unverified email: the sync is asked with emailVerified=false and a denial is a refusal', async () => {
+      mocks.auth.mockResolvedValue({ user: { id: userId, email: 'a@example.test', emailVerified: false }, organizationId: orgA, sessionId: 's' });
+      mocks.resolveMember.mockResolvedValueOnce(undefined);
+      mocks.syncMember.mockResolvedValueOnce(undefined);
+      await expect(resolveIdentity()).rejects.toThrow('Tu cuenta no tiene acceso activo a esta organización.');
+      expect(mocks.syncMember).toHaveBeenCalledWith(expect.objectContaining({ emailVerified: false }));
+    });
+
+    it('a relink target that is inactive denies', async () => {
+      mocks.resolveMember.mockResolvedValueOnce(undefined);
+      mocks.syncMember.mockResolvedValueOnce({ userId: localUserId, role: 'member', status: 'inactive', outcome: 'denied_inactive' });
+      await expect(resolveIdentity()).rejects.toThrow('Tu cuenta no tiene acceso activo a esta organización.');
+    });
+
+    it('syncs only inside the tenant mapped from the organization (never cross-tenant)', async () => {
+      const { systemRepos } = await import('../../repos');
+      mocks.auth.mockResolvedValue({ user: { id: userId, email: 'a@example.test', emailVerified: true }, organizationId: orgB, sessionId: 's' });
+      mocks.resolveMember.mockResolvedValueOnce(undefined);
+      await resolveIdentity();
+      expect(vi.mocked(systemRepos)).toHaveBeenLastCalledWith({ id: tenantB });
+    });
   });
 
   it('requires an active WorkOS membership and fails closed on WorkOS errors', async () => {
@@ -131,7 +217,7 @@ describe('resolveIdentity', () => {
   });
 
   it('returns the database tenant role and persisted platform role separately', async () => {
-    mocks.resolveMember.mockResolvedValueOnce({ userId: localUserId, role: 'admin' });
+    mocks.resolveMember.mockResolvedValueOnce({ userId: localUserId, role: 'admin', status: 'active' }); mocks.workosRole.slug = 'admin';
     mocks.isSuperadmin.mockResolvedValueOnce(true);
     const identity = await resolveIdentity();
     expect(identity).toMatchObject({
@@ -148,7 +234,7 @@ describe('resolveIdentity', () => {
     await expect(requireTenantAdmin()).rejects.toMatchObject({ name: 'TenantAdminRequiredError', identity: { tenantRole: 'member' } });
 
     mocks.isSuperadmin.mockResolvedValueOnce(true);
-    mocks.resolveMember.mockResolvedValueOnce({ userId: localUserId, role: 'admin' });
+    mocks.resolveMember.mockResolvedValueOnce({ userId: localUserId, role: 'admin', status: 'active' }); mocks.workosRole.slug = 'admin';
     await expect(requirePlatformAdmin()).resolves.toMatchObject({ platformAdmin: true, tenantRole: 'admin' });
   });
 
@@ -192,7 +278,7 @@ describe('resolveIdentity', () => {
       userId: localUserId,
     })).resolves.toBe(true);
 
-    mocks.resolveMember.mockResolvedValueOnce({ userId: '44444444-4444-4444-8444-444444444444', role: 'member' });
+    mocks.resolveMember.mockResolvedValueOnce({ userId: '44444444-4444-4444-8444-444444444444', role: 'member', status: 'active' }); mocks.workosRole.slug = 'member';
     await expect(verifyActiveMembership({
       organizationId: orgA,
       workosUserId: userId,
@@ -227,7 +313,7 @@ describe('developer role override (KAN-79)', () => {
     process.env.DEVELOPMENT = 'TRUE';
     mocks.auth.mockResolvedValue({ user: { id: userId, email: 'user@example.test' }, organizationId: orgA, sessionId: 'session_1' });
     mocks.memberships.mockImplementation(({ organizationId }: { organizationId: string }) => activeMembership(organizationId));
-    mocks.resolveMember.mockResolvedValue({ userId: localUserId, role: 'admin' });
+    mocks.resolveMember.mockResolvedValue({ userId: localUserId, role: 'admin', status: 'active' }); mocks.workosRole.slug = 'admin';
     mocks.isSuperadmin.mockResolvedValue(true);
     mocks.findByWorkosOrgId.mockResolvedValue({ tenantId: tenantA, status: 'active' });
     cookie(undefined);
@@ -290,7 +376,7 @@ describe('developer role override (KAN-79)', () => {
     });
     await expect(requirePlatformStepUp(reduced)).resolves.toBeUndefined();
 
-    mocks.resolveMember.mockResolvedValueOnce({ userId: localUserId, role: 'member' });
+    mocks.resolveMember.mockResolvedValueOnce({ userId: localUserId, role: 'member', status: 'active' }); mocks.workosRole.slug = 'member';
     mocks.isSuperadmin.mockResolvedValue(false);
     const plainMember = await resolveIdentity();
     await expect(requirePlatformStepUp(plainMember)).resolves.toBeUndefined();
@@ -352,7 +438,7 @@ describe('developer role override (KAN-79)', () => {
   });
 
   it('cannot elevate a member through the cookie: reductions on missing roles are no-ops', async () => {
-    mocks.resolveMember.mockResolvedValue({ userId: localUserId, role: 'member' });
+    mocks.resolveMember.mockResolvedValue({ userId: localUserId, role: 'member', status: 'active' }); mocks.workosRole.slug = 'member';
     mocks.isSuperadmin.mockResolvedValue(false);
     cookie(`v1.${userId}.tenant-member+no-platform-admin`);
     const identity = await resolveIdentity();
@@ -367,7 +453,7 @@ describe('developer role override (KAN-79)', () => {
       effective: { tenantRole: 'member', platformAdmin: true },
       reduced: true,
     });
-    mocks.resolveMember.mockResolvedValue({ userId: localUserId, role: 'member' });
+    mocks.resolveMember.mockResolvedValue({ userId: localUserId, role: 'member', status: 'active' }); mocks.workosRole.slug = 'member';
     mocks.isSuperadmin.mockResolvedValue(false);
     await expect(getRoleSwitcherState()).resolves.toBeNull();
   });
