@@ -5,6 +5,7 @@ import { unstable_rethrow } from 'next/navigation';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Tenant, User } from '../db/with-transaction';
 import { systemRepos } from '../repos';
+import type { TenantMembership } from '../repos/identity';
 import type { RepositoryActor } from '../repos/ai-config';
 import { globalRepos } from '../repos/global';
 import { isDevelopmentMode } from '../services/development-mode';
@@ -54,9 +55,13 @@ export interface GlobalIdentity {
   readonly sessionId: string;
 }
 
-async function hasActiveWorkOSMembership(organizationId: string, workosUserId: string): Promise<boolean> {
+/** D52: the active WorkOS membership of the user in the organization; its role slug is the tenant role. */
+async function getActiveWorkOSMembership(organizationId: string, workosUserId: string): Promise<{ role: TenantRole } | undefined> {
   const memberships = await getWorkOS().userManagement.listOrganizationMemberships({ organizationId, userId: workosUserId, statuses: ['active'], limit: 100 });
-  return memberships.data.some((item) => item.organizationId === organizationId && item.userId === workosUserId && item.status === 'active');
+  const active = memberships.data.find((item) => item.organizationId === organizationId && item.userId === workosUserId && item.status === 'active');
+  if (!active) return undefined;
+  // Any slug other than `admin` is a plain member.
+  return { role: active.role?.slug === 'admin' ? 'admin' : 'member' };
 }
 
 /**
@@ -176,9 +181,9 @@ export async function verifyActiveMembership(input: { organizationId: string; wo
   if (!WORKOS_ORG_ID_PATTERN.test(input.organizationId) || !WORKOS_USER_ID_PATTERN.test(input.workosUserId)) return false;
   try {
     if (!await globalRepos().organizations.isActive(input.organizationId)) return false;
-    if (!await hasActiveWorkOSMembership(input.organizationId, input.workosUserId)) return false;
+    if (!await getActiveWorkOSMembership(input.organizationId, input.workosUserId)) return false;
     const membership = await systemRepos({ id: input.tenantId }).identity?.resolveMember(input.organizationId, input.workosUserId);
-    return membership?.userId === input.userId;
+    return membership?.status === 'active' && membership.userId === input.userId;
   } catch (error) {
     log.error({ organizationId: input.organizationId, workosUserId: input.workosUserId, error }, 'identity.membership_recheck_failed');
     return false;
@@ -260,13 +265,13 @@ async function resolveRealIdentity(): Promise<ResolvedIdentity> {
   }
   if (!organization) throw new Error('La organización de tu cuenta no está habilitada.');
   if (organization.status !== 'active') throw new Error('El acceso a esta organización está pausado.');
-  let activeMembership = false;
-  try { activeMembership = await hasActiveWorkOSMembership(organizationId, workosUser.id); } catch (error) {
+  let workosMembership: { role: TenantRole } | undefined;
+  try { workosMembership = await getActiveWorkOSMembership(organizationId, workosUser.id); } catch (error) {
     log.error({ organizationId, workosUserId: workosUser.id, error }, 'identity.resolve.workos_membership_failed');
     throw new Error('No pudimos verificar el acceso de tu cuenta. Inténtalo de nuevo.');
   }
-  if (!activeMembership) throw new Error('Tu cuenta no tiene acceso activo a esta organización.');
-  const membership = await systemRepos({ id: organization.tenantId }).identity?.resolveMember(organizationId, workosUser.id);
+  if (!workosMembership) throw new Error('Tu cuenta no tiene acceso activo a esta organización.');
+  const membership = await mirrorMember(organization.tenantId, organizationId, workosUser, workosMembership.role);
   if (!membership) throw new Error('Tu cuenta no tiene acceso activo a esta organización.');
   let platformAdmin = false;
   try { platformAdmin = await globalRepos().identity.isSuperadmin(workosUser.id); } catch (error) {
@@ -274,6 +279,35 @@ async function resolveRealIdentity(): Promise<ResolvedIdentity> {
     throw new Error('No pudimos verificar el acceso de tu cuenta. Inténtalo de nuevo.');
   }
   return { tenant: { id: organization.tenantId }, user: { id: membership.userId }, tenantRole: membership.role, workosUserId: workosUser.id, organizationId, platformAdmin };
+}
+
+/**
+ * D52: local `users` mirror of the WorkOS membership. The normal path is one read. A write
+ * happens only on first sign-in, a verified-email relink, or a role change; an inactive local
+ * row is a block that wins over WorkOS (fail closed) and is never written.
+ */
+async function mirrorMember(
+  tenantId: string,
+  organizationId: string,
+  workosUser: { id: string; email: string; emailVerified?: boolean },
+  role: TenantRole,
+): Promise<TenantMembership | undefined> {
+  const identity = systemRepos({ id: tenantId }).identity;
+  if (!identity) return undefined;
+  let member = await identity.resolveMember(organizationId, workosUser.id);
+  if (member?.status === 'inactive') return undefined;
+  if (!member || member.role !== role) {
+    const synced = await identity.syncMember({ workosUserId: workosUser.id, email: workosUser.email, emailVerified: workosUser.emailVerified === true, role });
+    if (!synced) {
+      log.warn({ tenantId, workosUserId: workosUser.id }, 'identity.sync_denied');
+      return undefined;
+    }
+    if (synced.outcome === 'relinked') log.info({ tenantId, userId: synced.userId, workosUserId: workosUser.id }, 'identity.relinked');
+    else if (synced.outcome === 'created') log.info({ tenantId, userId: synced.userId, workosUserId: workosUser.id, role }, 'identity.mirror_created');
+    else log.info({ tenantId, userId: synced.userId, role }, 'identity.role_synced');
+    member = synced;
+  }
+  return member.status === 'active' ? member : undefined;
 }
 
 /** A resolved member who is not an effective tenant admin. Carries the identity for refusal logs. */

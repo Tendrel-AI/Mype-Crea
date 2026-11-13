@@ -205,6 +205,16 @@ SUITE('AI configuration and durable turns (integration)', () => {
         if (sharedActors.length) {
           await owner.query(`DELETE FROM ai_shared_releases WHERE created_by_workos_user_id = ANY($1::text[])`, [sharedActors]);
         }
+        // D6: every other tenant-scoped table (limit_profiles, limit assignments, credits, usage, ...)
+        // is cleared by catalog lookup, so a new table can never leave a tenant behind through an FK.
+        const scoped = await owner.query<{ table_name: string }>(
+          `SELECT c.table_name FROM information_schema.columns c
+             JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE'
+            WHERE c.table_schema = 'public' AND c.column_name = 'tenant_id' AND c.table_name NOT IN ('users', 'tenants')`,
+        );
+        for (const { table_name: table } of scoped.rows) {
+          await owner.query(`DELETE FROM "${table}" WHERE tenant_id = ANY($1::uuid[])`, [tenantIds]);
+        }
         await owner.query(`DELETE FROM users WHERE tenant_id = ANY($1::uuid[])`, [tenantIds]);
         await owner.query(`DELETE FROM tenants WHERE id = ANY($1::uuid[])`, [tenantIds]);
         await owner.query('COMMIT');

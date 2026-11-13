@@ -15,7 +15,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../../repos/global', () => ({ globalRepos: () => mocks }));
 vi.mock('@workos-inc/authkit-nextjs', () => ({ getWorkOS: vi.fn() }));
 
+import { getWorkOS } from '@workos-inc/authkit-nextjs';
+import type { WorkosAccountsClient, WorkosMember } from '../../tenant-accounts';
 import {
+  createWorkosOrganizationsClient,
+  PlatformOrganizationAdminService,
   PlatformOrganizationService,
   type WorkosOrganization,
   type WorkosOrganizationsClient,
@@ -139,5 +143,78 @@ describe('platform organization lifecycle', () => {
       outcome: 'failure',
       metadata: { error: 'unknown', compensation: 'failed', compensationError: 'rollback_failed' },
     }));
+  });
+});
+
+class FakeAccounts implements WorkosAccountsClient {
+  memberships = new Map<string, { role: 'admin' | 'member'; status: 'active' | 'inactive' }>();
+  failActivate = false;
+  async ensureUser(email: string) { return { id: `user_${email.split('@')[0]}` }; }
+  async listMemberships(): Promise<WorkosMember[]> {
+    return [...this.memberships].map(([id, m]) => ({ workosUserId: id, email: `${id}@x.pe`, createdAt: '', ...m }));
+  }
+  async activateMembership(_org: string, userId: string, roleSlug: 'admin' | 'member') {
+    if (this.failActivate) throw new Error('workos down');
+    const current = this.memberships.get(userId);
+    if (!current) { this.memberships.set(userId, { role: roleSlug, status: 'active' }); return 'created' as const; }
+    if (roleSlug === 'admin' && current.role !== 'admin') { current.role = 'admin'; return 'upgraded' as const; }
+    return 'already_active' as const;
+  }
+  async deactivateMembership() {}
+  async revokeSessions() {}
+}
+
+describe('D52 organization first admin', () => {
+  const adminInput = { tenantId: 'tenant-1', workosOrgId: 'org_1', email: 'Jefe@Ejemplo.pe', actorWorkosUserId: 'user-super', reason: 'Alta' };
+  beforeEach(() => { mocks.audit.record.mockReset(); mocks.audit.record.mockResolvedValue(undefined); });
+
+  it('create + provision gives the first admin the admin role and audits success', async () => {
+    const accounts = new FakeAccounts();
+    const res = await new PlatformOrganizationAdminService(accounts).provision(adminInput);
+    expect(res).toMatchObject({ ok: true, code: 'provisioned' });
+    expect(accounts.memberships.get('user_jefe')).toEqual({ role: 'admin', status: 'active' });
+    expect(mocks.audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'organization.admin_provision', outcome: 'success', scopeId: 'tenant-1' }));
+  });
+
+  it('a failure reports it, audits failure, and a retry is idempotent', async () => {
+    const accounts = new FakeAccounts();
+    const service = new PlatformOrganizationAdminService(accounts);
+    accounts.failActivate = true;
+    expect(await service.provision(adminInput)).toMatchObject({ ok: false, code: 'failed' });
+    expect(mocks.audit.record).toHaveBeenLastCalledWith(expect.objectContaining({ outcome: 'failure' }));
+    accounts.failActivate = false;
+    expect(await service.provision(adminInput)).toMatchObject({ ok: true, code: 'provisioned' });
+    expect(await service.provision(adminInput)).toMatchObject({ ok: true, code: 'already_admin' });
+    expect(accounts.memberships.size).toBe(1);
+  });
+
+  it('upgrades an existing member to admin', async () => {
+    const accounts = new FakeAccounts();
+    accounts.memberships.set('user_jefe', { role: 'member', status: 'active' });
+    expect(await new PlatformOrganizationAdminService(accounts).provision(adminInput)).toMatchObject({ ok: true, code: 'provisioned' });
+    expect(accounts.memberships.get('user_jefe')!.role).toBe('admin');
+  });
+
+  it('rejects an invalid email without touching WorkOS and lists only active admins', async () => {
+    const accounts = new FakeAccounts();
+    const service = new PlatformOrganizationAdminService(accounts);
+    expect(await service.provision({ ...adminInput, email: 'nope' })).toMatchObject({ ok: false, code: 'invalid_email' });
+    accounts.memberships.set('a', { role: 'admin', status: 'active' });
+    accounts.memberships.set('b', { role: 'admin', status: 'inactive' });
+    accounts.memberships.set('c', { role: 'member', status: 'active' });
+    expect((await service.listAdmins('org_1')).map((m) => m.workosUserId)).toEqual(['a']);
+  });
+});
+
+describe('WorkOS organizations client findByExternalId', () => {
+  it('maps a 404 to undefined so create proceeds, and rethrows other errors', async () => {
+    const get = vi.fn().mockRejectedValueOnce(Object.assign(new Error('nf'), { status: 404 }));
+    vi.mocked(getWorkOS).mockReturnValue({ organizations: { getOrganizationByExternalId: get } } as never);
+    const client = createWorkosOrganizationsClient();
+    expect(await client.findByExternalId('op-1')).toBeUndefined();
+    get.mockResolvedValueOnce({ id: 'org_1', externalId: 'op-1' });
+    expect(await client.findByExternalId('op-1')).toEqual({ id: 'org_1', externalId: 'op-1' });
+    get.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
+    await expect(client.findByExternalId('op-1')).rejects.toThrow('boom');
   });
 });

@@ -45,8 +45,8 @@ describe('tenant account actions', () => {
     mocks.requireTenantAdmin.mockRejectedValue(new TenantAdminRequiredError(identity('member')));
     const results = [
       await provisionTenantMember({ email: 'ana@ejemplo.pe' }),
-      await deactivateTenantMember({ userId: ADMIN.id }),
-      await reactivateTenantMember({ userId: ADMIN.id }),
+      await deactivateTenantMember({ workosUserId: 'user_B' }),
+      await reactivateTenantMember({ workosUserId: 'user_B' }),
     ];
     for (const result of results) expect(result).toEqual({ ok: false, code: 'not_admin', message: NOT_ADMIN });
     expect(await getTenantAccounts()).toEqual({ ok: false, error: NOT_ADMIN });
@@ -59,30 +59,33 @@ describe('tenant account actions', () => {
 
   it('derives tenant and actor from the identity, ignoring forged keys in the input', async () => {
     mocks.requireTenantAdmin.mockResolvedValue(identity('admin'));
-    const repo = { findByEmail: vi.fn(async () => undefined), addMember: vi.fn(async (input: { email: string }) => ({ member: { email: input.email }, created: true })) };
+    const repo = { recordAudit: vi.fn(async () => undefined) };
     mocks.repos.mockReturnValue({ tenantAccounts: repo });
-    mocks.workosClient.mockReturnValue({ ensureUser: vi.fn(async () => ({ id: 'user_new' })), activateMembership: vi.fn(async () => undefined) });
+    const activateMembership = vi.fn(async () => 'created');
+    mocks.workosClient.mockReturnValue({ ensureUser: vi.fn(async () => ({ id: 'user_new' })), activateMembership });
     const forged = { email: 'ana@ejemplo.pe', tenantId: 'other', tenant: { id: 'other' }, role: 'admin' } as unknown as { email: string };
     expect(await provisionTenantMember(forged)).toMatchObject({ ok: true, code: 'provisioned' });
     expect(mocks.repos).toHaveBeenCalledWith(TENANT, ADMIN);
-    expect(repo.addMember).toHaveBeenCalledWith({ workosUserId: 'user_new', email: 'ana@ejemplo.pe', reason: null });
-    const workos = mocks.workosClient.mock.results[0].value;
-    expect(workos.activateMembership).toHaveBeenCalledWith('org_A', 'user_new');
+    // Always a member, in the session's organization; no local insert exists any more.
+    expect(activateMembership).toHaveBeenCalledWith('org_A', 'user_new', 'member');
+    expect(repo.recordAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'member.provision', outcome: 'success' }));
   });
 
   it('answers a persisted-role refusal from the repository as not_admin', async () => {
     mocks.requireTenantAdmin.mockResolvedValue(identity('admin'));
-    mocks.repos.mockReturnValue({ tenantAccounts: { listMembers: vi.fn(async () => { throw new NotTenantAdminError(); }), listAudit: vi.fn(async () => []) } });
+    mocks.repos.mockReturnValue({ tenantAccounts: { listAudit: vi.fn(async () => { throw new NotTenantAdminError(); }) } });
+    mocks.workosClient.mockReturnValue({ listMemberships: vi.fn(async () => []) });
     expect(await getTenantAccounts()).toEqual({ ok: false, error: NOT_ADMIN });
     expect(mocks.warn).toHaveBeenCalledWith(expect.objectContaining({ operation: 'list' }), 'tenant_accounts.refused_not_admin_db');
   });
 
-  it('lists members without WorkOS ids', async () => {
+  it('lists WorkOS members keyed by WorkOS user id, marking the current user', async () => {
     mocks.requireTenantAdmin.mockResolvedValue(identity('admin'));
-    const member = { id: ADMIN.id, workosUserId: 'user_A', email: 'admin@ejemplo.pe', role: 'admin', status: 'active', createdAt: '2026-11-02T00:00:00.000Z' };
-    mocks.repos.mockReturnValue({ tenantAccounts: { listMembers: vi.fn(async () => [member]), listAudit: vi.fn(async () => []) } });
+    const member = { workosUserId: 'user_A', email: 'admin@ejemplo.pe', role: 'admin', status: 'active', createdAt: '2026-11-02T00:00:00.000Z' };
+    mocks.repos.mockReturnValue({ tenantAccounts: { listAudit: vi.fn(async () => []) } });
+    mocks.workosClient.mockReturnValue({ listMemberships: vi.fn(async () => [member]) });
     const view = await getTenantAccounts();
-    expect(view).toMatchObject({ ok: true, currentUserId: ADMIN.id, audit: [] });
-    expect(view.members).toEqual([{ id: ADMIN.id, email: 'admin@ejemplo.pe', role: 'admin', status: 'active', createdAt: '2026-11-02T00:00:00.000Z' }]);
+    expect(view).toMatchObject({ ok: true, currentUserId: 'user_A', audit: [] });
+    expect(view.members).toEqual([{ id: 'user_A', email: 'admin@ejemplo.pe', role: 'admin', status: 'active', createdAt: '2026-11-02T00:00:00.000Z' }]);
   });
 });

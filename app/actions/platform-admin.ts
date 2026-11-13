@@ -1,9 +1,15 @@
 'use server';
 
-import { getWorkOS } from '@workos-inc/authkit-nextjs';
 import { requireGlobalMfa } from '../../src/auth/resolve-identity';
 import { globalRepos } from '../../src/repos/global';
-import { PlatformOrganizationService } from '../../src/services/platform/organizations';
+import {
+  createWorkosOrganizationsClient,
+  PlatformOrganizationAdminService,
+  PlatformOrganizationService,
+  type AdminProvisionResult,
+  type WorkosOrganizationsClient,
+} from '../../src/services/platform/organizations';
+import { createWorkosAccountsClient, EMAIL_PATTERN, parseReason, type WorkosMember } from '../../src/services/tenant-accounts';
 import { defaultTenantKeyService } from '../../src/services/openrouter/tenant-keys';
 import { loggerFor } from '../../src/services/logger';
 import { getPlatformMonthlyMetrics, getPlatformAuditTrail } from '../../src/services/platform/metrics/monthly';
@@ -47,31 +53,50 @@ function validateOperatorInput(workosUserId: string, reason: string): void {
   if (!reason) throw new Error('Escribe el motivo.');
 }
 
-export async function createPlatformOrganization(input: { operationKey: string; name: string; reason: string }) {
+export interface CreateOrganizationResult {
+  readonly tenantId: string;
+  readonly workosOrgId: string;
+  /** The organization exists even when `admin.ok` is false; retry from the organization detail. */
+  readonly admin: AdminProvisionResult;
+}
+
+const organizationService = (workos: WorkosOrganizationsClient = createWorkosOrganizationsClient()) => new PlatformOrganizationService(workos);
+const adminService = () => new PlatformOrganizationAdminService(createWorkosAccountsClient());
+
+/** D52: creates the organization and provisions its first admin (WorkOS-only, role `admin`). */
+export async function createPlatformOrganization(input: { operationKey: string; name: string; adminEmail: string; reason: string }): Promise<CreateOrganizationResult> {
   const identity = await requireGlobalMfa();
   const name = input.name.trim();
   const reason = input.reason.trim();
+  const adminEmail = String(input.adminEmail ?? '').trim().toLowerCase();
   if (!name || !reason) throw new Error('Escribe el nombre de la organización y el motivo.');
-  const workos = getWorkOS();
-  const service = new PlatformOrganizationService({
-    async findByExternalId(externalId) {
-      const organizations = await workos.organizations.listOrganizations().then((result) => result.autoPagination());
-      for (const organization of organizations) {
-        if (organization.externalId === externalId) return { id: organization.id, externalId: organization.externalId };
-      }
-      return undefined;
-    },
-    async create(payload) {
-      const organization = await workos.organizations.createOrganization(payload, { idempotencyKey: payload.externalId });
-      return { id: organization.id, externalId: organization.externalId };
-    },
-    async update(payload) {
-      const organization = await workos.organizations.updateOrganization({ organization: payload.id, name: payload.name });
-      return { id: organization.id, externalId: organization.externalId };
-    },
-  });
+  if (adminEmail.length > 254 || !EMAIL_PATTERN.test(adminEmail)) throw new Error('Escribe un correo electrónico válido para el administrador.');
   if (!input.operationKey.trim()) throw new Error('No se pudo iniciar la operación. Inténtalo de nuevo.');
-  return service.create({ operationKey: input.operationKey, name, actorWorkosUserId: identity.workosUserId, reason });
+  const created = await organizationService().create({ operationKey: input.operationKey, name, actorWorkosUserId: identity.workosUserId, reason });
+  log.debug({ tenantId: created.tenantId }, 'organization.created');
+  const admin = await adminService().provision({
+    tenantId: created.tenantId, workosOrgId: created.workosOrgId, email: adminEmail, actorWorkosUserId: identity.workosUserId, reason,
+  });
+  return { ...created, admin };
+}
+
+/** D52: add (or retry) an organization admin from the organization detail. */
+export async function provisionPlatformOrganizationAdmin(input: { tenantId: string; email: string; reason: string }): Promise<AdminProvisionResult> {
+  const identity = await requireGlobalMfa();
+  const reason = parseReason(input.reason)?.trim();
+  if (!reason) return { ok: false, code: 'invalid_reason', message: 'Escribe el motivo (hasta 500 caracteres).' };
+  const organization = await repositories.organizations.getById(input.tenantId);
+  if (!organization?.workosOrgId) return { ok: false, code: 'failed', message: 'La organización no está vinculada todavía. Inténtalo más tarde.' };
+  return adminService().provision({
+    tenantId: organization.tenantId, workosOrgId: organization.workosOrgId, email: input.email, actorWorkosUserId: identity.workosUserId, reason,
+  });
+}
+
+/** D52: active admin memberships of the organization, read from WorkOS. */
+export async function getPlatformOrganizationAdmins(tenantId: string): Promise<ReadonlyArray<WorkosMember>> {
+  await requireGlobalMfa();
+  const organization = await repositories.organizations.getById(tenantId);
+  return organization?.workosOrgId ? adminService().listAdmins(organization.workosOrgId) : [];
 }
 
 export async function renamePlatformOrganization(input: { tenantId: string; name: string; reason: string }) {
@@ -79,16 +104,7 @@ export async function renamePlatformOrganization(input: { tenantId: string; name
   const name = input.name.trim();
   const reason = input.reason.trim();
   if (!name || !reason) throw new Error('Escribe el nombre de la organización y el motivo.');
-  const workos = getWorkOS();
-  const service = new PlatformOrganizationService({
-    async findByExternalId() { return undefined; },
-    async create() { throw new Error('No se pudo actualizar la organización.'); },
-    async update(payload) {
-      const organization = await workos.organizations.updateOrganization({ organization: payload.id, name: payload.name });
-      return { id: organization.id, externalId: organization.externalId };
-    },
-  });
-  await service.rename({ ...input, name, reason, actorWorkosUserId: identity.workosUserId });
+  await organizationService().rename({ ...input, name, reason, actorWorkosUserId: identity.workosUserId });
 }
 
 export async function setPlatformOrganizationActive(input: { tenantId: string; active: boolean; reason: string }) {

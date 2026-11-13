@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { createPlatformOrganization, grantPlatformOperator, rechargeTenantCredits, renamePlatformOrganization, revokePlatformOperator, setPlatformOrganizationActive } from '../app/actions/platform-admin';
+import { createPlatformOrganization, grantPlatformOperator, provisionPlatformOrganizationAdmin, rechargeTenantCredits, renamePlatformOrganization, revokePlatformOperator, setPlatformOrganizationActive } from '../app/actions/platform-admin';
 import { applyPlatformModuleRollout, previewPlatformModuleRollout, publishAiModuleVersion, publishPlatformModuleVersion, retryPlatformModuleRollout, rollbackPlatformModule } from '../app/actions/platform-modules';
 import type { PlatformModule } from '../src/services/platform/modules/contract';
 import type { ModuleVersion, RolloutScope } from '../src/services/platform/rollout/service';
@@ -12,14 +12,17 @@ export function OrganizationCreateForm() {
   const [pending, start] = useTransition();
   const [message, setMessage] = useState('');
   const [operationKey, setOperationKey] = useState(() => crypto.randomUUID());
-  return <form className="grid gap-3 rounded-xl border bg-white p-4 md:grid-cols-3" onSubmit={(event) => {
+  return <form className="grid gap-3 rounded-xl border bg-white p-4 md:grid-cols-4" onSubmit={(event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
     start(async () => {
       try {
-        await createPlatformOrganization({ operationKey, name: String(data.get('name') ?? ''), reason: String(data.get('reason') ?? '') });
-        setMessage('Organización creada.');
+        const created = await createPlatformOrganization({ operationKey, name: String(data.get('name') ?? ''), adminEmail: String(data.get('adminEmail') ?? ''), reason: String(data.get('reason') ?? '') });
+        // The link carries no token: the admin proves ownership of the email at sign-in.
+        setMessage(created.admin.ok
+          ? `Organización creada. ${created.admin.message} Enlace: ${window.location.origin}/login`
+          : `Organización creada, pero el administrador no se pudo crear. ${created.admin.message}`);
         form.reset();
         setOperationKey(crypto.randomUUID());
         router.refresh();
@@ -27,8 +30,32 @@ export function OrganizationCreateForm() {
     });
   }}>
     <label className="grid gap-1 text-sm">Nombre<input required name="name" className="rounded border p-2" /></label>
+    <label className="grid gap-1 text-sm">Correo del administrador<input required type="email" name="adminEmail" maxLength={254} className="rounded border p-2" /></label>
     <label className="grid gap-1 text-sm">Motivo<input required name="reason" className="rounded border p-2" /></label>
     <div className="flex items-end gap-3"><button disabled={pending} className="rounded bg-orange-600 px-4 py-2 text-white">Crear organización</button><span role="status" className="text-sm">{message}</span></div>
+  </form>;
+}
+
+export function OrganizationAdminForm({ tenantId }: { tenantId: string }) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [message, setMessage] = useState('');
+  return <form className="grid gap-3 rounded-xl border bg-white p-4 md:grid-cols-3" onSubmit={(event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    start(async () => {
+      try {
+        const result = await provisionPlatformOrganizationAdmin({ tenantId, email: String(data.get('email') ?? ''), reason: String(data.get('reason') ?? '') });
+        setMessage(result.ok ? `${result.message} Enlace: ${window.location.origin}/login` : result.message);
+        if (result.ok) form.reset();
+        router.refresh();
+      } catch { setMessage('No pudimos agregar al administrador. Inténtalo de nuevo.'); }
+    });
+  }}>
+    <label className="grid gap-1 text-sm">Correo del administrador<input required type="email" name="email" maxLength={254} className="rounded border p-2" /></label>
+    <label className="grid gap-1 text-sm">Motivo<input required name="reason" maxLength={500} className="rounded border p-2" /></label>
+    <div className="flex items-end gap-3"><button disabled={pending} className="rounded bg-orange-600 px-4 py-2 text-white">Agregar administrador</button><span role="status" className="text-sm">{message}</span></div>
   </form>;
 }
 
