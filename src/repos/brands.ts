@@ -1,13 +1,13 @@
 /**
  * KAN-85 / KAN-87 brands. A user creates a brand (with validated typed attributes) before chatting;
- * every new conversation belongs to a brand. Two tenant-admin limits (`tenants.max_brands_per_user`,
- * `tenants.max_products_per_brand`) are enforced inside the same transaction as the insert:
+ * every new conversation belongs to a brand. Two count limits (limit profile keys `brands.per_user` and
+ * `products.per_brand`, D38; decided by `src/core/limits/rules.ts`) are enforced inside the same transaction as the insert:
  *  - brands: a per-(tenant, user) advisory lock serializes creators, then active brands are counted;
  *  - products: see `products.ts` (the owner's active brand row is locked, then its products counted).
  * Conversations per brand are NOT limited (KAN-87; cost is bounded by KAN-43 usage limits).
  * Over the limit returns a typed refusal (never a throw). Archived brands do not count and take no
  * new conversations or edits. Lowering a limit below the current count only blocks new creation.
- * The limits change only through `app.set_brand_product_limits` (SECURITY DEFINER, admin re-checked in the DB).
+ * The limits change only through the limit profile (`app.set_limit_profile_value`, see `src/repos/limits.ts`).
  */
 import type { AiConversationPin } from './models';
 import type { UUID } from '../core/contracts';
@@ -15,7 +15,9 @@ import type { AgentFieldSchema } from '../core/orchestrator/in-memory-store';
 import { withTenantTransaction, type Tenant, type TxClient, type User } from '../db/with-transaction';
 import { loggerFor } from '../services/logger';
 import { businessNameFromAgentStates, pinConversationInTx } from './conversations';
-import { NotTenantAdminError } from './tenant-accounts';
+import { readEffectiveLimits } from './limits';
+import { checkLimit } from '../core/limits/rules';
+import { FIXED_CATALOG, withDefaults } from '../core/limits/catalog';
 import { updateAttributesInTx, type AttributePatch } from './attributes';
 
 const log = loggerFor('repos.brands');
@@ -26,11 +28,6 @@ export interface BrandRow {
   readonly name: string | null;
   readonly attributes: Record<string, unknown>;
   readonly createdAt: string;
-}
-
-export interface BrandLimits {
-  readonly maxBrandsPerUser: number;
-  readonly maxProductsPerBrand: number;
 }
 
 export type LimitRefusal = { readonly ok: false; readonly code: 'brand_limit_reached'; readonly limit: number };
@@ -58,19 +55,11 @@ export interface BrandsRepo {
   listActive(): Promise<BrandRow[]>;
   /** Archive the caller's active brand; false when it is foreign, missing or already archived. */
   archive(brandId: UUID): Promise<boolean>;
-  getLimits(): Promise<BrandLimits>;
-  /** Tenant admin only (re-checked in the DB); throws `NotTenantAdminError` otherwise. */
-  setLimits(limits: BrandLimits): Promise<void>;
 }
 
-export async function readLimits(tx: TxClient, tenant: Tenant): Promise<BrandLimits> {
-  const res = await tx.query<{ max_brands_per_user: number; max_products_per_brand: number }>(
-    `SELECT max_brands_per_user, max_products_per_brand FROM tenants WHERE id = $1`,
-    [tenant.id],
-  );
-  const row = res.rows[0];
-  if (!row) throw new Error('Tenant not visible.');
-  return { maxBrandsPerUser: row.max_brands_per_user, maxProductsPerBrand: row.max_products_per_brand };
+/** Effective count limits (fixed catalog keys completed with code defaults) inside the caller's transaction. */
+export async function readCountLimits(tx: TxClient, tenant: Tenant, user: User) {
+  return withDefaults(FIXED_CATALOG, await readEffectiveLimits(tx, tenant, user));
 }
 
 export function brandsRepo(tenant: Tenant, user: User): BrandsRepo {
@@ -78,14 +67,15 @@ export function brandsRepo(tenant: Tenant, user: User): BrandsRepo {
     async create(input) {
       return withTenantTransaction(tenant, user, async (tx) => {
         await tx.query(`SELECT pg_advisory_xact_lock(hashtext('brands:' || $1::text || ':' || $2::text))`, [tenant.id, user.id]);
-        const { maxBrandsPerUser } = await readLimits(tx, tenant);
+        const limits = await readCountLimits(tx, tenant, user);
         const count = await tx.query<{ n: number }>(
           `SELECT count(*)::int AS n FROM brands WHERE tenant_id = $1 AND user_id = $2 AND status = 'active'`,
           [tenant.id, user.id],
         );
-        if ((count.rows[0]?.n ?? 0) >= maxBrandsPerUser) {
-          log.info({ tenantId: tenant.id, userId: user.id, limit: maxBrandsPerUser }, 'brands.create.limit_reached');
-          return { ok: false, code: 'brand_limit_reached', limit: maxBrandsPerUser } as const;
+        const refusal = checkLimit(limits, { kind: 'brand' }, count.rows[0]?.n ?? 0);
+        if (refusal) {
+          log.info({ tenantId: tenant.id, userId: user.id, limit: refusal.limit }, 'brands.create.limit_reached');
+          return { ok: false, code: 'brand_limit_reached', limit: refusal.limit } as const;
         }
         const inserted = await tx.query<{ id: UUID }>(
           `INSERT INTO brands (tenant_id, user_id, name, attributes) VALUES ($1, $2, $3, $4::jsonb) RETURNING id`,
@@ -172,18 +162,6 @@ export function brandsRepo(tenant: Tenant, user: User): BrandsRepo {
           [brandId, tenant.id, user.id],
         );
         return (res.rowCount ?? 0) > 0;
-      });
-    },
-
-    async getLimits() {
-      return withTenantTransaction(tenant, user, (tx) => readLimits(tx, tenant));
-    },
-
-    async setLimits(limits) {
-      await withTenantTransaction(tenant, user, async (tx) => {
-        const admin = await tx.query<{ ok: boolean }>(`SELECT app.has_tenant_admin() AS ok`);
-        if (!admin.rows[0]?.ok) throw new NotTenantAdminError();
-        await tx.query(`SELECT app.set_brand_product_limits($1, $2)`, [limits.maxBrandsPerUser, limits.maxProductsPerBrand]);
       });
     },
   };

@@ -32,6 +32,8 @@ import { codePointLength } from '../../src/core/refinement';
 import { LABEL_AGENT_ID, NO_LAB_REPORTS_MESSAGE } from '../../src/labeling/lab-report-refs';
 import { labReportsOfConversation } from '../../src/labeling/lab-task-inputs';
 import { loggerFor } from '../../src/services/logger';
+import { getLimitGate } from '../../src/core/limits/runtime';
+import { refusalMessage } from '../../src/core/limits/rules';
 import { usageLimitMessage } from '../../src/services/usage/policy';
 
 const log = loggerFor('controller.deliverable-command');
@@ -66,7 +68,7 @@ export type DeliverableCommandActionResult =
       readonly states: ReadonlyArray<DeliverableStateView>;
     };
 
-type ControllerFailureCode = AccessFailureCode | 'invalid_request' | 'usage_limited' | 'command_failed';
+type ControllerFailureCode = AccessFailureCode | 'invalid_request' | 'usage_limited' | 'limit_reached' | 'command_failed';
 
 /** Client input: plain JSON from the browser, validated here. */
 export interface DeliverableCommandInput {
@@ -144,6 +146,15 @@ export async function deliverableCommandAction(
       if (message) {
         await record(lab ? 'label_needs_reports' : 'label_needs_product', authorized.identity);
         return { ok: false, code: 'invalid_request', reason: 'invalid', message, states: [] };
+      }
+    }
+    // D39: every iteration/refinement goes through the single limit gate before any task row or paid work.
+    if (command.kind === 'iterate' || command.kind === 'retry') {
+      const refusal = await getLimitGate(authorized.identity.tenant, authorized.identity.user)
+        .checkAlteration(command.conversationId, command.agentId);
+      if (refusal) {
+        await record(refusal.kind, authorized.identity);
+        return { ok: false, code: 'limit_reached', reason: 'unavailable', message: refusalMessage(refusal), states: [] };
       }
     }
     if (GENERATING_COMMANDS.includes(command.kind) && !UNMETERED_AGENTS.includes(command.agentId)) {

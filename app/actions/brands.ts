@@ -1,16 +1,14 @@
 'use server';
 
 /**
- * KAN-85 / KAN-87 controllers for brands, products and the two tenant-admin limits. Every call resolves
+ * KAN-85 / KAN-87 controllers for brands and products (limits live in `limits.ts`, D38). Every call resolves
  * the live identity first; tenant and owner come only from it. Ids are UUID-checked and `attributes`
  * go through the catalog validator (`src/core/brand-catalog.ts`) before anything reaches a repository. A foreign,
  * missing or archived brand always gets the same not-found answer.
  */
-import { requireTenantAdmin, resolveIdentity, TenantAdminRequiredError } from '../../src/auth/resolve-identity';
+import { resolveIdentity } from '../../src/auth/resolve-identity';
 import { repos } from '../../src/repos';
-import type { BrandLimits } from '../../src/repos/brands';
 import type { ProductRow } from '../../src/repos/products';
-import { NotTenantAdminError } from '../../src/repos/tenant-accounts';
 import type { UUID } from '../../src/core/contracts';
 import {
   BRAND_NOT_FOUND_MESSAGE,
@@ -35,7 +33,6 @@ const log = loggerFor('controller.brands');
 const FAILED = 'No pudimos completar la acción. Inténtalo de nuevo.';
 const NOT_FOUND = { ok: false, code: 'brand_not_found', message: BRAND_NOT_FOUND_MESSAGE } as const;
 const PRODUCT_NOT_FOUND = { ok: false, code: 'product_not_found', message: PRODUCT_NOT_FOUND_MESSAGE } as const;
-const MAX_LIMIT = 1000;
 
 type Failed = { readonly ok: false; readonly code: 'failed'; readonly message: string };
 type InvalidFields = { readonly ok: false; readonly code: 'invalid_input'; readonly message: string; readonly fieldErrors: Record<string, string> };
@@ -195,54 +192,6 @@ export async function listProductsAction(input: { readonly brandId: string }): P
     const identity = await resolveIdentity();
     return { ok: true, products: await repos(identity.tenant, identity.user).products.listByBrand(input.brandId as UUID) };
   } catch {
-    return { ok: false, code: 'failed', message: FAILED };
-  }
-}
-
-export type BrandLimitsResult =
-  | ({ readonly ok: true } & BrandLimits)
-  | { readonly ok: false; readonly code: 'not_admin' | 'invalid_input' | 'failed'; readonly message: string };
-
-const NOT_ADMIN = { ok: false, code: 'not_admin', message: 'No tienes permiso para cambiar los límites de esta organización.' } as const;
-
-export async function getBrandLimitsAction(): Promise<BrandLimitsResult> {
-  try {
-    const identity = await resolveIdentity();
-    return { ok: true, ...(await repos(identity.tenant, identity.user).brands.getLimits()) };
-  } catch {
-    return { ok: false, code: 'failed', message: FAILED };
-  }
-}
-
-const validLimit = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_LIMIT;
-
-/** Tenant admin only: checked here from the live identity and again in the database. */
-export async function updateBrandLimitsAction(input: {
-  readonly maxBrandsPerUser: number;
-  readonly maxProductsPerBrand: number;
-}): Promise<BrandLimitsResult> {
-  let identity;
-  try {
-    identity = await requireTenantAdmin();
-  } catch (error) {
-    if (error instanceof TenantAdminRequiredError) {
-      log.warn({ tenantId: error.identity.tenant.id, userId: error.identity.user.id }, 'brands.limits.refused_not_admin');
-      return NOT_ADMIN;
-    }
-    return { ok: false, code: 'failed', message: FAILED };
-  }
-  if (!validLimit(input?.maxBrandsPerUser) || !validLimit(input?.maxProductsPerBrand)) {
-    return { ok: false, code: 'invalid_input', message: `Los límites deben ser números enteros entre 0 y ${MAX_LIMIT}.` };
-  }
-  const limits = { maxBrandsPerUser: input.maxBrandsPerUser, maxProductsPerBrand: input.maxProductsPerBrand };
-  try {
-    await repos(identity.tenant, identity.user).brands.setLimits(limits);
-    log.info({ tenantId: identity.tenant.id, userId: identity.user.id, ...limits }, 'brands.limits.updated');
-    return { ok: true, ...limits };
-  } catch (error) {
-    if (error instanceof NotTenantAdminError) return NOT_ADMIN;
-    log.error({ err: error }, 'brands.limits.failed');
     return { ok: false, code: 'failed', message: FAILED };
   }
 }

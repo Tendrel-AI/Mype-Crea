@@ -14,7 +14,6 @@ vi.mock('../conversations', async (importOriginal) => ({
 
 import { brandsRepo } from '../brands';
 import { productsRepo } from '../products';
-import { NotTenantAdminError } from '../tenant-accounts';
 
 const TENANT = { id: 'tenant-a' };
 const USER = { id: 'user-a' };
@@ -34,7 +33,7 @@ interface Fake {
 function fakeDb(state: Fake) {
   mocked.query.mockImplementation(async (sql: string, params: unknown[] = []) => {
     if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
-    if (sql.includes('FROM tenants')) return { rows: [{ max_brands_per_user: state.limits.b, max_products_per_brand: state.limits.p }] };
+    if (sql.includes('platform_limit_defaults')) return { rows: [{ limit_key: 'brands.per_user', value: state.limits.b }, { limit_key: 'products.per_brand', value: state.limits.p }] };
     if (sql.includes('FROM brands WHERE tenant_id')) {
       return { rows: [{ n: state.brands.filter((b) => !sql.includes(`status = 'active'`) || b.status === 'active').length }] };
     }
@@ -49,7 +48,6 @@ function fakeDb(state: Fake) {
     }
     if (sql.includes('UPDATE brands')) return { rows: [] };
     if (sql.includes('app.has_tenant_admin')) return { rows: [{ ok: state.isAdmin }] };
-    if (sql.includes('app.set_brand_product_limits')) return { rows: [] };
     throw new Error(`Unexpected query: ${sql}`);
   });
 }
@@ -161,22 +159,6 @@ describe('brandsRepo.update (edit validation)', () => {
   it('answers brand_not_found for a foreign, missing or archived brand', async () => {
     fakeDb({ brands: [], products: 0, limits: { b: 3, p: 5 }, isAdmin: false });
     expect(await repo().update(BRAND as never, { values: {}, cleared: [] })).toEqual({ ok: false, code: 'brand_not_found' });
-  });
-});
-
-describe('brandsRepo.setLimits', () => {
-  beforeEach(() => { mocked.query.mockReset(); });
-
-  it('refuses a member without touching the limits', async () => {
-    fakeDb({ brands: [], products: 0, limits: { b: 3, p: 5 }, isAdmin: false });
-    await expect(repo().setLimits({ maxBrandsPerUser: 9, maxProductsPerBrand: 9 })).rejects.toBeInstanceOf(NotTenantAdminError);
-    expect(mocked.query.mock.calls.some(([sql]) => String(sql).includes('set_brand_product_limits'))).toBe(false);
-  });
-
-  it('lets an admin save through the definer helper', async () => {
-    fakeDb({ brands: [], products: 0, limits: { b: 3, p: 5 }, isAdmin: true });
-    await repo().setLimits({ maxBrandsPerUser: 9, maxProductsPerBrand: 8 });
-    expect(mocked.query).toHaveBeenLastCalledWith('SELECT app.set_brand_product_limits($1, $2)', [9, 8]);
   });
 });
 

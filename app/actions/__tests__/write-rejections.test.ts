@@ -94,6 +94,7 @@ vi.mock('../../../src/core/orchestrator/runtime', async () => {
     getChatOutputAdapter: () => ({ render: async () => ({ content: 'Listo, sigamos con tu marca.' }) }),
   };
 });
+vi.mock('../../../src/core/limits/runtime', () => ({ getLimitGate: () => ({ checkTurn: async () => null, checkAlteration: async () => null }) }));
 vi.mock('../../../src/services/ai-config/execution', () => ({
   // No frozen release: the real adapter runs its current behavior over the fake provider.
   AiConfigRuntime: class {

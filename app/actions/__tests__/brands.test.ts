@@ -8,8 +8,6 @@ const mocks = vi.hoisted(() => {
     TenantAdminRequiredError,
     resolveIdentity: vi.fn(async () => identity),
     requireTenantAdmin: vi.fn(),
-    setLimits: vi.fn(async () => undefined),
-    getLimits: vi.fn(async () => ({ maxBrandsPerUser: 3, maxProductsPerBrand: 5 })),
     archive: vi.fn(async () => true),
     productCreate: vi.fn(),
     productUpdate: vi.fn(),
@@ -30,7 +28,7 @@ vi.mock('../../../src/auth/resolve-identity', () => ({
 }));
 vi.mock('../../../src/repos', () => ({
   repos: () => ({
-    brands: { setLimits: mocks.setLimits, getLimits: mocks.getLimits, archive: mocks.archive, update: mocks.brandUpdate, get: mocks.brandGet },
+    brands: { archive: mocks.archive, update: mocks.brandUpdate, get: mocks.brandGet },
     products: { create: mocks.productCreate, listByBrand: mocks.listByBrand, update: mocks.productUpdate, get: mocks.productGet },
     brandFiles: { listByBrand: mocks.listFiles },
   }),
@@ -42,58 +40,17 @@ vi.mock('../../../src/conversations/selection', async (importOriginal) => ({
   listOwnedBrands: vi.fn(async () => []),
 }));
 
-import { NotTenantAdminError } from '../../../src/repos/tenant-accounts';
 import {
   archiveBrandAction,
   createBrandAction,
   createProductAction,
   getBrandAction,
-  getBrandLimitsAction,
   getProductAction,
   updateBrandAction,
   updateProductAction,
-  updateBrandLimitsAction,
 } from '../brands';
 
 const BRAND = '99999999-9999-4999-8999-999999999999';
-const ADMIN = { ...mocks.identity, tenantRole: 'admin' };
-
-describe('updateBrandLimitsAction', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.requireTenantAdmin.mockResolvedValue(ADMIN);
-  });
-
-  it('refuses a member before touching any repo', async () => {
-    mocks.requireTenantAdmin.mockRejectedValueOnce(new mocks.TenantAdminRequiredError(mocks.identity));
-    const result = await updateBrandLimitsAction({ maxBrandsPerUser: 9, maxProductsPerBrand: 9 });
-    expect(result).toMatchObject({ ok: false, code: 'not_admin' });
-    expect(mocks.setLimits).not.toHaveBeenCalled();
-  });
-
-  it('refuses when the database says the user is not an active admin', async () => {
-    mocks.setLimits.mockRejectedValueOnce(new NotTenantAdminError());
-    expect(await updateBrandLimitsAction({ maxBrandsPerUser: 9, maxProductsPerBrand: 9 })).toMatchObject({ ok: false, code: 'not_admin' });
-  });
-
-  it('saves for an admin', async () => {
-    expect(await updateBrandLimitsAction({ maxBrandsPerUser: 4, maxProductsPerBrand: 0 }))
-      .toEqual({ ok: true, maxBrandsPerUser: 4, maxProductsPerBrand: 0 });
-    expect(mocks.setLimits).toHaveBeenCalledWith({ maxBrandsPerUser: 4, maxProductsPerBrand: 0 });
-  });
-
-  it.each([[-1, 5], [1001, 5], [1.5, 5], [5, Number.NaN], ['3' as never, 5]])('rejects invalid values %j / %j', async (brands, conversations) => {
-    const result = await updateBrandLimitsAction({ maxBrandsPerUser: brands, maxProductsPerBrand: conversations });
-    expect(result).toMatchObject({ ok: false, code: 'invalid_input' });
-    expect(mocks.setLimits).not.toHaveBeenCalled();
-  });
-});
-
-describe('getBrandLimitsAction', () => {
-  it('returns the tenant limits', async () => {
-    expect(await getBrandLimitsAction()).toEqual({ ok: true, maxBrandsPerUser: 3, maxProductsPerBrand: 5 });
-  });
-});
 
 const VALID_BRAND = { business_name: 'Café', business_category: 'Café', market_proposition: 'a', target_audience: 'b' };
 const PRODUCT = '88888888-8888-4888-8888-888888888888';

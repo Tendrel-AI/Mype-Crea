@@ -14,6 +14,8 @@ import { activePromptVersions } from '../../src/services/prompts';
 import { loggerFor } from '../../src/services/logger';
 import { checkCurrentTerms } from '../../src/consent/gate';
 import { TERMS_REQUIRED_MESSAGE, TERMS_UNAVAILABLE_MESSAGE } from '../../src/consent/terms';
+import { getLimitGate } from '../../src/core/limits/runtime';
+import { refusalMessage } from '../../src/core/limits/rules';
 import { inputChars, usageLimitMessage } from '../../src/services/usage/policy';
 import { ConversationUnavailableError } from '../../src/repos/conversations';
 import { hasOnlyKeys, recordRejectedWrites } from './write-rejections';
@@ -113,6 +115,11 @@ export async function chatAction(params: {
     const answered = (await repository.aiTurns.listTurns(conversationId))
       .some((turn) => turn.requestId === requestId && turn.stage === 'responded');
     if (!answered) {
+      // D39: the single limit gate, before any paid work. A turn is a message that triggers the model.
+      const refusal = await getLimitGate(identity.tenant, identity.user).checkTurn(conversationId);
+      if (refusal) {
+        return failure(conversationId, requestId, refusal.kind, refusalMessage(refusal), false, false);
+      }
       const preflight = await repository.usage.preflight({
         kind: 'llm',
         calls: 2,
