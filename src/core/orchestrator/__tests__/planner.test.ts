@@ -505,14 +505,14 @@ describe('planNextDecision — grouped confirmation and delegable fields (D35)',
     ]);
   });
 
-  it('asks the non-delegable field first and lets the empty delegable ones ride along after it', () => {
+  it('D47: asks only the empty non-delegable fields; delegables are never in the batch', () => {
     const snapshot = snapshotWith({
       'agent-a': { requiredFields: { goal: { status: 'empty' }, keep: { status: 'empty' }, shapes: { status: 'empty' } }, optionalFields: {}, iterationCount: 0 },
       'agent-b': { requiredFields: { goal: { status: 'empty' } }, optionalFields: {}, iterationCount: 0 },
     });
     const [decision] = planNextDecision(snapshot, registry());
     expect(decision).toMatchObject({ kind: 'request_fields', agentId: 'agent-a' });
-    expect(decision.kind === 'request_fields' && decision.fields.map((f) => f.fieldName)).toEqual(['goal', 'keep', 'shapes']);
+    expect(decision.kind === 'request_fields' && decision.fields.map((f) => f.fieldName)).toEqual(['goal']);
   });
 
   it('with only delegable fields empty it never asks them: the agent is ready (snapshot predicate)', () => {

@@ -140,6 +140,19 @@ describe('chatAction durable turn boundary', () => {
     expect(mocks.completeTurn).toHaveBeenCalledWith(expect.objectContaining({ responseContent: '¡Listo!' }));
   });
 
+  it('D47: the first reply is extracted against the planner decision the welcome showed; later replies are not', async () => {
+    const asked: PlannerDecision = { kind: 'request_fields', agentId: 'logo-agent', fields: [{ fieldName: 'logo_goal', promptHint: '¿Qué debe lograr tu logo?' }] };
+    mocks.peekNextDecision.mockResolvedValueOnce([asked]);
+    await chatAction(input);
+    expect(mocks.extract).toHaveBeenLastCalledWith(expect.objectContaining({ priorDecision: asked }));
+
+    mocks.extract.mockClear();
+    mocks.listTurns.mockResolvedValue([{ id: 'older', stage: 'responded', payload: {} }] as never);
+    await chatAction(input);
+    expect(mocks.extract).toHaveBeenCalledTimes(1);
+    expect((mocks.extract.mock.calls[0] as unknown as [{ priorDecision?: unknown }])[0].priorDecision).toBeUndefined();
+  });
+
   it('gives the responder the most recent messages in chronological order (KAN-91)', async () => {
     mocks.messages.listByConversation.mockResolvedValueOnce([
       { role: 'assistant', content: 'newest' }, { role: 'user', content: 'older' },

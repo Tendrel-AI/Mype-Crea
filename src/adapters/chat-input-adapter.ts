@@ -658,7 +658,7 @@ function renderExtractorSystemPrompt(
 ): string {
   // Same order as the Responder's numbered list: number i = fields[i-1].
   const askedBlock = asked
-    ? `\nPreguntas pendientes (el usuario puede responder por número):\n${asked.fields
+    ? `\nPreguntas pendientes:\n${asked.fields
         .map((f, i) => `  ${i + 1}. ${f.fieldName}: ${f.promptHint}`)
         .join('\n')}`
     : '';

@@ -225,7 +225,7 @@ describe('ChatInputAdapter', () => {
     const delta = await adapter.extract({ conversationId, userMessage: '2. Azul, 3. no aplica', priorDecision: prior, llmContext: ctx });
 
     const prompt = provider.captured[0].systemPrompt;
-    expect(prompt).toContain('Preguntas pendientes (el usuario');
+    expect(prompt).toContain('Preguntas pendientes:');
     expect(prompt).toContain('Todo campo pendiente que el mensaje no aborde se devuelve con null');
     expect(prompt).toContain('"answers_pending" es true solo si el mensaje responde');
     expect(prompt).toContain('  1. c_field: Hint C\n  2. a_field: Hint A\n  3. b_field: Hint B');
@@ -233,7 +233,7 @@ describe('ChatInputAdapter', () => {
     expect(delta.fields['fixture-a']?.b_field).toMatchObject({ value: 'Sin preferencia', confidence: 1 });
 
     await adapter.extract({ conversationId, userMessage: 'hola', llmContext: ctx });
-    expect(provider.captured[1].systemPrompt).not.toContain('Preguntas pendientes (el usuario');
+    expect(provider.captured[1].systemPrompt).not.toContain('Preguntas pendientes:');
   });
 
   it('returns an empty FieldDelta when the LLM grounds nothing (all nulls)', async () => {

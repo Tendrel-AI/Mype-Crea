@@ -31,9 +31,9 @@
  *         required field names from that agent.
  *      D35: a card may declare a required field `delegable`. An EMPTY delegable
  *      field is not "missing": it never makes an agent a focus agent and never
- *      blocks generation. It rides in the batch (after the non-delegable
- *      fields) only while some non-delegable required field of that agent is
- *      still missing; when only delegables are empty, Rule 3 offers Generar.
+ *      blocks generation. D47: it is never asked, so the batch holds only
+ *      empty non-delegable fields; when only delegables are empty, Rule 3
+ *      offers Generar.
  *      When the caller passes derived deliverable states, an agent whose
  *      deliverable is not `blocked` (approved, own-provided, generating,
  *      in review, failed) or is inherited read-only from the brand (product
@@ -242,9 +242,8 @@ export function planNextDecision(
       })
       .sort();
     const delegable = new Set(schema.delegableFields);
-    // D35: non-delegable first; the delegable ones only ride along (focus agent implies a non-delegable one is missing).
-    const missing = [...empty.filter((f) => !delegable.has(f)), ...empty.filter((f) => delegable.has(f))]
-      .slice(0, schema.askBatchSize ?? MAX_FIELD_BATCH_SIZE);
+    // D35/D47: delegable fields are never asked; the agent receives them as delegated when empty.
+    const missing = empty.filter((f) => !delegable.has(f)).slice(0, schema.askBatchSize ?? MAX_FIELD_BATCH_SIZE);
 
     const fields: RequestFieldEntry[] = missing.map((fieldName) => ({
       fieldName,

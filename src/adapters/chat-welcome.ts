@@ -31,10 +31,12 @@ export function welcomeContextLine(context: ChatContext | null | undefined): str
 function describe(decision: PlannerDecision, context: ChatContext | null | undefined, registry: AgentRegistry): string {
   switch (decision.kind) {
     case 'request_fields': {
-      if (decision.fields.length <= 2) {
-        return ['Para avanzar necesito esto:', ...decision.fields.map((f) => `- ${f.promptHint}`)].join('\n');
+      // D47: the brand chat asks at most 6 essentials; one natural question per line.
+      if (decision.fields.length <= 6) {
+        const intro = decision.fields.length <= 2 ? 'Para avanzar necesito esto:' : 'Para avanzar, cuéntame en un solo mensaje:';
+        return [intro, ...decision.fields.map((f) => `- ${f.promptHint}`)].join('\n');
       }
-      // D29: no per-field list; one open invitation. The Extractor maps the answer; unaddressed delegable fields are delegated in code (D35).
+      // D29: more than 6 fields: no per-field list; one open invitation. The Extractor maps the answer.
       return 'Para avanzar, cuéntame en un solo mensaje lo que tengas claro: qué quieres lograr, qué te inspira, el estilo que imaginas y lo que no quieres ver o no puedes usar.';
     }
     case 'request_upload':

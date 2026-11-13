@@ -1,10 +1,10 @@
 {
   "name": "logo-agent",
   "description": "Genera el logotipo de la marca.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "skills": [],
   "mypes:requirements": {
-    "askBatchSize": 20,
+    "askBatchSize": 6,
     "required": [
       {
         "name": "business_name",
@@ -31,22 +31,22 @@
       {
         "name": "differentiator",
         "type": "string",
-        "promptHint": "¿Qué te diferencia de otros negocios similares?"
+        "promptHint": "¿Qué te hace distinto de los demás?"
       },
       {
         "name": "personality",
         "type": "string",
-        "promptHint": "¿Qué personalidad o sensaciones quieres que transmita tu marca?"
+        "promptHint": "¿Cómo quieres que se sienta tu marca? (por ejemplo: cálida, moderna, artesanal)"
       },
       {
         "name": "brand_story",
         "type": "string",
-        "promptHint": "¿Hay una historia o inspiración detrás de tu marca que el logo deba reflejar?"
+        "promptHint": "¿Qué historia o inspiración hay detrás del negocio?"
       },
       {
         "name": "language_references",
         "type": "string",
-        "promptHint": "¿Qué idiomas o referencias culturales o artísticas deben influir en el logo?"
+        "promptHint": "¿Qué raíces culturales, lugares o tradiciones deberían verse en el logo?"
       },
       {
         "name": "color_palette",
@@ -57,22 +57,25 @@
       {
         "name": "logo_goal",
         "type": "string",
-        "promptHint": "¿Qué problema debe resolver tu logo? (por ejemplo: verse más profesional, destacar en el mercado)"
+        "promptHint": "¿Qué debe lograr tu logo? ¿Dónde lo verá la gente?"
       },
       {
         "name": "logo_avoid",
         "type": "string",
-        "promptHint": "¿Qué asociaciones o interpretaciones debe evitar el logo?"
+        "promptHint": "¿Qué asociaciones o interpretaciones debe evitar el logo?",
+        "delegable": true
       },
       {
         "name": "competitors",
         "type": "string",
-        "promptHint": "¿Quiénes son tus competidores y qué motivos visuales usan que no quieres repetir?"
+        "promptHint": "¿Quiénes son tus competidores y qué motivos visuales usan que no quieres repetir?",
+        "delegable": true
       },
       {
         "name": "visual_references",
         "type": "string",
-        "promptHint": "¿Qué marcas o imágenes te gustan como referencia, y qué te gusta o no de cada una?"
+        "promptHint": "¿Qué marcas o imágenes te gustan como referencia, y qué te gusta o no de cada una?",
+        "delegable": true
       },
       {
         "name": "logo_composition",
