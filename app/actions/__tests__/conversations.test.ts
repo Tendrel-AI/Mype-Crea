@@ -77,7 +77,6 @@ vi.mock('../../../src/core/orchestrator/bootstrap-registry', () => ({
 }));
 
 import {
-  createConversationAction,
   exportConversationTraceAction,
   listConversationsAction,
   loadConversationAction,
@@ -91,27 +90,6 @@ describe('conversation actions', () => {
     vi.clearAllMocks();
     mocks.ensurePinnedConversation.mockResolvedValue(mocks.pinned);
     mocks.readPinnedConversation.mockResolvedValue(mocks.pinned);
-  });
-
-  it('pins the new owner-scoped conversation before registering it with core', async () => {
-    const result = await createConversationAction({ brandId: BRAND_ID });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(mocks.ensurePinnedConversation).toHaveBeenCalledWith(expect.objectContaining({
-      conversationId: result.conversationId,
-      schemas: [],
-    }));
-    expect(mocks.startConversation).toHaveBeenCalledWith(result.conversationId, 'tenant-1', 'user-1');
-    expect(mocks.ensurePinnedConversation.mock.invocationCallOrder[0])
-      .toBeLessThan(mocks.startConversation.mock.invocationCallOrder[0]);
-    expect(mocks.repos).toHaveBeenCalledWith(mocks.identity.tenant, mocks.identity.user);
-  });
-
-  it('does not register a legacy conversation with core', async () => {
-    mocks.ensurePinnedConversation.mockResolvedValue({ ...mocks.pinned, state: 'legacy_unversioned' });
-    const result = await createConversationAction({ brandId: BRAND_ID });
-    expect(result).toMatchObject({ ok: false, code: 'configuration_unavailable' });
-    expect(mocks.startConversation).not.toHaveBeenCalled();
   });
 
   it('loads owner-scoped durable turns and notices', async () => {
@@ -243,36 +221,7 @@ describe('conversation actions', () => {
     expect(mocks.listTurns).not.toHaveBeenCalled();
   });
 
-  it('creating a conversation never touches the caller’s other conversations (KAN-25)', async () => {
-    const result = await createConversationAction({ brandId: BRAND_ID });
-    expect(result.ok).toBe(true);
-    expect(mocks.ensurePinnedConversation).toHaveBeenCalledTimes(1);
-    expect(mocks.listRecent).not.toHaveBeenCalled();
-    expect(mocks.readPinnedConversation).not.toHaveBeenCalled();
-  });
-
-  it('has no per-brand conversation limit: it pins under the brand and returns the header context', async () => {
-    const result = await createConversationAction({ brandId: BRAND_ID });
-    expect(mocks.brandsCreateConversation).toHaveBeenCalledWith(expect.objectContaining({ brandId: BRAND_ID, productId: undefined }));
-    expect(result).toMatchObject({ ok: true, brandId: BRAND_ID, productId: null, context: { brandName: 'Café Andino', productId: null } });
-  });
-
-  it('a product conversation passes the product to the repo; a product of another brand is product_not_found', async () => {
-    const PRODUCT = '88888888-8888-4888-8888-888888888888';
-    await createConversationAction({ brandId: BRAND_ID, productId: PRODUCT });
-    expect(mocks.brandsCreateConversation).toHaveBeenCalledWith(expect.objectContaining({ brandId: BRAND_ID, productId: PRODUCT }));
-    mocks.brandsCreateConversation.mockResolvedValueOnce({ ok: false, code: 'product_not_found' } as never);
-    expect(await createConversationAction({ brandId: BRAND_ID, productId: PRODUCT })).toMatchObject({ ok: false, code: 'product_not_found' });
-    expect(await createConversationAction({ brandId: BRAND_ID, productId: 'nope' })).toMatchObject({ ok: false, code: 'product_not_found' });
-    expect(mocks.startConversation).toHaveBeenCalledTimes(1);
-  });
-
-  it('answers a foreign, missing or malformed brand with the same not-found result', async () => {
-    mocks.brandsCreateConversation.mockResolvedValueOnce({ ok: false, code: 'brand_not_found' } as never);
-    const foreign = await createConversationAction({ brandId: BRAND_ID });
-    const malformed = await createConversationAction({ brandId: 'nope' });
-    expect(foreign).toEqual(malformed);
-    expect(foreign).toMatchObject({ ok: false, code: 'brand_not_found' });
-    expect(mocks.brandsCreateConversation).toHaveBeenCalledTimes(1);
+  it('no longer exposes a standalone «new conversation» action (D40 / D44)', async () => {
+    expect(await import('../conversations')).not.toHaveProperty('createConversationAction');
   });
 });

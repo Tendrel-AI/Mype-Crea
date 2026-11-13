@@ -14,7 +14,7 @@ const COMMANDS = ['Generar', 'Iterar', 'Aprobar'];
 describe('BrandAssetsReadOnly', () => {
   it('shows approved logo, name and tagline and links to the brand chat', () => {
     const html = renderToStaticMarkup(
-      <BrandAssetsReadOnly assets={{ logoUrl: '/api/assets/l1', name: 'Café Andino', tagline: 'Sabor de altura' }} brandConversationId={BRAND_CHAT} onCreateBrandChat={noop} />,
+      <BrandAssetsReadOnly assets={{ logoUrl: '/api/assets/l1', name: 'Café Andino', tagline: 'Sabor de altura' }} brandConversationId={BRAND_CHAT} />,
     );
     expect(html).toContain('/api/assets/l1');
     expect(html).toContain('Café Andino');
@@ -24,11 +24,10 @@ describe('BrandAssetsReadOnly', () => {
     expect(html).not.toContain(MISSING_ASSET_COPY);
   });
 
-  it('says «Aún no lo has creado» for each missing asset and offers a button when there is no brand chat', () => {
-    const html = renderToStaticMarkup(<BrandAssetsReadOnly assets={null} brandConversationId={null} onCreateBrandChat={noop} />);
+  it('says «Aún no lo has creado» for each missing asset and hides the chat link when the brand chat is unknown', () => {
+    const html = renderToStaticMarkup(<BrandAssetsReadOnly assets={null} brandConversationId={null} />);
     expect(html.split(MISSING_ASSET_COPY)).toHaveLength(4);
-    expect(html).toContain('<button');
-    expect(html).toContain(BRAND_CHAT_LABEL);
+    expect(html).not.toContain(BRAND_CHAT_LABEL);
   });
 });
 

@@ -14,12 +14,10 @@ export interface ReadOnlyBrandAssets {
 const buttonClass = 'inline-block text-sm font-medium text-orange-600 bg-orange-50 hover:bg-orange-100 px-4 py-2 rounded-lg transition-colors';
 
 /** D34: the brand's approved assets in a product conversation. Read-only: they are made in the brand chat. */
-export function BrandAssetsReadOnly({ assets, brandConversationId, onCreateBrandChat }: {
+export function BrandAssetsReadOnly({ assets, brandConversationId }: {
   assets: ReadOnlyBrandAssets | null;
-  /** The brand's own conversation, when known; the button is then a plain link (the server re-checks ownership). */
+  /** The brand's single conversation (D40); a plain link, the server re-checks ownership. Hidden when unknown. */
   brandConversationId: string | null;
-  /** No brand conversation yet: create it the way the sidebar does. */
-  onCreateBrandChat: () => void;
 }) {
   const missing = <span className="text-neutral-500 text-sm">{MISSING_ASSET_COPY}</span>;
   return (
@@ -46,11 +44,7 @@ export function BrandAssetsReadOnly({ assets, brandConversationId, onCreateBrand
           </div>
         </div>
       </div>
-      {brandConversationId ? (
-        <a href={conversationHref(brandConversationId)} className={buttonClass}>{BRAND_CHAT_LABEL}</a>
-      ) : (
-        <button type="button" onClick={onCreateBrandChat} className={buttonClass}>{BRAND_CHAT_LABEL}</button>
-      )}
+      {brandConversationId && <a href={conversationHref(brandConversationId)} className={buttonClass}>{BRAND_CHAT_LABEL}</a>}
     </div>
   );
 }

@@ -4,7 +4,7 @@
  * `tenants.max_products_per_brand`) are enforced inside the same transaction as the insert:
  *  - brands: a per-(tenant, user) advisory lock serializes creators, then active brands are counted;
  *  - products: see `products.ts` (the owner's active brand row is locked, then its products counted).
- * Conversations per brand are NOT limited (KAN-87; cost is bounded by KAN-43 usage limits).
+ * D40 / D44: a brand has ONE chat (and each product one); `conversations_one_active_per_*` enforce it.
  * Over the limit returns a typed refusal (never a throw). Archived brands do not count and take no
  * new conversations or edits. Lowering a limit below the current count only blocks new creation.
  * The limits change only through `app.set_brand_product_limits` (SECURITY DEFINER, admin re-checked in the DB).
@@ -36,6 +36,8 @@ export interface BrandLimits {
 export type LimitRefusal = { readonly ok: false; readonly code: 'brand_limit_reached'; readonly limit: number };
 export type BrandNotFound = { readonly ok: false; readonly code: 'brand_not_found' };
 export type ProductNotFound = { readonly ok: false; readonly code: 'product_not_found' };
+/** D40 / D44: the brand or product already has its single chat. */
+export type ConversationExists = { readonly ok: false; readonly code: 'conversation_exists' };
 export type InvalidAttributes = { readonly ok: false; readonly code: 'invalid_input'; readonly errors: Record<string, string> };
 
 export interface FirstConversation {
@@ -47,9 +49,9 @@ export interface BrandsRepo {
   /** Create an active brand within the limit; with `firstConversation` it is pinned in the same transaction. */
   create(input: { name?: string | null; attributes?: Record<string, unknown>; firstConversation?: FirstConversation }):
     Promise<{ ok: true; brandId: UUID; pin?: AiConversationPin } | LimitRefusal>;
-  /** Add a conversation to the caller's active brand, optionally under one of that brand's products. */
+  /** Add the single chat of the caller's active brand (or of one of its products); a second one is `conversation_exists`. */
   createConversation(input: FirstConversation & { brandId: UUID; productId?: UUID }):
-    Promise<{ ok: true; pin: AiConversationPin } | BrandNotFound | ProductNotFound>;
+    Promise<{ ok: true; pin: AiConversationPin } | BrandNotFound | ProductNotFound | ConversationExists>;
   /** The caller's active brand, or null when it is foreign, missing or archived. */
   get(brandId: UUID): Promise<BrandRow | null>;
   /** Apply a validated patch; the merged attributes are validated again (required fields stay required). */
@@ -116,6 +118,13 @@ export function brandsRepo(tenant: Tenant, user: User): BrandsRepo {
           );
           if (owned.rows.length === 0) return { ok: false, code: 'product_not_found' } as const;
         }
+        // The partial unique indexes are the hard guarantee; this check gives the typed refusal.
+        const existing = await tx.query(
+          `SELECT 1 FROM conversations
+            WHERE tenant_id = $1 AND status = 'active' AND brand_id = $2 AND product_id IS NOT DISTINCT FROM $3::uuid`,
+          [tenant.id, input.brandId, input.productId ?? null],
+        );
+        if (existing.rows.length > 0) return { ok: false, code: 'conversation_exists' } as const;
         const pin = await pinConversationInTx(tx, tenant, user, input, input.brandId, input.productId ?? null);
         return { ok: true, pin } as const;
       });
@@ -148,7 +157,7 @@ export function brandsRepo(tenant: Tenant, user: User): BrandsRepo {
              FROM brands b
              LEFT JOIN LATERAL (
                SELECT c.agent_states FROM conversations c
-                WHERE c.tenant_id = b.tenant_id AND c.brand_id = b.id
+                WHERE c.tenant_id = b.tenant_id AND c.brand_id = b.id AND c.status = 'active'
                 ORDER BY c.started_at DESC, c.id DESC LIMIT 1
              ) latest ON true
             WHERE b.tenant_id = $1 AND b.user_id = $2 AND b.status = 'active'
