@@ -47,7 +47,9 @@ describe('renderWelcome', () => {
   it('renders one template per decision kind', () => {
     expect(renderWelcome([decisions.one], brand, registry)).toContain('- Cuéntame el nombre');
     const list = renderWelcome([decisions.many], brand, registry);
-    expect(list).toContain('qué quieres lograr, qué te inspira');
+    expect(list).toBe('Este es el chat de tu marca «Brisa Ron».\n\nPara avanzar, cuéntame en un solo mensaje:\n- Uno\n- Dos\n- Tres');
+    const seven = { kind: 'request_fields', agentId, fields: 'abcdefg'.split('').map((n) => field(n, `Pregunta ${n}`)) } as PlannerDecision;
+    expect(renderWelcome([seven], brand, registry)).toContain('qué quieres lograr, qué te inspira');
     expect(list).not.toMatch(/1\. Uno|no aplica|sin preferencia/);
     expect(renderWelcome([decisions.confirm], brand, registry)).toContain('«Brisa». ¿Es correcto?');
     expect(renderWelcome([decisions.confirmMany], brand, registry)).toContain('- «Brisa»\n- «Cálido»\n¿Es todo correcto?');

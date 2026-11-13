@@ -20,7 +20,7 @@ import { inputChars, usageLimitMessage } from '../../src/services/usage/policy';
 import { ConversationUnavailableError } from '../../src/repos/conversations';
 import { hasOnlyKeys, recordRejectedWrites } from './write-rejections';
 import { isUuid as isAnyUuid } from './conversation-access';
-import { priorDecisionFrom } from './prior-decision';
+import { priorDecisionOrWelcome } from './prior-decision';
 
 /** The only keys a chat turn may carry (KAN-44). */
 const CHAT_KEYS = ['conversationId', 'requestId', 'userMessage'] as const;
@@ -174,7 +174,7 @@ export async function chatAction(params: {
 
     if (turn.stage === 'reserved') {
       await repository.aiTurns.ensureUserMessage({ turnId: turn.id, ownerToken: claim.ownerToken, conversationId, content: userMessage });
-      const priorDecision = priorDecisionFrom(await repository.aiTurns.listTurns(conversationId), turn.id);
+      const priorDecision = await priorDecisionOrWelcome(await repository.aiTurns.listTurns(conversationId), turn.id, () => orchestrator.peekNextDecision(conversationId));
       const unasked = new Map<string, unknown>();
       const extracted = await configRuntime.runPurpose(
         identity,
