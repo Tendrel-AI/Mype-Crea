@@ -5,6 +5,7 @@ import { globalCreditsRepo } from './global-credits';
 import { globalLimitsRepo } from './global-limits';
 import { globalCountersRepo } from './global-counters';
 import { dictionaryChangesRepo } from './dictionary-changes';
+import { globalForecastRepo } from './global-forecast';
 import { platformConfigRepo } from './platform-config';
 import { platformTraceRepo } from './platform-trace';
 
@@ -20,6 +21,7 @@ export function globalRepos() {
     limitDefaults: globalLimitsRepo(),
     counters: globalCountersRepo(),
     dictionaries: dictionaryChangesRepo(),
+    forecast: globalForecastRepo(),
   };
 }
 

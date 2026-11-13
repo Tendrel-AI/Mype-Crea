@@ -21,6 +21,7 @@ import { aiEventsRepo, aiTurnsRepo, type AiEventsRepo, type AiTurnsRepo } from '
 import { messagesRepo, type MessagesRepo } from './messages';
 import { termsAcceptancesRepo, type TermsAcceptancesRepo } from './terms-acceptances';
 import { creditsRepo, type CreditsRepo } from './credits';
+import { forecastRepo, type ForecastRepo } from './forecast';
 import { usageRepo, type UsageRepo } from './usage';
 import { writeRejectionsRepo, type WriteRejectionsRepo } from './write-rejections';
 import { brandsRepo, type BrandsRepo } from './brands';
@@ -47,6 +48,7 @@ export interface Repos {
   readonly termsAcceptances: TermsAcceptancesRepo;
   readonly usage: UsageRepo;
   readonly credits: CreditsRepo;
+  readonly forecast: ForecastRepo;
   readonly writeRejections: WriteRejectionsRepo;
   readonly tenantAccounts: TenantAccountsRepo;
   readonly tenantAnalytics: TenantAnalyticsRepo;
@@ -74,6 +76,7 @@ export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repo
     termsAcceptances: termsAcceptancesRepo(tenant, user),
     usage: usageRepo(tenant, user),
     credits: creditsRepo(tenant, user),
+    forecast: forecastRepo(tenant, user),
     writeRejections: writeRejectionsRepo(tenant, user),
     tenantAccounts: tenantAccountsRepo(tenant, user),
     tenantAnalytics: tenantAnalyticsRepo(tenant, user),
