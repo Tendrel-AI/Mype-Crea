@@ -53,5 +53,5 @@ export interface AgentRequirementState {
  */
 export type FieldSlot =
   | { readonly status: 'empty' }
-  | { readonly status: 'pending_confirmation'; readonly value: unknown; readonly confidence: number; readonly source?: AdapterSource }
-  | { readonly status: 'filled'; readonly value: unknown; readonly confidence: number; readonly source?: AdapterSource };
+  | { readonly status: 'pending_confirmation'; readonly value: unknown; readonly confidence: number; readonly source?: AdapterSource; readonly category?: string }
+  | { readonly status: 'filled'; readonly value: unknown; readonly confidence: number; readonly source?: AdapterSource; readonly category?: string };

@@ -74,7 +74,8 @@ import {
   type FieldValueWithConfidence,
   type UserIntent,
 } from '../core/contracts';
-import { DELEGATED_FIELD_VALUE } from '../core/brief';
+import { briefFieldSpec, DELEGATED_FIELD_VALUE } from '../core/brief';
+import { dictionaryCodes, dictionaryFor } from '../core/dictionaries';
 import type { AgentRegistry } from '../core/orchestrator/agent-registry';
 import { getProvider } from '../services/llm';
 import {
@@ -729,10 +730,23 @@ const FieldValueZ = z
  * (after JSON-schema conversion) and reused to validate the tool arguments
  * the model returns.
  */
+/** D41: an `enum` catalog field also carries `category`, the dictionary code the text maps to (`OTRO` when none fits). */
+function enumFieldSchema(vocabulary: string | undefined): typeof FieldValueZ | undefined {
+  const dict = vocabulary ? dictionaryFor(vocabulary) : undefined;
+  if (!dict) return undefined;
+  const [first, ...rest] = dictionaryCodes(dict);
+  return z.object({
+    value: z.string().min(1),
+    confidence: z.number().min(0).max(1),
+    category: z.enum([first, ...rest]).optional(),
+  }).nullable() as unknown as typeof FieldValueZ;
+}
+
 function buildExtractedFieldsSchema(fieldNames: ReadonlyArray<string>, withAnswersPending: boolean) {
   const shape: Record<string, typeof FieldValueZ> = {};
   for (const name of fieldNames) {
-    shape[name] = FieldValueZ;
+    const spec = briefFieldSpec(name);
+    shape[name] = (spec?.type === 'enum' ? enumFieldSchema(spec.vocabulary) : undefined) ?? FieldValueZ;
   }
   return z
     .object({
@@ -840,7 +854,8 @@ function validateAndFilterExtractedFields(
       );
       continue;
     }
-    out[name] = { value: slot.value.trim(), confidence: slot.confidence };
+    const category = (slot as { category?: string }).category;
+    out[name] = { value: slot.value.trim(), confidence: slot.confidence, ...(category ? { category } : {}) };
     log.debug({ fieldName: name, confidence: slot.confidence }, 'extractor.field.accepted');
   }
   return { accepted: out, mentioned, unasked, answersPending: (result.data as { answers_pending?: boolean }).answers_pending === true };

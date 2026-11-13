@@ -10,7 +10,7 @@ describe('brief catalog (KAN-26)', () => {
     const declared = new Set(
       buildDefaultRegistry().getFieldSchemas().flatMap((s) => [...s.requiredFields, ...s.optionalFields]),
     );
-    expect([...declared].sort()).toEqual(BRIEF_CATALOG.map((f) => f.name).sort());
+    expect([...declared].sort()).toEqual(BRIEF_CATALOG.filter((f) => !f.deprecatedSince).map((f) => f.name).sort());
   });
 
   it('has unique names and no nutrition fields (KAN-37)', () => {

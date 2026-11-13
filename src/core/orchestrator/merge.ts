@@ -319,11 +319,16 @@ export async function mergeFieldDelta(
         incoming.confidence >= CONFIDENCE_THRESHOLDS.AUTO_ACCEPT
           ? 'filled'
           : 'pending_confirmation';
+      const category = incoming.category
+        ?? (currentSlot && currentSlot.status !== 'empty' && incoming.expectedPendingValue !== undefined ? currentSlot.category : undefined);
       const nextSlot: FieldSlot = {
         status: nextStatus,
         value: checked.value,
         confidence: incoming.confidence,
         source: delta.source,
+        // D41: carried to the facts writer; merge does not interpret it. A confirmation of a pending value
+        // restates no category, so the pending slot's one is kept.
+        ...(category ? { category } : {}),
       };
 
       await store.updateFieldSlot(

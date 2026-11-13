@@ -13,7 +13,8 @@
       },
       {
         "name": "business_category",
-        "type": "string",
+        "type": "enum",
+        "vocabulary": "business_category",
         "promptHint": "¿Qué productos o servicios ofreces hoy y cuáles podrías ofrecer más adelante?"
       },
       {
@@ -23,7 +24,8 @@
       },
       {
         "name": "target_audience",
-        "type": "string",
+        "type": "enum",
+        "vocabulary": "target_audience",
         "promptHint": "¿Quién es tu público y en qué situaciones te conoce o te compra?"
       },
       {
