@@ -624,6 +624,18 @@ describe('ChatOutputAdapter', () => {
       expect(product).not.toContain('«Nuevo producto» NO');
     });
 
+    it('KAN-110: request_fields with uploads asks both in one prompt', async () => {
+      const prompt = await renderPrompt({
+        kind: 'request_fields', agentId: 'test-fixture-agent',
+        fields: [{ fieldName: 'ad_brief', promptHint: 'la foto' }],
+        uploads: [{ agentId: 'test-fixture-agent', deliverableKind: 'label', uploadKind: 'lab_report', promptHint: 'sube el PDF' }],
+      });
+      expect(prompt).toContain('kind=request_fields');
+      expect(prompt).toContain('"la foto"');
+      expect(prompt).toContain('Además, en el mismo mensaje:');
+      expect(prompt).toContain('"sube el PDF"');
+    });
+
     it('D34: renders request_upload with the card hint, and the product chat redirects brand deliverables', async () => {
       const prompt = await renderPrompt({ kind: 'request_upload', agentId: 'test-fixture-agent', deliverableKind: 'label', uploadKind: 'lab_report', promptHint: 'sube el PDF' });
       expect(prompt).toContain('kind=request_upload');

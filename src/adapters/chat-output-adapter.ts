@@ -25,6 +25,7 @@ import type {
   DeliverableCommandKind,
   FieldSlot,
   PlannerDecision,
+  UploadRequestEntry,
 } from '../core/contracts';
 import type { A2AArtifact } from '../core/agent-types';
 import type { AgentRegistry } from '../core/orchestrator/agent-registry';
@@ -182,6 +183,18 @@ function describeDecisions(
     .join('\n\n');
 }
 
+function describeUpload(
+  kindTag: string,
+  u: UploadRequestEntry,
+  registry: AgentRegistry,
+  fragments: Readonly<Record<string, string>>,
+): string {
+  return applyPromptTemplate(fragments.requestUploadDecision, {
+    kind: kindTag, agentId: u.agentId, deliverableLabel: deliverableLabelFor(u.agentId, u.deliverableKind, registry),
+    uploadKind: u.uploadKind, promptHint: u.promptHint,
+  });
+}
+
 function describeDecision(
   decision: PlannerDecision,
   registry: AgentRegistry,
@@ -200,7 +213,8 @@ function describeDecision(
       );
       const single = decision.fields.length === 1;
       void registry;
-      return applyPromptTemplate(fragments.requestFieldsDecision, {
+      const uploadBlocks = (decision.uploads ?? []).map((u) => describeUpload(kindTag, u, registry, fragments));
+      const fieldsBlock = applyPromptTemplate(fragments.requestFieldsDecision, {
         kind: kindTag,
         fieldCountDescription: single ? 'UN campo' : `${decision.fields.length} campos`,
         agentId: decision.agentId,
@@ -209,6 +223,8 @@ function describeDecision(
           ? fragments.requestFieldsSingleAction
           : decision.fields.length > 2 ? fragments.requestFieldsListAction : fragments.requestFieldsMultiAction,
       });
+      // KAN-110: the upload ask is composed from the existing fragment so both go in one reply.
+      return [fieldsBlock, ...uploadBlocks.map((b) => `Además, en el mismo mensaje:\n${b}`)].join('\n\n');
     }
     case 'confirm_fields':
       return applyPromptTemplate(fragments.confirmFieldsDecision, {
@@ -227,10 +243,7 @@ function describeDecision(
         deliverableLabel: deliverableLabelFor(decision.agentId, decision.deliverableKind, registry),
       });
     case 'request_upload':
-      return applyPromptTemplate(fragments.requestUploadDecision, {
-        kind: kindTag, agentId: decision.agentId, deliverableLabel: deliverableLabelFor(decision.agentId, decision.deliverableKind, registry),
-        uploadKind: decision.uploadKind, promptHint: decision.promptHint,
-      });
+      return describeUpload(kindTag, decision, registry, fragments);
     case 'announce_dispatch':
       return applyPromptTemplate(fragments.announceDispatchDecision, {
         kind: kindTag, agentId: decision.agentId,

@@ -27,7 +27,7 @@ const decisions: Record<string, PlannerDecision> = {
 describe('renderWelcome', () => {
   it('starts with the brand or product context line, none for legacy', () => {
     expect(renderWelcome([decisions.done], brand, registry)).toMatch(/^Este es el chat de tu marca «Brisa Ron»\.\n\n/);
-    expect(renderWelcome([decisions.done], product, registry)).toMatch(/^Este es el chat de tu producto «Ron añejo» de la marca «Brisa Ron»\.\n\n/);
+    expect(renderWelcome([decisions.done], product, registry)).toMatch(/^Este es el chat de tu producto «Ron añejo» de la marca «Brisa Ron»\. Aquí creamos su etiqueta nutricional y su foto publicitaria\.\n\n/);
     expect(renderWelcome([decisions.done], { ...brand, brandName: null }, registry)).toContain('«Marca sin nombre»');
     expect(renderWelcome([decisions.done], legacy, registry)).not.toContain('Este es el chat');
   });
@@ -66,6 +66,13 @@ describe('renderWelcome', () => {
     const text = renderWelcome([request], product, registry);
     expect(text).toContain('Para tu etiqueta nutricional, sube el análisis de laboratorio de tu producto (PDF) con el botón «Subir análisis de laboratorio».');
     expect(text).toContain('los octógonos.');
+  });
+
+  it('KAN-110: a request_fields with uploads lists the upload hint and the field hints together', () => {
+    const decision: PlannerDecision = { kind: 'request_fields', agentId, fields: [field('a', '¿Cómo imaginas la foto?')], uploads: [{ agentId: 'label-agent', deliverableKind: 'label', uploadKind: 'lab_report', promptHint: 'Sube el análisis (botón «Subir análisis de laboratorio»)' }] };
+    const text = renderWelcome([decision], product, registry);
+    expect(text).toContain('Aquí creamos su etiqueta nutricional y su foto publicitaria.');
+    expect(text).toContain('Para avanzar necesito esto:\n- Sube el análisis (botón «Subir análisis de laboratorio»)\n- ¿Cómo imaginas la foto?');
   });
 
   it('ignores announcements and falls back when nothing is plannable', () => {
