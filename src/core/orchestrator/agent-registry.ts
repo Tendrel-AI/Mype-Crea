@@ -25,7 +25,11 @@
 
 import type { AgentHandler } from '../agent-types';
 import type { AgentId } from '../contracts';
+import { isDeprecatedField } from '../brief';
 import type { AgentFieldSchema } from './in-memory-store';
+
+/** D41: a deprecated catalog field is never asked, whatever the cards still declare. */
+const asked = (fields: ReadonlyArray<RequirementField>) => fields.filter((f) => !isDeprecatedField(f.name)).map((f) => f.name);
 
 // ---------------------------------------------------------------------------
 // Agent Card shape (what the registry reads from disk)
@@ -89,6 +93,8 @@ export interface RequirementField {
   readonly type: string;
   readonly promptHint: string;
   readonly enumValues?: ReadonlyArray<string>;
+  /** D41: `type: 'enum'` fields name a dictionary (`src/core/dictionaries`); must equal the catalog's `vocabulary`. */
+  readonly vocabulary?: string;
   /** D35: a required field the user may leave to the agent; never blocks generation, sent as `DELEGATED_FIELD_VALUE` when empty. */
   readonly delegable?: boolean;
 }
@@ -161,8 +167,8 @@ export class AgentRegistry {
   getFieldSchemas(): ReadonlyArray<AgentFieldSchema> {
     return this.list().map((entry) => ({
       agentId: entry.card.name,
-      requiredFields: entry.card['mypes:requirements'].required.map((f) => f.name),
-      optionalFields: entry.card['mypes:requirements'].optional.map((f) => f.name),
+      requiredFields: asked(entry.card['mypes:requirements'].required),
+      optionalFields: asked(entry.card['mypes:requirements'].optional),
       displayOrder: entry.card['mypes:ui'].displayOrder,
       ...delegableOf(entry.card),
       ...(entry.card['mypes:requirements'].askBatchSize
@@ -182,7 +188,7 @@ export class AgentRegistry {
         return {
           agentId: entry.card.name,
           deliverableKind: declared?.kind ?? entry.card.name,
-          requiredFields: entry.card['mypes:requirements'].required.map((f) => f.name),
+          requiredFields: asked(entry.card['mypes:requirements'].required),
           ...delegableOf(entry.card),
           dependsOn: [...(declared?.dependsOn ?? [])].sort(),
           level: declared?.level ?? 'product',
@@ -211,6 +217,6 @@ export class AgentRegistry {
 
 /** D35: the card's delegable required fields, or nothing. */
 function delegableOf(card: AgentCard): { readonly delegableFields?: ReadonlyArray<string> } {
-  const names = card['mypes:requirements'].required.filter((f) => f.delegable === true).map((f) => f.name);
+  const names = card['mypes:requirements'].required.filter((f) => f.delegable === true && !isDeprecatedField(f.name)).map((f) => f.name);
   return names.length > 0 ? { delegableFields: names } : {};
 }

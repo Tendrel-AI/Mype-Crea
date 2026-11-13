@@ -21,6 +21,7 @@ import type {
 import { applyAttributePatch, entityName, validateAttributes, type AttributeLevel } from '../core/brand-catalog';
 import { BRIEF_PANEL_SOURCE } from '../conversations/brief-panel';
 import { clearedFields, filledChanges, mappingFor, overlayRecords, type Attrs, type RecordContext } from '../core/brief-records';
+import { recordBriefFact } from './brief-facts';
 import { loggerFor } from '../services/logger';
 import type { AiConversationPin, ConversationContextRow, RecentConversationRow } from './models';
 import type { AgentFieldSchema } from '../core/orchestrator/in-memory-store';
@@ -557,6 +558,8 @@ export function conversationsRepo(tenant: Tenant, user: User) {
         };
         const nextStates: AgentStatesJson = { ...snap.agentStates, [agentId]: next };
         await writeAgentStates(tx, conversationId, nextStates);
+        // D41: the one place a merged value is persisted, so the analytics fact is written here.
+        await recordBriefFact(tx, tenant, conversationId, fieldName, slot);
       });
     },
 

@@ -951,3 +951,49 @@ describe('ChatInputAdapter — grouped confirm_fields (D35)', () => {
     expect(state.style_keywords).toMatchObject({ status: 'filled', value: 'elegante', confidence: 1 });
   });
 });
+
+describe('ChatInputAdapter: enum fields map free text to the dictionary (D41)', () => {
+  beforeEach(() => {
+    recordSpy.mockClear();
+  });
+  afterEach(() => {
+    resetProvider();
+  });
+
+  async function extractCategory(args: unknown) {
+    const provider = makeExtractorProvider(JSON.stringify(args));
+    setProvider(provider);
+    const registry = new AgentRegistry();
+    registry.register(buildFixtureCard({ id: 'fixture-a', required: [{ name: 'business_category' }] }), fixtureEchoHandler, undefined);
+    const store = new InMemoryConversationStore(registry.getFieldSchemas());
+    await store.getOrCreate(conversationId, TEST_TENANT_ID, TEST_USER_ID);
+    const adapter = new ChatInputAdapter(buildFakeCore(), registry);
+    const delta = await adapter.extract({ conversationId, userMessage: 'vendo pan y tortas', llmContext: ctx });
+    await mergeFieldDelta(delta, store, registry);
+    const snapshot = await store.get(conversationId);
+    return { delta, provider, slot: snapshot!.agentStates['fixture-a'].requiredFields.business_category };
+  }
+
+  it('sends the dictionary codes as the category enum of the tool schema', async () => {
+    const { provider } = await extractCategory({ fields: { business_category: null }, answers_pending: false });
+    const schema = JSON.stringify(provider.create.mock.calls[0]);
+    expect(schema).toContain('PANADERIA_Y_PASTELERIA');
+    expect(schema).toContain('OTRO');
+  });
+
+  it('keeps the raw text as the value and carries the category into the slot', async () => {
+    const { slot } = await extractCategory({
+      fields: { business_category: { value: 'vendo pan y tortas', confidence: 0.95, category: 'PANADERIA_Y_PASTELERIA' } },
+      answers_pending: false,
+    });
+    expect(slot).toMatchObject({ status: 'filled', value: 'vendo pan y tortas', category: 'PANADERIA_Y_PASTELERIA' });
+  });
+
+  it('a category outside the list fails the parse instead of storing garbage', async () => {
+    const { delta } = await extractCategory({
+      fields: { business_category: { value: 'vendo pan', confidence: 0.95, category: 'INVENTADA' } },
+      answers_pending: false,
+    });
+    expect(delta.fields).toEqual({});
+  });
+});

@@ -20,8 +20,14 @@ import type { AdapterSource, ConversationSnapshot, FieldName, FieldSlot } from '
 
 export interface BriefFieldSpec {
   readonly name: FieldName;
-  /** Same vocabulary as Agent Card requirement types. Every brief field is text today. */
-  readonly type: 'string';
+  /** Same vocabulary as Agent Card requirement types. `enum` = closed list (D41): the value stays free text, the category comes from the dictionary. */
+  readonly type: 'string' | 'enum';
+  /** `enum` only: key in `DICTIONARIES` (src/core/dictionaries). */
+  readonly vocabulary?: string;
+  /** D41: how the org analytics reads this field (counts per canonical value, fill rate only, or not at all). */
+  readonly analytics: 'category' | 'tags' | 'text' | 'none';
+  /** D41: `YYYY-MM-DD`. A deprecated field is no longer asked (planner/Extractor) but keeps its data and stays in the panel. */
+  readonly deprecatedSince?: string;
   /** Spanish label shown to the user. */
   readonly label: string;
   /** Maximum length in code points after normalization. */
@@ -30,33 +36,33 @@ export interface BriefFieldSpec {
 
 /** Display order: brand first, then product. */
 export const BRIEF_CATALOG: ReadonlyArray<BriefFieldSpec> = Object.freeze([
-  { name: 'business_name', type: 'string', label: 'Nombre del negocio', maxLength: 120 },
-  { name: 'business_category', type: 'string', label: 'Rubro', maxLength: 120 },
-  { name: 'market_proposition', type: 'string', label: 'Propuesta de mercado', maxLength: 500 },
-  { name: 'target_audience', type: 'string', label: 'Público objetivo', maxLength: 500 },
-  { name: 'differentiator', type: 'string', label: 'Diferencial', maxLength: 500 },
-  { name: 'personality', type: 'string', label: 'Personalidad y percepción', maxLength: 500 },
-  { name: 'brand_story', type: 'string', label: 'Historia de la marca', maxLength: 1000 },
-  { name: 'language_references', type: 'string', label: 'Idioma y referencias culturales', maxLength: 500 },
-  { name: 'visual_behavior', type: 'string', label: 'Comportamiento visual', maxLength: 500 },
-  { name: 'style_keywords', type: 'string', label: 'Estilo', maxLength: 300 },
-  { name: 'color_palette', type: 'string', label: 'Colores', maxLength: 200 },
-  { name: 'color_description', type: 'string', label: 'Colores (descripción)', maxLength: 200 },
-  { name: 'location', type: 'string', label: 'Ubicación', maxLength: 120 },
-  { name: 'existing_tagline', type: 'string', label: 'Lema actual', maxLength: 120 },
+  { name: 'business_name', type: 'string', analytics: 'none', label: 'Nombre del negocio', maxLength: 120 },
+  { name: 'business_category', type: 'enum', vocabulary: 'business_category', analytics: 'category', label: 'Rubro', maxLength: 120 },
+  { name: 'market_proposition', type: 'string', analytics: 'text', label: 'Propuesta de mercado', maxLength: 500 },
+  { name: 'target_audience', type: 'enum', vocabulary: 'target_audience', analytics: 'category', label: 'Público objetivo', maxLength: 500 },
+  { name: 'differentiator', type: 'string', analytics: 'text', label: 'Diferencial', maxLength: 500 },
+  { name: 'personality', type: 'string', analytics: 'text', label: 'Personalidad y percepción', maxLength: 500 },
+  { name: 'brand_story', type: 'string', analytics: 'text', label: 'Historia de la marca', maxLength: 1000 },
+  { name: 'language_references', type: 'string', analytics: 'text', label: 'Idioma y referencias culturales', maxLength: 500 },
+  { name: 'visual_behavior', type: 'string', analytics: 'text', label: 'Comportamiento visual', maxLength: 500 },
+  { name: 'style_keywords', type: 'string', analytics: 'tags', label: 'Estilo', maxLength: 300 },
+  { name: 'color_palette', type: 'string', analytics: 'tags', label: 'Colores', maxLength: 200 },
+  { name: 'color_description', type: 'string', analytics: 'text', label: 'Colores (descripción)', maxLength: 200 },
+  { name: 'location', type: 'string', analytics: 'text', label: 'Ubicación', maxLength: 120 },
+  { name: 'existing_tagline', type: 'string', analytics: 'text', label: 'Lema actual', maxLength: 120 },
   // Logo brief (conversation-only, not in the brand catalog).
-  { name: 'logo_goal', type: 'string', label: 'Problema que resuelve el logo', maxLength: 500 },
-  { name: 'logo_avoid', type: 'string', label: 'Asociaciones a evitar', maxLength: 500 },
-  { name: 'competitors', type: 'string', label: 'Competidores y riesgos de confusión', maxLength: 500 },
-  { name: 'visual_references', type: 'string', label: 'Referencias visuales', maxLength: 500 },
-  { name: 'logo_composition', type: 'string', label: 'Composición del logo', maxLength: 300 },
-  { name: 'logo_shapes', type: 'string', label: 'Formas y trazos', maxLength: 500 },
-  { name: 'logo_typography', type: 'string', label: 'Tipografía', maxLength: 500 },
-  { name: 'logo_keep', type: 'string', label: 'Elementos a conservar', maxLength: 500 },
-  { name: 'logo_applications', type: 'string', label: 'Aplicaciones del logo', maxLength: 500 },
-  { name: 'logo_production_limits', type: 'string', label: 'Límites de producción', maxLength: 500 },
-  { name: 'logo_restrictions', type: 'string', label: 'Elementos obligatorios y prohibidos', maxLength: 500 },
-  { name: 'product_name', type: 'string', label: 'Producto', maxLength: 120 },
+  { name: 'logo_goal', type: 'string', analytics: 'text', label: 'Problema que resuelve el logo', maxLength: 500 },
+  { name: 'logo_avoid', type: 'string', analytics: 'text', label: 'Asociaciones a evitar', maxLength: 500 },
+  { name: 'competitors', type: 'string', analytics: 'text', label: 'Competidores y riesgos de confusión', maxLength: 500 },
+  { name: 'visual_references', type: 'string', analytics: 'text', label: 'Referencias visuales', maxLength: 500 },
+  { name: 'logo_composition', type: 'string', analytics: 'text', label: 'Composición del logo', maxLength: 300 },
+  { name: 'logo_shapes', type: 'string', analytics: 'text', label: 'Formas y trazos', maxLength: 500 },
+  { name: 'logo_typography', type: 'string', analytics: 'text', label: 'Tipografía', maxLength: 500 },
+  { name: 'logo_keep', type: 'string', analytics: 'text', label: 'Elementos a conservar', maxLength: 500 },
+  { name: 'logo_applications', type: 'string', analytics: 'text', label: 'Aplicaciones del logo', maxLength: 500 },
+  { name: 'logo_production_limits', type: 'string', analytics: 'text', label: 'Límites de producción', maxLength: 500 },
+  { name: 'logo_restrictions', type: 'string', analytics: 'text', label: 'Elementos obligatorios y prohibidos', maxLength: 500 },
+  { name: 'product_name', type: 'string', analytics: 'text', label: 'Producto', maxLength: 120 },
 ]);
 
 /**
@@ -64,6 +70,14 @@ export const BRIEF_CATALOG: ReadonlyArray<BriefFieldSpec> = Object.freeze([
  * agent. The ONE definition: the chat adapter stores it, the command snapshot sends it, the agent prompt reads it.
  */
 export const DELEGATED_FIELD_VALUE = 'A criterio del diseñador';
+
+/** D41: version stamped on every fact. Bump it (`YYYY-MM-DD`) whenever a catalog field is added, retyped or deprecated. */
+export const BRIEF_CATALOG_VERSION = '2026-11-12';
+
+/** D41: a deprecated field is not asked any more; its data and its analytics section stay. */
+export function isDeprecatedField(name: string, catalog: ReadonlyArray<BriefFieldSpec> = BRIEF_CATALOG): boolean {
+  return catalog.some((f) => f.name === name && f.deprecatedSince !== undefined);
+}
 
 export function briefFieldSpec(name: string): BriefFieldSpec | undefined {
   return BRIEF_CATALOG.find((field) => field.name === name);
@@ -77,7 +91,7 @@ const UNCATALOGED_MAX_LENGTH = 500;
  * the catalog spec, or plain text for a card field outside the catalog (KAN-44).
  */
 export function fieldRule(name: string): BriefFieldSpec {
-  return briefFieldSpec(name) ?? { name, type: 'string', label: name, maxLength: UNCATALOGED_MAX_LENGTH };
+  return briefFieldSpec(name) ?? { name, type: 'string', analytics: 'none', label: name, maxLength: UNCATALOGED_MAX_LENGTH };
 }
 
 export type BriefValueResult =
@@ -90,7 +104,7 @@ export type BriefValueResult =
  * become one space, the result is trimmed, and it must be 1..maxLength code
  * points. Messages are neutral Spanish (tú).
  */
-export function validateBriefValue(spec: BriefFieldSpec, value: unknown): BriefValueResult {
+export function validateBriefValue(spec: Pick<BriefFieldSpec, 'name' | 'type' | 'label' | 'maxLength'>, value: unknown): BriefValueResult {
   if (typeof value !== 'string') return { ok: false, message: 'No pudimos validar este dato.' };
   if (/[^\P{Cc}\t\n\r]/u.test(value)) return { ok: false, message: `«${spec.label}» tiene caracteres no permitidos.` };
   const normalized = value.normalize('NFC').replace(/\s+/gu, ' ').trim();

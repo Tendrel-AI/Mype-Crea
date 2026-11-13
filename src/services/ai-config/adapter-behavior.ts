@@ -76,6 +76,7 @@ const EXTRACTOR_PROMPT_TEMPLATE = [
   `- Si aparece "Preguntas pendientes", el usuario responde con texto libre agrupado por tema (también puede usar números: "1. ..., 2. ..."). Asigna cada dato al campo pendiente que corresponda por su significado. Si para un ítem pendiente dice explícitamente "no aplica", "ninguno", "nada", "nada obligatorio, nada prohibido" o equivalente, guarda el valor literal "No aplica" con confidence 1.0.`,
   `- Todo campo pendiente que el mensaje no aborde se devuelve con null: NO lo rellenes con "No aplica" ni con ningún otro valor.`,
   `- "answers_pending" es true solo si el mensaje responde (aunque sea en parte) a las "Preguntas pendientes". Es false si no aparece ese bloque o si el mensaje es una pregunta de vuelta, un saludo, un cambio de tema o una petición de aclaración.`,
+  `- Algunos campos (rubro, público objetivo) llevan además "category": el código de la lista cerrada del esquema que mejor corresponde al texto del usuario. "value" sigue siendo lo que dijo el usuario, con sus palabras. Si ninguna categoría encaja con claridad, usa "OTRO". El usuario nunca elige la categoría: tú la deduces.`,
   `- Si formulas texto, usa español neutro latinoamericano, trata al usuario de tú y nunca uses voseo, aunque el usuario lo use. Conserva literalmente nombres propios y valores expresados.`,
   `- Llama a la función exactamente una vez. No incluyas texto adicional.`,
 ].join('\n');
@@ -173,6 +174,8 @@ export function createCurrentAdapterBehaviorSnapshot(
   return {
     schemaVersion: 'adapter-behavior.v1',
     extractor: {
+      // v9 (D41): `enum` fields (rubro, público objetivo) also return `category`, a code of the closed dictionary or `OTRO`.
+      // Real eval pending.
       // v8 (D35): one statement fills every field it touches, new confidence rubric (a stated value is >= 0.9),
       // «Sin preferencia» for «no sé / tú decide», `answers_pending` flag (delegable fields are filled in code,
       // the model no longer fills unaddressed fields with «No aplica»). Real eval pending.
@@ -180,7 +183,7 @@ export function createCurrentAdapterBehaviorSnapshot(
       // v6: `{{askedBlock}}` lists the pending request_fields (number -> field) and «no aplica» answers
       // are stored as «Sin preferencia». v5 (KAN-26): the field list adds the brief catalog's brand/product fields
       // (logo-agent optional fields). Template unchanged; real eval pending.
-      promptVersion: 'extractor.v8',
+      promptVersion: 'extractor.v9',
       promptTemplate: EXTRACTOR_PROMPT_TEMPLATE,
       rendererVersion: 'extractor.renderer.v1',
       parserVersion: 'extractor.parser.v1',

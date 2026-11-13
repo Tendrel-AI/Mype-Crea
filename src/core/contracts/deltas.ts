@@ -84,6 +84,9 @@ export interface FieldValueWithConfidence {
    */
   readonly confidence: number;
 
+  /** D41: dictionary code the Extractor mapped an `enum` field's text to (or `OTRO`). Read only by the facts writer. */
+  readonly category?: string;
+
   /** Optional: the raw text/input that produced this value. Debug/audit only. */
   readonly rawInput?: string;
 

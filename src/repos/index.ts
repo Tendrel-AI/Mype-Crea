@@ -27,6 +27,7 @@ import { brandFilesRepo, type BrandFilesRepo } from './brand-files';
 import { ownCandidatesRepo, type OwnCandidatesRepo } from './own-candidates';
 import { productsRepo, type ProductsRepo } from './products';
 import { tenantAccountsRepo, type TenantAccountsRepo } from './tenant-accounts';
+import { tenantAnalyticsRepo, type TenantAnalyticsRepo } from './tenant-analytics';
 import type { Tenant, User } from '../db/with-transaction';
 
 export interface Repos {
@@ -45,6 +46,7 @@ export interface Repos {
   readonly usage: UsageRepo;
   readonly writeRejections: WriteRejectionsRepo;
   readonly tenantAccounts: TenantAccountsRepo;
+  readonly tenantAnalytics: TenantAnalyticsRepo;
   readonly brands: BrandsRepo;
   readonly products: ProductsRepo;
   readonly brandFiles: BrandFilesRepo;
@@ -69,6 +71,7 @@ export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repo
     usage: usageRepo(tenant, user),
     writeRejections: writeRejectionsRepo(tenant, user),
     tenantAccounts: tenantAccountsRepo(tenant, user),
+    tenantAnalytics: tenantAnalyticsRepo(tenant, user),
     brands: brandsRepo(tenant, user),
     products: productsRepo(tenant, user),
     brandFiles: brandFilesRepo(tenant, user),
