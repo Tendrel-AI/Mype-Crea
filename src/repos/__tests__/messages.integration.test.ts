@@ -122,4 +122,16 @@ SUITE('messages repository (integration)', () => {
     const visible = await foreign.messages.listByConversation(conversationId);
     expect(visible).toHaveLength(0);
   });
+
+  it('replaces the welcome while there are no turns and reads it back', async () => {
+    const conversationId = randomUUID();
+    conversationIds.push(conversationId);
+    const r = repos({ id: tenantId }, { id: userId });
+    await r.conversations.getOrCreate(conversationId, []);
+    expect(await r.messages.readWelcome(conversationId)).toBeNull();
+    expect(await r.messages.replaceWelcome(conversationId, 'uno')).toBe(true);
+    expect(await r.messages.replaceWelcome(conversationId, 'dos')).toBe(true);
+    expect(await r.messages.readWelcome(conversationId)).toBe('dos');
+    expect(await r.messages.listByConversation(conversationId)).toHaveLength(1);
+  });
 });

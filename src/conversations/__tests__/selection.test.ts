@@ -39,6 +39,8 @@ const mocks = vi.hoisted(() => ({
   productCreate: vi.fn(),
   brandCreate: vi.fn(),
   listTurns: vi.fn(),
+  replaceWelcome: vi.fn(async () => true),
+  readWelcome: vi.fn(async (): Promise<string | null> => null),
   listNotices: vi.fn(),
   listByConversation: vi.fn(),
   startConversation: vi.fn(async () => undefined),
@@ -126,6 +128,7 @@ vi.mock('../../repos', () => ({
         listNotices: mocks.listNotices,
       },
       deliverables: { listByConversation: mocks.listByConversation },
+      messages: { replaceWelcome: mocks.replaceWelcome, readWelcome: mocks.readWelcome },
     };
   },
 }));
@@ -324,8 +327,41 @@ describe('brand and product creation (KAN-87)', () => {
     expect(created).toMatchObject({ ok: true, welcome: expect.stringContaining('Este es el chat de tu marca «Café Andino».') });
     expect(created.ok && created.welcome).toContain('Tu marca está lista');
     mocks.peekNextDecision.mockRejectedValueOnce(new Error('boom'));
+    mocks.listTurns.mockResolvedValueOnce([]);
     const loaded = await resolveHomeConversation(ids.older);
     expect(loaded).toMatchObject({ kind: 'open', history: { welcome: 'Este es el chat de tu marca «Café Andino».\n\nCuéntame en qué quieres trabajar hoy.' } });
+  });
+
+  it('history.turns is chronological (listTurns is newest-first)', async () => {
+    mocks.listTurns.mockResolvedValue([
+      { id: 't2', requestId: 'r2', inputContent: 'segundo', responseContent: null, stage: 'responded', failureCategory: null, createdAt: '2026-10-24T16:00:00.000Z' },
+      { id: 't1', requestId: 'r1', inputContent: 'primero', responseContent: null, stage: 'responded', failureCategory: null, createdAt: '2026-10-24T15:00:00.000Z' },
+    ]);
+    const result = await resolveHomeConversation(ids.older);
+    expect(result.kind === 'open' && result.history.turns.map((turn) => turn.requestId)).toEqual(['r1', 'r2']);
+  });
+
+  it('the welcome is persisted with no turns, and read back (not recomputed) once there are turns', async () => {
+    mocks.listTurns.mockResolvedValueOnce([]);
+    const empty = await resolveHomeConversation(ids.older);
+    expect(mocks.replaceWelcome).toHaveBeenCalledWith(ids.older, expect.stringContaining('Este es el chat de tu marca'));
+    expect(empty).toMatchObject({ history: { welcome: expect.stringContaining('Este es el chat') } });
+
+    vi.clearAllMocks();
+    mocks.readWelcome.mockResolvedValueOnce('Bienvenida guardada');
+    const withTurns = await resolveHomeConversation(ids.older);
+    expect(withTurns).toMatchObject({ history: { welcome: 'Bienvenida guardada' } });
+    expect(mocks.replaceWelcome).not.toHaveBeenCalled();
+    expect(mocks.peekNextDecision).not.toHaveBeenCalled();
+
+    mocks.readWelcome.mockResolvedValueOnce(null);
+    expect(await resolveHomeConversation(ids.older)).toMatchObject({ history: { welcome: '' } });
+  });
+
+  it('a failing welcome persist never fails opening the conversation', async () => {
+    mocks.listTurns.mockResolvedValueOnce([]);
+    mocks.replaceWelcome.mockRejectedValueOnce(new Error('db down'));
+    expect(await resolveHomeConversation(ids.older)).toMatchObject({ kind: 'open' });
   });
 
   it('import mode stores imported=true on the server; a client-sent imported flag is ignored', async () => {

@@ -73,7 +73,7 @@ interface CreaMypeProps {
   conversationNotFound?: boolean;
 }
 
-/** KAN-93: the opening message is composed by the server from the plan (not persisted). */
+/** KAN-93: the opening message is composed by the server from the plan and stored once the chat has turns. */
 const welcomeMessage = (text: string): Message => ({ id: 'welcome', role: 'model', text, isSystem: true });
 
 const NAME_AGENT_ID = 'name-agent';
@@ -111,15 +111,16 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     typedLandingPage: landingPageContent,
   }));
   const [notFound, setNotFound] = useState(conversationNotFound);
-  const [messages, setMessages] = useState<Message[]>(() => conversationNotFound || !initialConversationId ? [] : initialTurns.length
-    ? initialTurns.flatMap((turn) => [
+  const [messages, setMessages] = useState<Message[]>(() => conversationNotFound || !initialConversationId ? [] : [
+    ...(initialWelcome ? [welcomeMessage(initialWelcome)] : []),
+    ...initialTurns.flatMap((turn) => [
         ...(turn.userMessage ? [{ id: `${turn.requestId}:user`, role: 'user' as const, text: turn.userMessage }] : []),
         ...(turn.content ? [{ id: `${turn.requestId}:assistant`, role: 'model' as const, text: turn.content }] : []),
         ...turn.notices.filter((notice) => notice.content).map((notice, noticeIndex) => ({
           id: `${turn.requestId}:notice:${noticeIndex}`, role: 'model' as const, text: notice.content!, isNotice: true,
         })),
-      ])
-    : [welcomeMessage(initialWelcome)]);
+      ]),
+  ]);
   const incompleteTurn = [...initialTurns].reverse().find((turn) => turn.stage !== 'responded');
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);

@@ -194,7 +194,8 @@ export async function loadOwnedConversation(
   const pin = await owned.conversations.readPinnedConversation(conversationId, registry.getFieldSchemas());
   if (!pin) return { state: 'not_found' };
   if (pin.state !== 'pinned') return { state: 'legacy_unversioned' };
-  const turns = await owned.aiTurns.listTurns(conversationId);
+  // listTurns is newest-first (other callers rely on it); the chat renders oldest-first.
+  const turns = [...(await owned.aiTurns.listTurns(conversationId))].reverse();
   const deliverables = await owned.deliverables.listByConversation(conversationId);
   const states = await deliverableStates(identity, conversationId);
   const context = (await owned.conversations.context(conversationId)) ?? null;
@@ -203,7 +204,7 @@ export async function loadOwnedConversation(
     history: {
       conversationId,
       context,
-      welcome: await welcomeFor(conversationId, context),
+      welcome: await openingWelcome(identity, conversationId, context, turns.length === 0),
       turns: await Promise.all(turns.map(async (turn) => ({
         requestId: turn.requestId,
         userMessage: turn.inputContent,
@@ -254,6 +255,32 @@ async function welcomeFor(conversationId: ConversationId, context: ConversationC
   }
 }
 
+/**
+ * The welcome the chat shows first. With no turns it is recomputed and persisted (replacing any earlier
+ * one); with turns it is the stored one ('' for conversations that predate persistence). Never throws.
+ */
+async function openingWelcome(
+  identity: ResolvedIdentity,
+  conversationId: ConversationId,
+  context: ConversationContext | null,
+  noTurns: boolean,
+): Promise<string> {
+  const { messages } = repository(identity);
+  try {
+    if (!noTurns) return (await messages.readWelcome(conversationId)) ?? '';
+  } catch (error) {
+    log.warn({ conversationId, err: error }, 'selection.welcome_read_failed');
+    return '';
+  }
+  const welcome = await welcomeFor(conversationId, context);
+  try {
+    await messages.replaceWelcome(conversationId, welcome);
+  } catch (error) {
+    log.warn({ conversationId, err: error }, 'selection.welcome_persist_failed');
+  }
+  return welcome;
+}
+
 /** Start the orchestrator for a conversation that was just pinned. */
 async function startPinned(identity: ResolvedIdentity, conversationId: ConversationId): Promise<void> {
   await getOrchestrator().startConversation(conversationId, identity.tenant.id as UUID, identity.user.id as UUID);
@@ -282,7 +309,7 @@ async function startedConversation(
   await startPinned(identity, conversationId);
   const context = (await repository(identity).conversations.context(conversationId))
     ?? { brandId, brandName: null, productId, productName: null };
-  return { ok: true, conversationId, brandId, productId, context, welcome: await welcomeFor(conversationId, context) };
+  return { ok: true, conversationId, brandId, productId, context, welcome: await openingWelcome(identity, conversationId, context, true) };
 }
 
 /**
