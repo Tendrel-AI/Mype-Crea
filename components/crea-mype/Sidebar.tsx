@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Loader2, Sparkles, Menu, Globe, PlusCircle } from 'lucide-react';
+import { Loader2, Sparkles, Menu, Globe, PlusCircle, Settings } from 'lucide-react';
 import { signOutAction } from '../../app/actions/auth';
 import { ThemeToggle } from '../ThemeToggle';
 import { type BrandAssets, type Tab } from './types';
@@ -11,7 +11,7 @@ import { type BrandAssets, type Tab } from './types';
 // shortcut: hidden until the landing page exists (owner, 2026-11-13); flip to true to restore
 const SHOW_LANDING_TAB = false;
 
-export function Sidebar({ children, activeTab, setActiveTab, isSidebarOpen, setIsSidebarOpen, assets, processingAgents, userEmail, userName }: { children?: React.ReactNode; activeTab: Tab; setActiveTab: (tab: Tab) => void; isSidebarOpen: boolean; setIsSidebarOpen: (open: boolean) => void; assets: BrandAssets; processingAgents: Set<string>; userEmail: string; userName: string }) {
+export function Sidebar({ children, activeTab, setActiveTab, isSidebarOpen, setIsSidebarOpen, assets, processingAgents, userEmail, userName, isTenantAdmin = false }: { children?: React.ReactNode; activeTab: Tab; setActiveTab: (tab: Tab) => void; isSidebarOpen: boolean; setIsSidebarOpen: (open: boolean) => void; assets: BrandAssets; processingAgents: Set<string>; userEmail: string; userName: string; isTenantAdmin?: boolean }) {
   return (
 <>
       {/* Sidebar */}
@@ -71,6 +71,19 @@ export function Sidebar({ children, activeTab, setActiveTab, isSidebarOpen, setI
               Página Web
             </span>
           </button>
+          )}
+
+          {isTenantAdmin && (
+          <a
+            href="/admin"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors hover:bg-neutral-100 text-neutral-600"
+            title="Administración"
+          >
+            <Settings className="w-5 h-5 flex-shrink-0" />
+            <span className={`font-medium whitespace-nowrap transition-opacity ${isSidebarOpen ? 'opacity-100' : 'opacity-0 hidden'}`}>
+              Administración
+            </span>
+          </a>
           )}
         </div>
 

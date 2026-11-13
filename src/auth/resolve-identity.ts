@@ -28,6 +28,17 @@ const WORKOS_USER_ID_PATTERN = /^user_[A-Za-z0-9]+$/;
 const MFA_TTL_SECONDS = 10 * 60;
 
 export type { TenantRole } from './role-override';
+
+export type AccessRefusalReason = 'no_organization' | 'organization_not_enabled' | 'organization_paused' | 'no_active_membership';
+
+/** The caller is signed in but may not use the app (as opposed to a transient verification failure). */
+export class AccessRefusedError extends Error {
+  constructor(readonly reason: AccessRefusalReason, message: string) {
+    super(message);
+    this.name = 'AccessRefusedError';
+  }
+}
+
 export interface ResolvedIdentity {
   readonly tenant: Tenant;
   readonly user: User;
@@ -256,23 +267,23 @@ export function repositoryActor(identity: ResolvedIdentity): RepositoryActor {
 
 async function resolveRealIdentity(): Promise<ResolvedIdentity> {
   const { user: workosUser, organizationId } = await withAuth({ ensureSignedIn: true });
-  if (!organizationId || !WORKOS_ORG_ID_PATTERN.test(organizationId)) throw new Error('Tu sesión no tiene una organización activa.');
+  if (!organizationId || !WORKOS_ORG_ID_PATTERN.test(organizationId)) throw new AccessRefusedError('no_organization', 'Tu sesión no tiene una organización activa.');
   if (!WORKOS_USER_ID_PATTERN.test(workosUser.id)) throw new Error('No pudimos verificar el acceso de tu cuenta. Inténtalo de nuevo.');
   let organization;
   try { organization = await globalRepos().organizations.findByWorkosOrgId(organizationId); } catch (error) {
     log.error({ organizationId, error }, 'identity.organization_lookup_failed');
     throw new Error('No pudimos verificar el acceso de tu cuenta. Inténtalo de nuevo.');
   }
-  if (!organization) throw new Error('La organización de tu cuenta no está habilitada.');
-  if (organization.status !== 'active') throw new Error('El acceso a esta organización está pausado.');
+  if (!organization) throw new AccessRefusedError('organization_not_enabled', 'La organización de tu cuenta no está habilitada.');
+  if (organization.status !== 'active') throw new AccessRefusedError('organization_paused', 'El acceso a esta organización está pausado.');
   let workosMembership: { role: TenantRole } | undefined;
   try { workosMembership = await getActiveWorkOSMembership(organizationId, workosUser.id); } catch (error) {
     log.error({ organizationId, workosUserId: workosUser.id, error }, 'identity.resolve.workos_membership_failed');
     throw new Error('No pudimos verificar el acceso de tu cuenta. Inténtalo de nuevo.');
   }
-  if (!workosMembership) throw new Error('Tu cuenta no tiene acceso activo a esta organización.');
+  if (!workosMembership) throw new AccessRefusedError('no_active_membership', 'Tu cuenta no tiene acceso activo a esta organización.');
   const membership = await mirrorMember(organization.tenantId, organizationId, workosUser, workosMembership.role);
-  if (!membership) throw new Error('Tu cuenta no tiene acceso activo a esta organización.');
+  if (!membership) throw new AccessRefusedError('no_active_membership', 'Tu cuenta no tiene acceso activo a esta organización.');
   let platformAdmin = false;
   try { platformAdmin = await globalRepos().identity.isSuperadmin(workosUser.id); } catch (error) {
     log.error({ workosUserId: workosUser.id, error }, 'identity.superadmin_lookup_failed');

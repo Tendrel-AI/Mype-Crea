@@ -9,12 +9,12 @@ import { authkitMiddleware } from '@workos-inc/authkit-nextjs';
 // loops the user back to /login during the OAuth handshake. `/auth/callback`
 // serves the same handler for environments whose redirect URI uses that path.
 // `/sign-in` (the
-// WorkOS Initiate login URI) and `/sign-up` start the hosted AuthKit flow and
-// must be reachable without a session as well.
+// WorkOS Initiate login URI) starts the hosted AuthKit flow and must be reachable
+// without a session as well. There is no `/sign-up`: no self registration (D52).
 export default authkitMiddleware({
   middlewareAuth: {
     enabled: true,
-    unauthenticatedPaths: ['/login', '/callback', '/auth/callback', '/sign-in', '/sign-up'],
+    unauthenticatedPaths: ['/login', '/callback', '/auth/callback', '/sign-in'],
   },
 });
 

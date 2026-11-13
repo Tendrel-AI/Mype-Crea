@@ -196,6 +196,18 @@ SUITE('KAN-43 usage reservations (integration)', () => {
     expect(await statusCounts(t.tenant)).toEqual({ denied: 1 });
   });
 
+  it('D52: an inactive user is refused with user_inactive and never reaches the provider', async () => {
+    const t = await createTenant();
+    await seedCredits(t.tenant, 10);
+    await owner.query(`UPDATE users SET status = 'inactive' WHERE id = $1`, [t.member.id]);
+    const { providerCalls, denials } = await parallelCalls(t.tenant, t.member, 3, 'llm', 0.01);
+    expect(providerCalls).toBe(0);
+    expect(denials.map((d) => d.reason)).toEqual(Array(3).fill('user_inactive'));
+    expect(await statusCounts(t.tenant)).toEqual({ denied: 3 });
+    // Another active user of the same tenant is unaffected.
+    expect((await repos(t.tenant, t.other).usage.reserve({ kind: 'llm', estimatedCostUsd: 0.01 })).allowed).toBe(true);
+  });
+
   it('isolation: one tenant without credits neither blocks nor exposes another tenant', async () => {
     const a = await createTenant();
     const b = await createTenant();

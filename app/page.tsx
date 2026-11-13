@@ -2,10 +2,13 @@ import { withAuth } from '@workos-inc/authkit-nextjs';
 import { redirect } from 'next/navigation';
 import CreaMype from '../components/CreaMype';
 import { resolveHomeConversation } from '../src/conversations/selection';
-import { requireGlobalAdmin, requireGlobalMfa } from '../src/auth/resolve-identity';
+import { AccessRefusedError, requireGlobalAdmin, requireGlobalMfa, resolveIdentity, type ResolvedIdentity } from '../src/auth/resolve-identity';
+import { NoAccess } from '../components/crea-mype/NoAccess';
 import { TermsConsent } from '../components/crea-mype/TermsConsent';
-import { currentTermsStatus } from '../src/consent/gate';
+import { checkCurrentTerms } from '../src/consent/gate';
 import { CURRENT_TERMS, TERMS_UNAVAILABLE_MESSAGE } from '../src/consent/terms';
+
+const IDENTITY_UNAVAILABLE_MESSAGE = 'No pudimos verificar el acceso de tu cuenta. Inténtalo de nuevo.';
 
 export default async function Home({
   searchParams,
@@ -23,8 +26,15 @@ export default async function Home({
   }
 
   const userName = [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email;
+  // D52: an access refusal gets its own screen; any other failure stays a retryable error.
+  let identity: ResolvedIdentity;
+  try { identity = await resolveIdentity(); } catch (error) {
+    if (error instanceof AccessRefusedError) return <NoAccess email={user.email} reason={error.reason} />;
+    return <CreaMype key="identity-unavailable" userEmail={user.email} userName={userName} initialConversationId="" initialError={IDENTITY_UNAVAILABLE_MESSAGE} creationBlocked />;
+  }
+  const isTenantAdmin = identity.tenantRole === 'admin';
   // KAN-27: the terms come before any conversation; the chat actions enforce it server-side too.
-  const terms = await currentTermsStatus();
+  const terms = await checkCurrentTerms(identity);
   if (terms === 'required') return <TermsConsent terms={CURRENT_TERMS} />;
   if (terms === 'unavailable') {
     return (
@@ -32,6 +42,7 @@ export default async function Home({
         key="terms-unavailable"
         userEmail={user.email}
         userName={userName}
+        isTenantAdmin={isTenantAdmin}
         initialConversationId=""
         initialError={TERMS_UNAVAILABLE_MESSAGE}
         creationBlocked
@@ -51,6 +62,7 @@ export default async function Home({
           key={result.history.conversationId}
           userEmail={user.email}
           userName={userName}
+        isTenantAdmin={isTenantAdmin}
           initialConversationId={result.history.conversationId}
           initialTurns={result.history.turns}
           initialDeliverables={result.history.deliverables}
@@ -68,6 +80,7 @@ export default async function Home({
           key="no-conversations"
           userEmail={user.email}
           userName={userName}
+        isTenantAdmin={isTenantAdmin}
           initialConversationId=""
           initialBrands={result.brands}
         />
@@ -78,6 +91,7 @@ export default async function Home({
           key="conversation-not-found"
           userEmail={user.email}
           userName={userName}
+        isTenantAdmin={isTenantAdmin}
           initialConversationId=""
           initialConversations={result.conversations}
           initialBrands={result.brands}
@@ -90,6 +104,7 @@ export default async function Home({
           key="conversation-error"
           userEmail={user.email}
           userName={userName}
+        isTenantAdmin={isTenantAdmin}
           initialConversationId=""
           initialError={result.message}
         />

@@ -43,6 +43,8 @@ import { liveConnectionLost, nextProcessingAgents } from './crea-mype/live-updat
 interface CreaMypeProps {
   userEmail: string;
   userName: string;
+  /** Effective tenant role is admin (resolved on the server). */
+  isTenantAdmin?: boolean;
   initialConversationId?: string;
   initialTurns?: ReadonlyArray<{
     requestId: string;
@@ -107,7 +109,7 @@ const EMPTY_ASSETS: BrandAssets = {
   marketingPlan: '',
 };
 
-export default function CreaMype({ userEmail, userName, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialBrief = [], initialStates = [], landingPageContent, initialError, initialConversations = [], initialBrands = [], initialContext = null, initialWelcome = '', creationBlocked = false, conversationNotFound = false }: CreaMypeProps) {
+export default function CreaMype({ userEmail, userName, isTenantAdmin = false, initialConversationId = '', initialTurns = [], initialDeliverables = [], initialBrief = [], initialStates = [], landingPageContent, initialError, initialConversations = [], initialBrands = [], initialContext = null, initialWelcome = '', creationBlocked = false, conversationNotFound = false }: CreaMypeProps) {
   const [activeTab, setActiveTab] = useState<'create' | 'gallery' | 'landing'>('create');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const isMobile = useIsMobile();
@@ -791,7 +793,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   return (
     <div className="flex h-screen bg-neutral-50 text-neutral-900 overflow-hidden font-sans">
 
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} isSidebarOpen={isSidebarOpen} setIsSidebarOpen={setIsSidebarOpen} assets={assets} processingAgents={processingAgents} userEmail={userEmail} userName={userName}>
+      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} isSidebarOpen={isSidebarOpen} setIsSidebarOpen={setIsSidebarOpen} assets={assets} processingAgents={processingAgents} userEmail={userEmail} userName={userName} isTenantAdmin={isTenantAdmin}>
         {activeTab === 'create' && !isMobile && !creationBlocked && (
           <BrandTree initialBrands={initialBrands} initialConversations={initialConversations} currentConversationId={conversationId} refreshKey={`${conversationId}:${formModal ? 'form' : 'idle'}`} loadConversations={listConversationsAction} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} onNewProduct={(brandId) => void openNewProduct(brandId)} onEditBrand={(brandId) => void openEditBrand(brandId)} onEditProduct={(productId) => void openEditProduct(productId)} onArchiveBrand={handleArchiveBrand} />
         )}
