@@ -71,9 +71,9 @@ const EXTRACTOR_PROMPT_TEMPLATE = [
   `    0.7  - solo si lo infieres de algo que el usuario no dijo sobre ese campo`,
   `    <0.6 - no estás seguro: pasa null en ese campo`,
   `- Lo que el usuario afirma con claridad ("no hay nada que mis clientes reconozcan, solo el color café oscuro") es un dato dicho, no una inferencia: confidence 0.9 o más.`,
-  `- NO inventes valores. NO uses contexto fuera del mensaje del usuario, salvo la lista de preguntas pendientes (si aparece arriba) para interpretar respuestas numeradas.`,
+  `- NO inventes valores. NO uses contexto fuera del mensaje del usuario, salvo la lista de preguntas pendientes (si aparece arriba) para asignar cada dato al campo que corresponde.`,
   `- Si el usuario dice explícitamente "no sé", "recomiéndame", "tú decide", "que el diseñador elija" o equivalente sobre un campo, guarda el valor literal "Sin preferencia" en ese campo con confidence 1.0.`,
-  `- Si aparece "Preguntas pendientes", el usuario responde con texto libre agrupado por tema (también puede usar números: "1. ..., 2. ..."). Asigna cada dato al campo pendiente que corresponda por su significado. Si para un ítem pendiente dice explícitamente "no aplica", "ninguno", "nada", "nada obligatorio, nada prohibido" o equivalente, guarda el valor literal "No aplica" con confidence 1.0.`,
+  `- Si aparece "Preguntas pendientes", el usuario responde con texto libre agrupado por tema. Asigna cada dato al campo pendiente que corresponda por su significado. Si para un ítem pendiente dice explícitamente "no aplica", "ninguno", "nada", "nada obligatorio, nada prohibido" o equivalente, guarda el valor literal "No aplica" con confidence 1.0.`,
   `- Todo campo pendiente que el mensaje no aborde se devuelve con null: NO lo rellenes con "No aplica" ni con ningún otro valor.`,
   `- "answers_pending" es true solo si el mensaje responde (aunque sea en parte) a las "Preguntas pendientes". Es false si no aparece ese bloque o si el mensaje es una pregunta de vuelta, un saludo, un cambio de tema o una petición de aclaración.`,
   `- Algunos campos (rubro, público objetivo) llevan además "category": el código de la lista cerrada del esquema que mejor corresponde al texto del usuario. "value" sigue siendo lo que dijo el usuario, con sus palabras. Si ninguna categoría encaja con claridad, usa "OTRO". El usuario nunca elige la categoría: tú la deduces.`,
@@ -185,7 +185,7 @@ export function createCurrentAdapterBehaviorSnapshot(
       // v6: `{{askedBlock}}` lists the pending request_fields (number -> field) and «no aplica» answers
       // are stored as «Sin preferencia». v5 (KAN-26): the field list adds the brief catalog's brand/product fields
       // (logo-agent optional fields). Template unchanged; real eval pending.
-      promptVersion: 'extractor.v9',
+      promptVersion: 'extractor.v10',
       promptTemplate: EXTRACTOR_PROMPT_TEMPLATE,
       rendererVersion: 'extractor.renderer.v1',
       parserVersion: 'extractor.parser.v1',
