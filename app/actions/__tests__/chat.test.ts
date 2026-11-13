@@ -50,10 +50,11 @@ const mocks = vi.hoisted(() => {
     const value = await operation({ model: {}, behavior: {} });
     return { value, effectiveProfileId: 'profile-1' };
   });
+  const checkTurn = vi.fn<(conversationId: string) => Promise<any>>(async () => null);
   const childInfo = vi.fn();
   const baselineCalls = { identity: 0, draft: 0 }; // plain counters: survive vi.clearAllMocks
   return {
-    baselineCalls,
+    baselineCalls, checkTurn,
     calls, pin, identity, turn, snapshot, delta, decision, ensurePinnedConversation, claimTurn,
     ensureUserMessage, checkpointTurn, failTurn, completeTurn, listNotices, listTurns,
     repository, repos, startConversation, applyDelta, peekNextDecision, acknowledgeDecisions,
@@ -71,6 +72,7 @@ vi.mock('../../../src/core/orchestrator/runtime', () => ({
   getChatInputAdapter: () => ({ extract: mocks.extract }),
   getChatOutputAdapter: () => ({ render: mocks.render }),
 }));
+vi.mock('../../../src/core/limits/runtime', () => ({ getLimitGate: () => ({ checkTurn: mocks.checkTurn }) }));
 vi.mock('../../../src/services/ai-config/execution', () => ({
   AiConfigRuntime: class { runPurpose = mocks.runPurpose; },
   AiConfigExecutionError: class extends Error {
@@ -162,6 +164,15 @@ describe('chatAction durable turn boundary', () => {
     expect(mocks.render).toHaveBeenCalledWith(expect.objectContaining({ promptVersions: stored }));
     // KAN-93: the Responder gets the brand/product names of the conversation.
     expect(mocks.render).toHaveBeenCalledWith(expect.objectContaining({ context: expect.objectContaining({ brandName: 'Brisa Ron' }) }));
+  });
+
+  it('D39: a turn over the limit is refused by the gate before any usage reservation or model work', async () => {
+    mocks.checkTurn.mockResolvedValueOnce({ kind: 'turn_limit_reached', key: 'turns.per_conversation', limit: 40, used: 40 });
+    const result = await chatAction(input);
+    expect(result).toMatchObject({ ok: false, code: 'turn_limit_reached', retryable: false });
+    expect(mocks.checkTurn).toHaveBeenCalledWith(input.conversationId);
+    expect(mocks.preflight).not.toHaveBeenCalled();
+    expect(mocks.claimTurn).not.toHaveBeenCalled();
   });
 
   describe('KAN-43 usage preflight', () => {

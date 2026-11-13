@@ -1,7 +1,7 @@
 /**
  * KAN-85 / KAN-87 products. Each product belongs to one of the caller's ACTIVE brands; a foreign,
  * missing or archived brand yields `brand_not_found`. Owner-only by RLS plus the explicit predicates below.
- * Creation is limited per brand (`tenants.max_products_per_brand`): the owner's active brand row is
+ * Creation is limited per brand (limit profile key `products.per_brand`, D38): the owner's active brand row is
  * locked FOR UPDATE, its products are counted, and over the limit a typed refusal comes back.
  * With `firstConversation` the product's first conversation is pinned in the same transaction.
  */
@@ -10,8 +10,9 @@ import type { AiConversationPin } from './models';
 import { withTenantTransaction, type Tenant, type User } from '../db/with-transaction';
 import { loggerFor } from '../services/logger';
 import { updateAttributesInTx, type AttributePatch } from './attributes';
-import { readLimits, type BrandNotFound, type FirstConversation, type InvalidAttributes } from './brands';
+import { readCountLimits, type BrandNotFound, type FirstConversation, type InvalidAttributes } from './brands';
 import { pinConversationInTx } from './conversations';
+import { checkLimit } from '../core/limits/rules';
 
 const log = loggerFor('repos.products');
 
@@ -59,14 +60,15 @@ export function productsRepo(tenant: Tenant, user: User): ProductsRepo {
           [input.brandId, tenant.id, user.id],
         );
         if (brand.rows.length === 0) return { ok: false, code: 'brand_not_found' } as const;
-        const { maxProductsPerBrand } = await readLimits(tx, tenant);
+        const limits = await readCountLimits(tx, tenant, user);
         const count = await tx.query<{ n: number }>(
           `SELECT count(*)::int AS n FROM products WHERE tenant_id = $1 AND brand_id = $2`,
           [tenant.id, input.brandId],
         );
-        if ((count.rows[0]?.n ?? 0) >= maxProductsPerBrand) {
-          log.info({ tenantId: tenant.id, brandId: input.brandId, limit: maxProductsPerBrand }, 'products.create.limit_reached');
-          return { ok: false, code: 'product_limit_reached', limit: maxProductsPerBrand } as const;
+        const refusal = checkLimit(limits, { kind: 'product' }, count.rows[0]?.n ?? 0);
+        if (refusal) {
+          log.info({ tenantId: tenant.id, brandId: input.brandId, limit: refusal.limit }, 'products.create.limit_reached');
+          return { ok: false, code: 'product_limit_reached', limit: refusal.limit } as const;
         }
         const res = await tx.query<ProductRowDb>(
           `INSERT INTO products (tenant_id, brand_id, user_id, name, attributes)

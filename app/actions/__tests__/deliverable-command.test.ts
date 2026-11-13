@@ -20,7 +20,8 @@ const mocks = vi.hoisted(() => {
   }));
   const getDeliverableStates = vi.fn(async () => [{ agentId: 'logo-agent', state: 'enabled' }]);
   const resolveIdentity = vi.fn<() => Promise<any>>(async () => identity);
-  return { record, labContext, listLabReports, identity, acceptedVersions, hasAccepted, preflight, readPinnedConversation, repos, startConversation, executeCommand, getDeliverableStates, resolveIdentity };
+  const checkAlteration = vi.fn<(conversationId: string, agentId: string) => Promise<any>>(async () => null);
+  return { checkAlteration, record, labContext, listLabReports, identity, acceptedVersions, hasAccepted, preflight, readPinnedConversation, repos, startConversation, executeCommand, getDeliverableStates, resolveIdentity };
 });
 
 vi.mock('../../../src/auth/resolve-identity', () => ({ resolveIdentity: mocks.resolveIdentity }));
@@ -35,6 +36,7 @@ vi.mock('../../../src/core/orchestrator/runtime', () => ({
     getDeliverableStates: mocks.getDeliverableStates,
   }),
 }));
+vi.mock('../../../src/core/limits/runtime', () => ({ getLimitGate: () => ({ checkAlteration: mocks.checkAlteration }) }));
 vi.mock('../../../src/services/logger', () => ({
   loggerFor: () => ({ info: vi.fn(), error: vi.fn(), warn: vi.fn() }),
 }));
@@ -150,6 +152,21 @@ describe('deliverableCommandAction', () => {
       deliverableId: DELIVERABLE,
       observation: 'Más azul',
     });
+  });
+
+  it('D39: iterate and retry go through the limit gate; a refusal stops before the preflight and the core', async () => {
+    mocks.checkAlteration.mockResolvedValue({ kind: 'alteration_limit_reached', key: 'alterations.logo-agent', limit: 3, used: 3, deliverableLabel: 'Logo' });
+    const result = await deliverableCommandAction({ ...base, kind: 'iterate', deliverableId: DELIVERABLE, observation: 'Más azul' });
+    expect(result).toMatchObject({ ok: false, code: 'limit_reached' });
+    expect(mocks.checkAlteration).toHaveBeenCalledWith(CONVERSATION, 'logo-agent');
+    expect(mocks.preflight).not.toHaveBeenCalled();
+    expect(mocks.executeCommand).not.toHaveBeenCalled();
+    mocks.checkAlteration.mockResolvedValue(null);
+  });
+
+  it('D39: generate and approve never consult the alteration gate', async () => {
+    await deliverableCommandAction({ ...base, kind: 'generate' });
+    expect(mocks.checkAlteration).not.toHaveBeenCalled();
   });
 
   it('passes approve with a null expectedApprovedId', async () => {

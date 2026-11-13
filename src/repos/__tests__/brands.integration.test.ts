@@ -59,7 +59,7 @@ SUITE('KAN-85 brands (integration)', () => {
 
   it('defaults the limits to 3 brands per user and 5 products per brand', async () => {
     const { tenant, member } = await createTenant();
-    expect(await repos(tenant, member).brands.getLimits()).toEqual({ maxBrandsPerUser: 3, maxProductsPerBrand: 5 });
+    expect(await repos(tenant, member).limits.effectiveLimits()).toMatchObject({ 'brands.per_user': 3, 'products.per_brand': 5 });
   });
 
   it('isolates brands and products across users and tenants', async () => {
@@ -80,7 +80,7 @@ SUITE('KAN-85 brands (integration)', () => {
 
   it('two concurrent create() calls at limit-1 admit exactly one', async () => {
     const { tenant, member } = await createTenant();
-    await owner.query(`UPDATE tenants SET max_brands_per_user = 2 WHERE id = $1`, [tenant.id]);
+    await owner.query(`UPDATE limit_profile_values SET value = 2 WHERE tenant_id = $1 AND limit_key = 'brands.per_user'`, [tenant.id]);
     expect((await repos(tenant, member).brands.create({})).ok).toBe(true);
     const results = await Promise.all([repos(tenant, member).brands.create({}), repos(tenant, member).brands.create({})]);
     expect(results.filter((r) => r.ok)).toHaveLength(1);
@@ -89,31 +89,31 @@ SUITE('KAN-85 brands (integration)', () => {
 
   it('archiving frees a slot; lowering a limit keeps existing brands', async () => {
     const { tenant, member } = await createTenant();
-    await owner.query(`UPDATE tenants SET max_brands_per_user = 1 WHERE id = $1`, [tenant.id]);
+    await owner.query(`UPDATE limit_profile_values SET value = 1 WHERE tenant_id = $1 AND limit_key = 'brands.per_user'`, [tenant.id]);
     const first = await repos(tenant, member).brands.create({});
     if (!first.ok) throw new Error('expected brand');
     expect((await repos(tenant, member).brands.create({})).ok).toBe(false);
     expect(await repos(tenant, member).brands.archive(first.brandId)).toBe(true);
     expect((await repos(tenant, member).brands.create({})).ok).toBe(true);
-    await owner.query(`UPDATE tenants SET max_brands_per_user = 0 WHERE id = $1`, [tenant.id]);
+    await owner.query(`UPDATE limit_profile_values SET value = 0 WHERE tenant_id = $1 AND limit_key = 'brands.per_user'`, [tenant.id]);
     expect(await repos(tenant, member).brands.listActive()).toHaveLength(1);
   });
 
-  it('a member cannot change the limits; an admin can; out-of-range values are refused by the database', async () => {
+  it('a member cannot change a profile value; an admin can, with an audit row; out-of-range values are refused by the database', async () => {
     const { tenant, admin, member } = await createTenant();
-    await expect(repos(tenant, member).brands.setLimits({ maxBrandsPerUser: 99, maxProductsPerBrand: 99 })).rejects.toBeInstanceOf(NotTenantAdminError);
-    await expect(withTenantTransaction(tenant, member, (tx) => tx.query(`UPDATE tenants SET max_brands_per_user = 99 WHERE id = $1`, [tenant.id])))
-      .rejects.toThrow(/permission denied/);
-    await expect(withTenantTransaction(tenant, member, (tx) => tx.query(`SELECT app.set_brand_product_limits(99, 99)`))).rejects.toThrow(/tenant admin required/);
-
-    await repos(tenant, admin).brands.setLimits({ maxBrandsPerUser: 7, maxProductsPerBrand: 8 });
-    expect(await repos(tenant, member).brands.getLimits()).toEqual({ maxBrandsPerUser: 7, maxProductsPerBrand: 8 });
-    await expect(repos(tenant, admin).brands.setLimits({ maxBrandsPerUser: 1001, maxProductsPerBrand: 1 })).rejects.toThrow(/between 0 and 1000/);
+    const profile = await repos(tenant, admin).limits.getDefaultProfile();
+    if (!profile) throw new Error('expected default profile');
+    await expect(repos(tenant, member).limits.setValue({ profileId: profile.profileId, limitKey: 'brands.per_user', value: 99, reason: null })).rejects.toBeInstanceOf(NotTenantAdminError);
+    await expect(withTenantTransaction(tenant, member, (tx) => tx.query(`SELECT app.set_limit_profile_value($1, 'brands.per_user', 99, null)`, [profile.profileId]))).rejects.toThrow(/tenant admin required/);
+    await repos(tenant, admin).limits.setValue({ profileId: profile.profileId, limitKey: 'brands.per_user', value: 7, reason: 'piloto' });
+    expect(await repos(tenant, member).limits.effectiveLimits()).toMatchObject({ 'brands.per_user': 7 });
+    expect((await repos(tenant, admin).limits.getDefaultProfile())?.audit[0]).toMatchObject({ limitKey: 'brands.per_user', beforeValue: 3, afterValue: 7, reason: 'piloto' });
+    await expect(repos(tenant, admin).limits.setValue({ profileId: profile.profileId, limitKey: 'brands.per_user', value: 1001, reason: null })).rejects.toThrow(/between 0 and 1000/);
   });
 
   it('two concurrent product creations at limit-1 admit exactly one (the brand row lock serializes them)', async () => {
     const { tenant, member } = await createTenant();
-    await owner.query(`UPDATE tenants SET max_products_per_brand = 2 WHERE id = $1`, [tenant.id]);
+    await owner.query(`UPDATE limit_profile_values SET value = 2 WHERE tenant_id = $1 AND limit_key = 'products.per_brand'`, [tenant.id]);
     const brand = await repos(tenant, member).brands.create({ name: 'Café' });
     if (!brand.ok) throw new Error('expected brand');
     expect((await repos(tenant, member).products.create({ brandId: brand.brandId, name: 'Uno' })).ok).toBe(true);
@@ -218,13 +218,5 @@ SUITE('KAN-85 brands (integration)', () => {
     const byId = new Map(rows.rows.map((r) => [r.id, r]));
     expect(byId.get(firstId)).toMatchObject({ brand_id: brand.brandId, product_id: null, ai_release_id: releaseId });
     expect(byId.get(productConversationId)).toMatchObject({ brand_id: brand.brandId, product_id: product.product.id });
-  });
-
-  it('a member cannot call app.set_brand_product_limits; an admin can', async () => {
-    const { tenant, admin, member } = await createTenant();
-    await expect(withTenantTransaction(tenant, member, (tx) => tx.query(`SELECT app.set_brand_product_limits(99, 99)`))).rejects.toThrow(/tenant admin required/);
-    expect(await repos(tenant, member).brands.getLimits()).toEqual({ maxBrandsPerUser: 3, maxProductsPerBrand: 5 });
-    await repos(tenant, admin).brands.setLimits({ maxBrandsPerUser: 4, maxProductsPerBrand: 6 });
-    expect(await repos(tenant, member).brands.getLimits()).toEqual({ maxBrandsPerUser: 4, maxProductsPerBrand: 6 });
   });
 });

@@ -3,7 +3,6 @@
 import { useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { updateBrandLimitsAction } from '../app/actions/brands';
 import { deactivateTenantMember, provisionTenantMember, reactivateTenantMember, type TenantAccountsView } from '../app/actions/tenant-accounts';
 
 type Members = NonNullable<TenantAccountsView['members']>;
@@ -16,29 +15,7 @@ const ACTION_LABEL: Record<Audit[number]['action'], string> = {
 };
 const OUTCOME_LABEL: Record<Audit[number]['outcome'], string> = { success: 'Completada', refused: 'Rechazada', failed: 'Falló' };
 
-/** KAN-85: the two tenant-admin limits; the server re-checks the admin role and the 0..1000 range. */
-function BrandLimitsForm({ limits }: { limits: { maxBrandsPerUser: number; maxProductsPerBrand: number } }) {
-  const [pending, start] = useTransition();
-  const [message, setMessage] = useState('');
-  const [brands, setBrands] = useState(String(limits.maxBrandsPerUser));
-  const [products, setProducts] = useState(String(limits.maxProductsPerBrand));
-  return (
-    <form className="grid gap-3 rounded-xl border bg-white p-4 md:grid-cols-3" onSubmit={(event) => {
-      event.preventDefault();
-      start(async () => {
-        const result = await updateBrandLimitsAction({ maxBrandsPerUser: Number(brands), maxProductsPerBrand: Number(products) });
-        setMessage(result.ok ? 'Límites guardados.' : result.message);
-      });
-    }}>
-      <label className="grid gap-1 text-sm">Marcas por usuario<input required type="number" min={0} max={1000} step={1} value={brands} onChange={(event) => setBrands(event.target.value)} className="rounded border p-2" /></label>
-      <label className="grid gap-1 text-sm">Productos por marca<input required type="number" min={0} max={1000} step={1} value={products} onChange={(event) => setProducts(event.target.value)} className="rounded border p-2" /></label>
-      <div className="flex items-end"><button disabled={pending} className="rounded bg-orange-600 px-4 py-2 text-white">Guardar límites</button></div>
-      <p role="status" className="text-sm md:col-span-3">{message}</p>
-    </form>
-  );
-}
-
-export default function TenantAccountsAdmin({ members, audit, currentUserId, limits }: { members: Members; audit: Audit; currentUserId: string; limits?: { maxBrandsPerUser: number; maxProductsPerBrand: number } }) {
+export default function TenantAccountsAdmin({ members, audit, currentUserId }: { members: Members; audit: Audit; currentUserId: string }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [message, setMessage] = useState('');
@@ -58,6 +35,7 @@ export default function TenantAccountsAdmin({ members, audit, currentUserId, lim
     <main className="mx-auto max-w-5xl space-y-6 px-5 py-10">
       <header>
         <Link href="/admin/ai" className="text-sm underline">← Administración</Link>
+        {' · '}<Link href="/admin/limits" className="text-sm underline">Límites</Link>
         <h1 className="mt-3 text-2xl font-semibold">Cuentas de tu organización</h1>
         <p className="mt-1 text-neutral-600">
           Crea cuentas de emprendedores y desactívalas o reactívalas cuando haga falta. No se envían correos:
@@ -74,8 +52,6 @@ export default function TenantAccountsAdmin({ members, audit, currentUserId, lim
         <div className="flex items-end"><button disabled={pending} className="rounded bg-orange-600 px-4 py-2 text-white">Crear cuenta</button></div>
       </form>
       <p role="status" className="text-sm">{message}</p>
-
-      {limits && <BrandLimitsForm limits={limits} />}
 
       <section className="overflow-x-auto rounded-xl border bg-white">
         <table className="w-full text-left text-sm">

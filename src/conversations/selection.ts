@@ -13,6 +13,7 @@ import { repos } from '../repos';
 import { buildDefaultRegistry } from '../core/orchestrator/bootstrap-registry';
 import { getOrchestrator } from '../core/orchestrator/runtime';
 import type { ConversationId, DeliverableStateView, UUID } from '../core/contracts';
+import { refusalMessage } from '../core/limits/rules';
 import { clientDeliverableUrl } from '../core/deliverable-url';
 import { IMPORTED_KEY, entityName, validateAttributes } from '../core/brand-catalog';
 import { loggerFor } from '../services/logger';
@@ -28,10 +29,6 @@ export const NEW_CONVERSATION_UNAVAILABLE_MESSAGE = 'No hay una configuración a
 export const NEW_CONVERSATION_FAILED_MESSAGE = 'No pudimos iniciar la conversación. Inténtalo de nuevo.';
 export const CONVERSATIONS_UNAVAILABLE_MESSAGE = 'No pudimos cargar tus conversaciones. Inténtalo de nuevo.';
 
-export const brandLimitMessage = (limit: number) =>
-  `Llegaste al límite de ${limit} marcas de tu organización. Archiva una marca o pide a tu administrador que lo aumente.`;
-export const productLimitMessage = (limit: number) =>
-  `Esta marca llegó al límite de ${limit} productos. Pide a tu administrador que lo aumente.`;
 export const CONVERSATION_EXISTS_MESSAGE = 'Esta marca o producto ya tiene su conversación. Ábrela desde tu lista.';
 export const BRAND_NOT_FOUND_MESSAGE = 'No encontramos esta marca.';
 export const PRODUCT_NOT_FOUND_MESSAGE = 'No encontramos este producto.';
@@ -332,7 +329,7 @@ export async function createOwnedBrand(
     firstConversation: { conversationId, schemas: buildDefaultRegistry().getFieldSchemas() },
   });
   if (!created.ok) {
-    return { ok: false, code: created.code, limit: created.limit, message: brandLimitMessage(created.limit) };
+    return { ok: false, code: created.code, limit: created.limit, message: refusalMessage({ kind: created.code, limit: created.limit }) };
   }
   log.debug({ brandId: created.brandId, conversationId }, 'selection.brand_created');
   const started = await startedConversation(identity, conversationId, created.brandId, null, created.pin);
@@ -358,7 +355,7 @@ export async function createOwnedProduct(
   if (!created.ok) {
     return created.code === 'brand_not_found'
       ? { ok: false, code: 'brand_not_found', message: BRAND_NOT_FOUND_MESSAGE }
-      : { ok: false, code: created.code, limit: created.limit, message: productLimitMessage(created.limit) };
+      : { ok: false, code: created.code, limit: created.limit, message: refusalMessage({ kind: created.code, limit: created.limit }) };
   }
   log.debug({ brandId: input.brandId, productId: created.product.id, conversationId }, 'selection.product_created');
   return startedConversation(identity, conversationId, input.brandId, created.product.id, created.pin);

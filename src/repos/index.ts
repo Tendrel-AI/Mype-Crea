@@ -25,6 +25,7 @@ import { writeRejectionsRepo, type WriteRejectionsRepo } from './write-rejection
 import { brandsRepo, type BrandsRepo } from './brands';
 import { brandFilesRepo, type BrandFilesRepo } from './brand-files';
 import { ownCandidatesRepo, type OwnCandidatesRepo } from './own-candidates';
+import { limitsRepo, type LimitsRepo } from './limits';
 import { productsRepo, type ProductsRepo } from './products';
 import { tenantAccountsRepo, type TenantAccountsRepo } from './tenant-accounts';
 import { tenantAnalyticsRepo, type TenantAnalyticsRepo } from './tenant-analytics';
@@ -49,6 +50,7 @@ export interface Repos {
   readonly tenantAnalytics: TenantAnalyticsRepo;
   readonly brands: BrandsRepo;
   readonly products: ProductsRepo;
+  readonly limits: LimitsRepo;
   readonly brandFiles: BrandFilesRepo;
   readonly ownCandidates: OwnCandidatesRepo;
   readonly trace: ConversationTraceRepo;
@@ -74,6 +76,7 @@ export function repos(tenant: Tenant, user: User, actor?: RepositoryActor): Repo
     tenantAnalytics: tenantAnalyticsRepo(tenant, user),
     brands: brandsRepo(tenant, user),
     products: productsRepo(tenant, user),
+    limits: limitsRepo(tenant, user),
     brandFiles: brandFilesRepo(tenant, user),
     ownCandidates: ownCandidatesRepo(tenant, user),
     trace: conversationTraceRepo(tenant, user, actor),
