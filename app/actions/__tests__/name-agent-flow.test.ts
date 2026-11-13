@@ -42,7 +42,7 @@ import { buildDefaultRegistry } from '../../../src/core/orchestrator/bootstrap-r
 import { InMemoryApprovalStore } from '../../../src/core/approvals';
 import { LocalAdapter } from '../../../src/transport/local-adapter';
 import { newTaskId } from '../../../src/core/ids';
-import { resetAgentLlm, setAgentLlm } from '../../../src/services/llm/agent-completion';
+import { resetAgentLlm, setAgentLlm, type AgentCompletionRequest } from '../../../src/services/llm/agent-completion';
 import { resetImageGenerator, setImageGenerator } from '../../../src/services/image';
 import { NAME_PROMPT_VERSION } from '../../../agents/name-agent/handler';
 import { TEST_TENANT_ID, TEST_USER_ID } from '../../../src/core/__tests__/_fixtures';
@@ -93,8 +93,11 @@ function buildRuntime(shared?: {
   return { core, local, dispatched, approvals, workflow, store };
 }
 
+// Logo art-director slots (logo-agent.v4); content is irrelevant to these flows.
+const LOGO_SLOTS = Object.fromEntries(['format_style', 'purpose_industry', 'primary_entity', 'cultural_anchor', 'structural_mechanics', 'motifs', 'layout', 'typography', 'palette', 'voice'].map((k) => [k, `valor ${k}`]));
+
 function fakeNamingLlm() {
-  const complete = vi.fn(async () => ({
+  const complete = vi.fn(async (req: AgentCompletionRequest) => JSON.stringify(req.request.tool_choice ?? '').includes('fill_logo_prompt') ? logoDirectorResult() : ({
     provider: 'openrouter' as const,
     model: 'fake/naming-1',
     completion: {
@@ -118,6 +121,14 @@ function fakeNamingLlm() {
   }));
   setAgentLlm({ complete });
   return complete;
+}
+
+function logoDirectorResult() {
+  return {
+    provider: 'openrouter' as const,
+    model: 'fake/director-1',
+    completion: { id: 'cmpl-logo', choices: [{ message: { role: 'assistant' as const, content: null, tool_calls: [{ id: 'call-logo', type: 'function' as const, function: { name: 'fill_logo_prompt', arguments: JSON.stringify(LOGO_SLOTS) } }] }, finish_reason: 'tool_calls' }] },
+  };
 }
 
 async function nameView(agentId = 'name-agent'): Promise<DeliverableStateView> {
@@ -223,7 +234,7 @@ describe('name-agent flow (KAN-31)', () => {
     expect(logo.candidates[0]).toMatchObject({
       iteration: 1,
       provenance: {
-        promptVersion: 'logo-agent.v3',
+        promptVersion: 'logo-agent.v4',
         agentCardVersion: expect.any(String),
         provider: 'fake',
         model: 'fake/img',
