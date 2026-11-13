@@ -791,7 +791,11 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   return (
     <div className="flex h-screen bg-neutral-50 text-neutral-900 overflow-hidden font-sans">
 
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} isSidebarOpen={isSidebarOpen} setIsSidebarOpen={setIsSidebarOpen} assets={assets} processingAgents={processingAgents} userEmail={userEmail} userName={userName} />
+      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} isSidebarOpen={isSidebarOpen} setIsSidebarOpen={setIsSidebarOpen} assets={assets} processingAgents={processingAgents} userEmail={userEmail} userName={userName}>
+        {activeTab === 'create' && !isMobile && !creationBlocked && (
+          <BrandTree initialBrands={initialBrands} initialConversations={initialConversations} currentConversationId={conversationId} refreshKey={`${conversationId}:${formModal ? 'form' : 'idle'}`} loadConversations={listConversationsAction} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} onNewProduct={(brandId) => void openNewProduct(brandId)} onEditBrand={(brandId) => void openEditBrand(brandId)} onEditProduct={(productId) => void openEditProduct(productId)} onArchiveBrand={handleArchiveBrand} />
+        )}
+      </Sidebar>
       {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden relative">
 
@@ -819,9 +823,6 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       )}
       {activeTab === 'create' && (
         <>
-          {!isMobile && !creationBlocked && (
-            <BrandTree initialBrands={initialBrands} initialConversations={initialConversations} currentConversationId={conversationId} refreshKey={`${conversationId}:${formModal ? 'form' : 'idle'}`} loadConversations={listConversationsAction} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} onNewProduct={(brandId) => void openNewProduct(brandId)} onEditBrand={(brandId) => void openEditBrand(brandId)} onEditProduct={(productId) => void openEditProduct(productId)} onArchiveBrand={handleArchiveBrand} />
-          )}
           <ChatPanel photoUpload={productId ? { busy: photoUploading || commandBusy, onFiles: (files) => void handlePhotoUpload(files) } : undefined} labUpload={productId ? { busy: labUploading || commandBusy, onFiles: (files) => void handleLabUpload(files) } : undefined} assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} context={context} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || productId || logoView || nameView || taglineView || labelView ? (
             <>
               {briefFields.length > 0 && (

@@ -35,6 +35,13 @@ describe('BrandTree (KAN-111)', () => {
     expect(html).toContain('Más acciones de Café Andino');
   });
 
+  it('is a plain nav with no collapse control of its own', () => {
+    const html = render();
+    expect(html).toMatch(/^<nav aria-label="Marcas y productos"/);
+    expect(html).not.toContain('Ocultar marcas');
+    expect(html).not.toContain('Mostrar marcas');
+  });
+
   it('highlights only the current conversation', () => {
     const html = render(PRODUCT_CHAT);
     expect(html).toMatch(new RegExp(`href="/\\?conversationId=${PRODUCT_CHAT}"[^>]*aria-current="page"`));

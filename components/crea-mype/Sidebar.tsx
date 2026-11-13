@@ -8,12 +8,15 @@ import { ThemeToggle } from '../ThemeToggle';
 import { type BrandAssets, type Tab } from './types';
 
 
-export function Sidebar({ activeTab, setActiveTab, isSidebarOpen, setIsSidebarOpen, assets, processingAgents, userEmail, userName }: { activeTab: Tab; setActiveTab: (tab: Tab) => void; isSidebarOpen: boolean; setIsSidebarOpen: (open: boolean) => void; assets: BrandAssets; processingAgents: Set<string>; userEmail: string; userName: string }) {
+// shortcut: hidden until the landing page exists (owner, 2026-11-13); flip to true to restore
+const SHOW_LANDING_TAB = false;
+
+export function Sidebar({ children, activeTab, setActiveTab, isSidebarOpen, setIsSidebarOpen, assets, processingAgents, userEmail, userName }: { children?: React.ReactNode; activeTab: Tab; setActiveTab: (tab: Tab) => void; isSidebarOpen: boolean; setIsSidebarOpen: (open: boolean) => void; assets: BrandAssets; processingAgents: Set<string>; userEmail: string; userName: string }) {
   return (
 <>
       {/* Sidebar */}
       <motion.div
-        animate={{ width: isSidebarOpen ? 260 : 64 }}
+        animate={{ width: isSidebarOpen ? 280 : 64 }}
         className="h-full bg-white border-r border-neutral-200 flex flex-col flex-shrink-0 z-20 transition-all duration-300 overflow-hidden"
       >
         <div className="p-4 flex items-center justify-between border-b border-neutral-100">
@@ -45,7 +48,7 @@ export function Sidebar({ activeTab, setActiveTab, isSidebarOpen, setIsSidebarOp
           </button>
         </div>
 
-        <div className="flex-1 py-4 flex flex-col gap-2 px-3">
+        <div className="shrink-0 pt-4 pb-2 flex flex-col gap-2 px-3">
           <button
             onClick={() => setActiveTab('create')}
             className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${activeTab === 'create' ? 'bg-orange-50 text-orange-600' : 'hover:bg-neutral-100 text-neutral-600'}`}
@@ -57,6 +60,7 @@ export function Sidebar({ activeTab, setActiveTab, isSidebarOpen, setIsSidebarOp
             </span>
           </button>
 
+          {SHOW_LANDING_TAB && (
           <button
             onClick={() => setActiveTab('landing')}
             className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${activeTab === 'landing' ? 'bg-orange-50 text-orange-600' : 'hover:bg-neutral-100 text-neutral-600'}`}
@@ -67,6 +71,11 @@ export function Sidebar({ activeTab, setActiveTab, isSidebarOpen, setIsSidebarOp
               Página Web
             </span>
           </button>
+          )}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {isSidebarOpen && children}
         </div>
 
         <div className="p-3 border-t border-neutral-100">

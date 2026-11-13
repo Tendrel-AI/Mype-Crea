@@ -1,21 +1,15 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { FolderInput, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, PlusCircle } from 'lucide-react';
+import { FolderInput, MoreHorizontal, Plus, PlusCircle } from 'lucide-react';
 import type { BrandListEntry, ConversationListEntry } from '../../src/conversations/selection';
 import { UNNAMED_BRAND_LABEL, UNNAMED_PRODUCT_LABEL } from '../../src/conversations/label';
 import { ArchiveConfirm, ConversationLink, chatIdFor, type LoadConversations } from './ConversationMenu';
 
-const COLLAPSED_KEY = 'creamype.brandTree.collapsed';
 const actionClass = 'w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm font-medium text-orange-600 hover:bg-orange-50';
 
-/** Persisted collapse state; storage can be blocked (private mode), so every access is guarded. */
-function readCollapsed(): boolean {
-  try { return window.localStorage.getItem(COLLAPSED_KEY) === '1'; } catch { return false; }
-}
-
 /**
- * KAN-111 / D49: the always-visible brand → products structure (desktop). Same data and handlers as the
+ * KAN-111 / D49: the brand → products structure (desktop), rendered inside the Sidebar. Same data and handlers as the
  * «Mis conversaciones» dropdown; it reloads its list whenever `refreshKey` changes (conversation switched,
  * form closed) because the page's first-paint list goes stale after creating a brand or product.
  */
@@ -44,13 +38,11 @@ export function BrandTree({
   onEditProduct: (productId: string) => void;
   onArchiveBrand: (brandId: string) => void;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
   const [brands, setBrands] = useState(initialBrands);
   const [conversations, setConversations] = useState(initialConversations);
   const [menuBrandId, setMenuBrandId] = useState<string | null>(null);
   const [confirmingBrandId, setConfirmingBrandId] = useState<string | null>(null);
 
-  useEffect(() => { setCollapsed(readCollapsed()); }, []);
   const firstRun = useRef(true);
 
   useEffect(() => {
@@ -66,30 +58,11 @@ export function BrandTree({
     return () => { live = false; };
   }, [loadConversations, refreshKey]);
 
-  const toggle = () => {
-    const next = !collapsed;
-    setCollapsed(next);
-    try { window.localStorage.setItem(COLLAPSED_KEY, next ? '1' : '0'); } catch { /* not persisted */ }
-  };
-
-  if (collapsed) {
-    return (
-      <aside aria-label="Marcas y productos" className="hidden md:flex w-10 shrink-0 flex-col items-center border-r border-neutral-200 bg-white py-3">
-        <button type="button" onClick={toggle} aria-label="Mostrar marcas y productos" title="Mostrar marcas y productos" className="text-neutral-500 hover:text-neutral-800">
-          <PanelLeftOpen className="w-4 h-4" />
-        </button>
-      </aside>
-    );
-  }
-
   const legacy = conversations.filter((entry) => !entry.brandId);
   return (
-    <aside aria-label="Marcas y productos" className="hidden md:flex w-[260px] shrink-0 flex-col border-r border-neutral-200 bg-white overflow-y-auto">
-      <div className="flex items-center justify-between px-3 pt-3">
+    <nav aria-label="Marcas y productos" className="flex flex-col">
+      <div className="px-3 pt-3">
         <h2 className="text-xs font-semibold uppercase text-neutral-500">Mis marcas</h2>
-        <button type="button" onClick={toggle} aria-label="Ocultar marcas y productos" title="Ocultar" className="text-neutral-500 hover:text-neutral-800">
-          <PanelLeftClose className="w-4 h-4" />
-        </button>
       </div>
       <button type="button" onClick={onCreateBrand} className={actionClass}>
         <PlusCircle className="w-4 h-4" />
@@ -162,6 +135,6 @@ export function BrandTree({
           ))}
         </div>
       )}
-    </aside>
+    </nav>
   );
 }

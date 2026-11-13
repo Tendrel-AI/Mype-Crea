@@ -60,6 +60,20 @@ describe('CreaMype resume (KAN-25)', () => {
   });
 });
 
+describe('CreaMype single side panel', () => {
+  it('renders the brand tree inside the sidebar and hides the «Página Web» tab', () => {
+    const brands = [{ brandId: '99999999-9999-4999-8999-999999999999', name: 'Café Andino', products: [] }];
+    const html = renderToStaticMarkup(
+      <CreaMype userEmail="ana@example.invalid" userName="Ana" initialConversationId={CONVERSATION} initialBrands={brands} />,
+    );
+    expect(html).not.toContain('Página Web');
+    const tree = html.indexOf('aria-label="Marcas y productos"');
+    expect(tree).toBeGreaterThan(html.indexOf('Crea tu producto'));
+    expect(tree).toBeLessThan(html.indexOf('Cerrar sesión'));
+    expect(html).toContain('Café Andino');
+  });
+});
+
 describe('CreaMype progress and reload (KAN-30)', () => {
   const LOGO_URL = '/api/assets/00000000-0000-4000-8000-000000000001';
   const priorLogo = {
