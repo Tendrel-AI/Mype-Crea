@@ -92,7 +92,7 @@ export function CatalogFormView({
       {formError && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{formError}</p>}
       <div className="flex justify-end gap-3 pt-2">
         <button type="button" onClick={onCancel} disabled={busy} className="rounded-lg px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-100 disabled:opacity-50">Cancelar</button>
-        <button type="submit" disabled={busy} aria-busy={busy} className="rounded-lg bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-60">
+        <button type="submit" disabled={busy} aria-busy={busy} className="rounded-lg bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700 dark:hover:bg-orange-500 disabled:opacity-60">
           {busy ? 'Guardando…' : submitLabel}
         </button>
       </div>

@@ -64,7 +64,7 @@ export function TermsConsent({ terms }: { readonly terms: TermsDocument }) {
             type="button"
             onClick={accept}
             disabled={!checked || submitting}
-            className="px-4 py-2 text-sm font-medium text-white bg-orange-600 hover:bg-orange-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-2 text-sm font-medium text-white bg-orange-600 hover:bg-orange-700 dark:hover:bg-orange-500 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? 'Guardando…' : 'Aceptar y continuar'}
           </button>

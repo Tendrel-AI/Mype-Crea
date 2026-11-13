@@ -69,7 +69,7 @@ export function ChatPanel({ assets, processingAgents, conversationId, handleExpo
               <p className="font-medium text-neutral-900">Empieza creando tu marca</p>
               <p className="mt-1">Cuéntanos de tu negocio para crear tu primera conversación.</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" onClick={onCreateBrand} className="rounded-lg bg-orange-600 px-3 py-2 font-medium text-white hover:bg-orange-700">Crear marca</button>
+                <button type="button" onClick={onCreateBrand} className="rounded-lg bg-orange-600 px-3 py-2 font-medium text-white hover:bg-orange-700 dark:hover:bg-orange-500">Crear marca</button>
                 <button type="button" onClick={onImportBrand} className="rounded-lg border border-neutral-300 px-3 py-2 font-medium hover:bg-neutral-100">Ya tengo una marca</button>
               </div>
             </div>

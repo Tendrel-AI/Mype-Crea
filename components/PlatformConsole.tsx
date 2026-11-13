@@ -47,7 +47,7 @@ export function OrganizationEditForm({ tenantId, name, active }: { tenantId: str
     }}>
       <label className="grid gap-1 text-sm">Nombre<input required name="name" defaultValue={name} className="rounded border p-2" /></label>
       <label className="grid gap-1 text-sm">Motivo<input required name="reason" className="rounded border p-2" /></label>
-      <button disabled={pending} className="rounded bg-neutral-900 px-4 py-2 text-white">Guardar</button>
+      <button disabled={pending} className="rounded bg-neutral-900 px-4 py-2 text-white dark:bg-neutral-600">Guardar</button>
     </form>
     <form className="flex flex-wrap items-end gap-3" onSubmit={(event) => {
       event.preventDefault();
@@ -150,7 +150,7 @@ export function PlatformModuleAdmin({ module, versions, organizations }: { modul
     <section className="space-y-3 rounded-xl border bg-white p-5"><h2 className="text-lg font-semibold">Versiones publicadas</h2>
       {versions.length ? <ol className="space-y-2">{versions.map((item) => <li key={item.version} className="flex flex-wrap justify-between gap-2 border-b pb-2 text-sm"><span><strong>Versión {item.version}</strong> · {new Date(item.createdAt).toLocaleString('es-PE')}</span><code>{JSON.stringify(item.config)}</code></li>)}</ol> : <p className="text-sm text-neutral-600">Aún no hay versiones.</p>}
       <label className="grid gap-1 text-sm">Configuración JSON<textarea value={config} onChange={(event) => setConfig(event.target.value)} rows={4} placeholder={'{"sharedReleaseId":"…"}'} className="rounded border p-2 font-mono" /></label>
-      <button disabled={pending || !config} onClick={() => run(async () => { const created = await publishPlatformModuleVersion({ moduleId: module.id, config: parseConfig() }); setVersion(created.version); return created; })} className="rounded bg-neutral-900 px-4 py-2 text-white">Publicar versión</button>
+      <button disabled={pending || !config} onClick={() => run(async () => { const created = await publishPlatformModuleVersion({ moduleId: module.id, config: parseConfig() }); setVersion(created.version); return created; })} className="rounded bg-neutral-900 px-4 py-2 text-white dark:bg-neutral-600">Publicar versión</button>
     </section>
     <section className="space-y-4 rounded-xl border bg-white p-5"><h2 className="text-lg font-semibold">Vista previa y activación</h2>
       <div className="flex flex-wrap gap-3"><label className="grid gap-1 text-sm">Versión<select value={version} onChange={(event) => setVersion(Number(event.target.value))} className="rounded border p-2">{versions.map((item) => <option key={item.version} value={item.version}>Versión {item.version}</option>)}</select></label>

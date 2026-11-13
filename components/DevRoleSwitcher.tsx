@@ -45,14 +45,6 @@ export function DevRoleSwitcher({ state }: { readonly state: RoleSwitcherState }
 
   return (
     <>
-      {state.reduced && (
-        <div role="status" className="fixed inset-x-0 top-0 z-[60] flex flex-wrap items-center justify-center gap-3 bg-amber-100 px-4 py-1.5 text-xs text-amber-950 shadow-sm">
-          <span>Modo desarrollo: estás actuando con roles reducidos ({describeRoles(state.effective)}).</span>
-          <button type="button" disabled={pending} onClick={reset} className="rounded border border-amber-400 bg-white px-2 py-0.5 font-medium hover:bg-amber-50 disabled:opacity-60">
-            Volver a mis roles
-          </button>
-        </div>
-      )}
       <div className="fixed bottom-3 left-3 z-[60] text-xs">
         {open ? (
           <section aria-label="Cambiar roles de prueba" className="w-72 space-y-3 rounded-lg border border-neutral-300 bg-white p-3 text-neutral-900 shadow-lg">
@@ -60,6 +52,7 @@ export function DevRoleSwitcher({ state }: { readonly state: RoleSwitcherState }
               <h2 className="font-semibold">Roles de prueba</h2>
               <button type="button" onClick={() => setOpen(false)} className="text-neutral-500 hover:text-neutral-800" aria-label="Cerrar">✕</button>
             </header>
+            {state.reduced && <p role="status">Estás actuando con roles reducidos: {describeRoles(state.effective)}.</p>}
             <p className="text-neutral-600">Tus roles reales: {describeRoles(state.real)}. Solo puedes reducirlos.</p>
             {state.real.tenantRole === 'admin' && (
               <label className="block space-y-1">
@@ -78,13 +71,22 @@ export function DevRoleSwitcher({ state }: { readonly state: RoleSwitcherState }
             )}
             {message && <p role="alert" className="text-red-700">{message}</p>}
             <div className="flex gap-2">
-              <button type="button" disabled={pending} onClick={apply} className="flex-1 rounded bg-neutral-900 px-2 py-1 font-medium text-white hover:bg-neutral-700 disabled:opacity-60">Aplicar</button>
+              <button type="button" disabled={pending} onClick={apply} className="flex-1 rounded bg-neutral-900 px-2 py-1 font-medium text-white hover:bg-neutral-700 dark:bg-neutral-600 dark:hover:bg-neutral-500 disabled:opacity-60">Aplicar</button>
               {state.reduced && <button type="button" disabled={pending} onClick={reset} className="flex-1 rounded border px-2 py-1 hover:bg-neutral-50 disabled:opacity-60">Volver a mis roles</button>}
             </div>
           </section>
         ) : (
-          <button type="button" onClick={() => setOpen(true)} className="rounded-full border border-neutral-300 bg-white/90 px-3 py-1 text-neutral-700 shadow hover:bg-white">
-            Roles de prueba
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            title={state.reduced ? `Modo desarrollo: estás actuando con roles reducidos (${describeRoles(state.effective)}).` : undefined}
+            className={state.reduced
+              ? 'max-w-[18rem] rounded-full border border-amber-400 bg-amber-100 px-3 py-1 text-amber-950 shadow hover:bg-amber-50'
+              : 'rounded-full border border-neutral-300 bg-white/90 px-3 py-1 text-neutral-700 shadow hover:bg-white'}
+          >
+            {state.reduced
+              ? <span role="status" className="block truncate">Roles reducidos: {describeRoles(state.effective)}</span>
+              : 'Roles de prueba'}
           </button>
         )}
       </div>

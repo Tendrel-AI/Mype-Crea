@@ -8,15 +8,16 @@ vi.mock('../../app/actions/dev-roles', () => ({ setDevRoleOverrideAction: vi.fn(
 import { DevRoleSwitcher, describeRoles } from '../DevRoleSwitcher';
 
 describe('DevRoleSwitcher (KAN-79)', () => {
-  it('shows the reduced-roles banner with «Volver a mis roles» while acting with fewer roles', () => {
+  it('shows the reduced-roles pill (no top banner) while acting with fewer roles', () => {
     const html = renderToStaticMarkup(<DevRoleSwitcher state={{
       real: { tenantRole: 'admin', platformAdmin: true },
       effective: { tenantRole: 'member', platformAdmin: false },
       reduced: true,
     }} />);
-    expect(html).toContain('estás actuando con roles reducidos');
-    expect(html).toContain('Volver a mis roles');
-    expect(html).toContain('Roles de prueba');
+    expect(html).toContain('Modo desarrollo: estás actuando con roles reducidos');
+    expect(html).toContain('Roles reducidos:');
+    expect(html).toContain('role="status"');
+    expect(html).not.toContain('top-0');
   });
 
   it('shows only the panel toggle, no banner, when acting with real roles', () => {

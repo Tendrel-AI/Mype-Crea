@@ -4,6 +4,7 @@ import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Loader2, Sparkles, Menu, Globe, PlusCircle } from 'lucide-react';
 import { signOutAction } from '../../app/actions/auth';
+import { ThemeToggle } from '../ThemeToggle';
 import { type BrandAssets, type Tab } from './types';
 
 
@@ -75,6 +76,10 @@ export function Sidebar({ activeTab, setActiveTab, isSidebarOpen, setIsSidebarOp
               <div className="truncate">{userEmail}</div>
             </div>
           )}
+          <ThemeToggle
+            showLabel={isSidebarOpen}
+            className="flex items-center gap-3 px-3 py-2.5 w-full rounded-xl hover:bg-neutral-100 text-neutral-500 transition-colors"
+          />
           <form action={signOutAction}>
             <button
               type="submit"
