@@ -187,6 +187,7 @@ export function DeliverableCommands({
   onFeedback,
   enabledNote,
   renderCandidate,
+  alterations,
 }: {
   view: DeliverableStateView | undefined;
   /** Lowercase noun for copy, e.g. "logo". */
@@ -207,6 +208,8 @@ export function DeliverableCommands({
   enabledNote?: string;
   /** A custom preview for a candidate (D32: the nutrition label); null falls back to text / image. */
   renderCandidate?: (candidate: DeliverableStateView['candidates'][number]) => React.ReactNode | null;
+  /** D39: alterations used and allowed for this deliverable; shown as «n de N» in the card corner. */
+  alterations?: { readonly used: number; readonly limit: number };
 }) {
   const [iterating, setIterating] = useState(false);
   const [observation, setObservation] = useState('');
@@ -233,6 +236,11 @@ export function DeliverableCommands({
         {view.stale && (
           <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800">
             {STALE_LABEL}
+          </span>
+        )}
+        {alterations && (
+          <span className="ml-auto text-xs text-neutral-500" data-testid={`alterations-counter-${view.agentId}`} title="Alteraciones usadas">
+            {alterations.used} de {alterations.limit}
           </span>
         )}
       </div>

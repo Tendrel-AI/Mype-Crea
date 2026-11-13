@@ -126,6 +126,7 @@ const PLANNER_DECISION_KINDS: ReadonlyArray<PlannerDecision['kind']> = [
   'announce_completion',
   'report_deliverable_status',
   'announce_all_complete',
+  'exhausted',
 ];
 
 /** Shallow guard: known kind, and an `agentId` string wherever the variant has one at its top level. */
@@ -133,7 +134,7 @@ function isPlannerDecisionShape(value: unknown): value is PlannerDecision {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const { kind, agentId } = value as { kind?: unknown; agentId?: unknown };
   if (typeof kind !== 'string' || !(PLANNER_DECISION_KINDS as ReadonlyArray<string>).includes(kind)) return false;
-  return kind === 'announce_all_complete' || kind === 'confirm_fields' || (typeof agentId === 'string' && agentId.length > 0);
+  return kind === 'announce_all_complete' || kind === 'confirm_fields' || (kind === 'exhausted' && (value as { scope?: unknown }).scope === 'turns') || (typeof agentId === 'string' && agentId.length > 0);
 }
 
 const id = z.string().min(1);

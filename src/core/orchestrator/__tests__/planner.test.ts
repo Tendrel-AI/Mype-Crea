@@ -308,6 +308,33 @@ describe('planNextDecision', () => {
         expect(plan(states)).toEqual(plan(states));
       });
 
+      describe('exhausted (D39)', () => {
+        const left = (remaining: number) => ({ limit: 3, used: 3 - remaining, remaining });
+        const limits = (turns: number, alterations: Record<string, number>) => ({
+          turns: { limit: 40, used: 40 - turns, remaining: turns },
+          alterations: Object.fromEntries(Object.entries(alterations).map(([id, n]) => [id, left(n)])),
+        });
+        const withLimits = (l: ReturnType<typeof limits>) =>
+          planNextDecision(snap, registry, { deliverableStates: [view('agent-a', 'in_review')] as never, limits: l });
+
+        it('replaces the in_review report when no alterations are left', () => {
+          expect(withLimits(limits(10, { 'agent-a': 0 }))).toEqual([
+            { kind: 'exhausted', scope: 'alterations', agentId: 'agent-a', deliverableKind: 'agent-a', limit: 3, used: 3 },
+          ]);
+        });
+
+        it('keeps the normal report while alterations remain or limits are unknown', () => {
+          expect(withLimits(limits(10, { 'agent-a': 1 }))[0].kind).toBe('report_deliverable_status');
+          expect(plan([view('agent-a', 'in_review')])[0].kind).toBe('report_deliverable_status');
+        });
+
+        it('appends a turns exhausted decision after the normal plan', () => {
+          const result = withLimits(limits(0, { 'agent-a': 2 }));
+          expect(result.map((d) => d.kind)).toEqual(['report_deliverable_status', 'exhausted']);
+          expect(result[1]).toEqual({ kind: 'exhausted', scope: 'turns', limit: 40, used: 40 });
+        });
+      });
+
       it('without derived states the old behavior stays', () => {
         expect(planNextDecision(snap, registry, {})[0].kind).not.toBe('report_deliverable_status');
       });

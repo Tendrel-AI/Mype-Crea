@@ -21,6 +21,8 @@ import { chatAction } from '../app/actions/chat';
 import { exportConversationTraceAction, listConversationsAction } from '../app/actions/conversations';
 import { archiveBrandAction, createBrandAction, createProductAction, getBrandAction, getProductAction, updateBrandAction, updateProductAction } from '../app/actions/brands';
 import type { BrandFileView, BrandListEntry, ConversationContext, ConversationListEntry, NewOwnedConversation } from '../src/conversations/selection';
+import { getRemainingCountsAction } from '../app/actions/limits';
+import type { RemainingCounts } from '../src/core/limits/gate';
 import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/actions/deliverable-command';
 import { loadBrandAssetsAction, type BrandAssetsResult } from '../app/actions/brand-assets';
 import { BrandAssetsReadOnly } from './crea-mype/BrandAssetsReadOnly';
@@ -156,6 +158,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   // `allowedCommands`, but the server re-validates every command.
   const [deliverableStates, setDeliverableStates] = useState<ReadonlyArray<DeliverableStateView>>(initialStates);
   // KAN-30: the SSE stream is gone; the chat stays usable and a reload re-reads durable state.
+  // D39: the gate's remaining counts (single source); the card counter «n de N» reads them.
+  const [alterationCounts, setAlterationCounts] = useState<RemainingCounts['alterations']>({});
   const [liveLost, setLiveLost] = useState(false);
   const [commandBusy, setCommandBusy] = useState(false);
   const [commandError, setCommandError] = useState('');
@@ -190,6 +194,8 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     try {
       const result = await loadDeliverableStatesAction({ conversationId: forConversation });
       if (result.ok && currentConversationRef.current === forConversation) applyStates(result.states);
+      const counts = await getRemainingCountsAction({ conversationId: forConversation });
+      if (counts.ok && currentConversationRef.current === forConversation) setAlterationCounts(counts.counts.alterations);
     } catch (error) {
       console.error('Failed to load deliverable states', error);
     }
@@ -474,6 +480,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       label="logo"
       busy={commandBusy}
       error={commandErrorAgent === LOGO_AGENT_ID ? commandError : ''}
+      alterations={alterationCounts[LOGO_AGENT_ID]}
       onCommand={(request) => { if (logoView) void handleDeliverableCommand(LOGO_AGENT_ID, logoView, request); }}
       feedback={feedback}
       feedbackBusy={feedbackBusy}
@@ -492,6 +499,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
         note={note}
         busy={commandBusy}
         error={commandErrorAgent === agentId ? commandError : ''}
+        alterations={alterationCounts[agentId]}
         onCommand={(request) => void handleDeliverableCommand(agentId, view, request)}
         feedback={feedback}
         feedbackBusy={feedbackBusy}
@@ -515,6 +523,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       uploading={labUploading}
       busy={commandBusy || labUploading}
       error={commandErrorAgent === LABEL_AGENT_ID ? commandError : ''}
+      alterations={alterationCounts[LABEL_AGENT_ID]}
       onCommand={(request) => { if (labelView) void handleDeliverableCommand(LABEL_AGENT_ID, labelView, request); }}
       feedback={feedback}
       feedbackBusy={feedbackBusy}

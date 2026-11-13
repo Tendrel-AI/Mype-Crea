@@ -56,6 +56,7 @@ import {
   defaultLifecycleNotifier,
 } from './notifiers';
 import { labelTaskInputs, uploadCountsOfConversation } from '../../labeling/lab-task-inputs';
+import { getLimitGate } from '../limits/runtime';
 import { loggerFor } from '../../services/logger';
 import { activePromptVersions, resolvePinnedPrompt, type PromptKey } from '../../services/prompts';
 import { buildRuntime, type OnTaskSettled, type Runtime } from './runtime-config';
@@ -232,6 +233,7 @@ function build(): Runtime {
     approvalsFor: createApprovalStore,
     taskInputsFor: (tenantId: UUID, userId: UUID) => labelTaskInputs({ id: tenantId }, { id: userId }),
     uploadCountsFor: (tenantId: UUID, userId: UUID) => uploadCountsOfConversation({ id: tenantId }, { id: userId }),
+    limitsFor: (tenantId: UUID, userId: UUID) => (conversationId) => getLimitGate({ id: tenantId }, { id: userId }).remaining(conversationId),
     transportFactory: (onTaskSettled) => buildTransport(registry, onTaskSettled),
   });
 }
