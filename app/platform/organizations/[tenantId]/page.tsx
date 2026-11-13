@@ -16,7 +16,8 @@ export default async function PlatformOrganizationDetailPage({ params }: { param
   const organization = await globalRepos().organizations.getById(tenantId);
   if (!organization) notFound();
   const moduleDefinitions = listPlatformModules();
-  const [credits, reconciliation, metrics, audit, rolloutHistory, effectiveVersions] = await Promise.all([
+  const [counters, credits, reconciliation, metrics, audit, rolloutHistory, effectiveVersions] = await Promise.all([
+    globalRepos().counters.forTenant(actorWorkosUserId, tenantId),
     getTenantCreditsView(tenantId), getTenantReconciliation(tenantId).catch(() => null),
     getPlatformMonthlyMetrics(actorWorkosUserId), getPlatformAuditTrail(actorWorkosUserId),
     listOrganizationModuleRolloutHistory(tenantId),
@@ -25,6 +26,12 @@ export default async function PlatformOrganizationDetailPage({ params }: { param
   const monthly = metrics.find((row) => row.organizationId === tenantId);
   const activity = audit.filter((row) => row.scopeId === tenantId);
   return <main className="mx-auto max-w-4xl space-y-6 px-5 py-10"><header><Link href="/platform/organizations" className="text-sm underline">← Organizaciones</Link><h1 className="mt-3 text-3xl font-semibold">{organization.name}</h1><p className="mt-2 text-sm text-neutral-600">ID de organización: <span className="font-mono">{organization.tenantId}</span></p><p className="text-sm text-neutral-600">Estado: {organization.status === 'active' ? 'Activa' : 'Inactiva'}</p></header><OrganizationEditForm tenantId={organization.tenantId} name={organization.name} active={organization.status === 'active'} />
+    <section className="space-y-3"><h2 className="text-xl font-semibold">Contadores</h2><div className="grid gap-3 sm:grid-cols-3">{[
+      ['Marcas', counters.brands], ['Productos', counters.products], ['Conversaciones', counters.conversations],
+      ['Mensajes (turnos)', counters.turns], ['Retoques', counters.alterations], ['Turnos por conversación (prom.)', counters.avgTurnsPerConversation],
+      ['Retoques por entregable (prom.)', counters.avgAlterationsPerDeliverable], ['Saldo (USD)', counters.balanceUsd.toFixed(2)], ['Consumo últimos 30 días (USD)', counters.consumption30dUsd.toFixed(2)],
+    ].map(([label, value]) => <article key={String(label)} className="rounded-xl border bg-white p-4"><p className="text-sm text-neutral-600">{label}</p><p className="mt-1 text-xl font-semibold">{typeof value === 'number' ? value.toLocaleString('es-PE') : value}</p></article>)}</div>
+      <p className="text-sm text-neutral-600">Entregables generados: {counters.deliverablesByKind.map((item) => `${item.kind} ${item.generated}`).join(' · ') || '—'}</p></section>
     <section className="space-y-3"><h2 className="text-xl font-semibold">Créditos</h2><p className="text-sm">Saldo: <span className="font-semibold">USD {credits.balanceUsd.toFixed(2)}</span>{credits.balanceUsd <= 0 && <span className="text-red-700"> · sin créditos: las llamadas se rechazan</span>}</p><CreditRechargeForm tenantId={organization.tenantId} />
       <div className="overflow-x-auto rounded-xl border bg-white"><table className="w-full text-left text-sm"><thead><tr className="border-b text-neutral-600"><th className="p-3">Fecha</th><th className="p-3">Tipo</th><th className="p-3">Monto (USD)</th><th className="p-3">Referencia</th><th className="p-3">Motivo</th></tr></thead><tbody>{credits.ledger.map((entry) => <tr key={entry.id} className="border-b last:border-0"><td className="p-3">{new Date(entry.createdAt).toLocaleString('es-PE')}</td><td className="p-3">{{ recharge: 'Recarga', consumption: 'Consumo', adjustment: 'Ajuste' }[entry.kind]}</td><td className="p-3">{entry.amountUsd.toFixed(6)}</td><td className="p-3">{entry.externalRef ?? '—'}</td><td className="p-3">{entry.reason ?? '—'}</td></tr>)}</tbody></table>{credits.ledger.length === 0 && <p className="p-3 text-sm text-neutral-600">Sin movimientos.</p>}</div>
     </section>
