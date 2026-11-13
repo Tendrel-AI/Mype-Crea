@@ -40,6 +40,8 @@ export const TASK_ERROR_KINDS = [
   'storage_unavailable',
   /** KAN-43: a usage limit denied the call before the provider was reached. Retry after the window. */
   'usage_limited',
+  /** D43: the account that owns the task was deactivated; no provider call is made for it. Not retryable until reactivated. */
+  'account_inactive',
   /** D32: no lab report of the product yielded usable nutrient data. Its message is written for the user (see `USER_FACING_ERROR_KINDS`). */
   'lab_report_unusable',
   /** D32: none of the product's recorded lab reports can be read from storage (missing bytes or a different hash). Message is user-facing. */
@@ -60,6 +62,8 @@ const CATEGORY_BY_KIND: Readonly<Record<TaskErrorKind, TaskErrorCategory>> = {
   handler_threw: 'permanent_bug',
   storage_unavailable: 'transient',
   usage_limited: 'transient',
+  // D43: blocked account; an automatic retry would only be refused again.
+  account_inactive: 'permanent_bug',
   // The user fixes it by uploading another report; Reintentar re-reads the product's reports.
   lab_report_unusable: 'permanent_bug',
   // Permanent: retrying cannot bring the bytes back; the user uploads the reports again.

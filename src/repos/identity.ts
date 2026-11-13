@@ -13,6 +13,14 @@ export interface TenantMembership {
 
 export function identityRepo(tenant: Tenant) {
   return {
+    /** D43: the user's live status. False when the user is inactive or does not exist (fail closed). */
+    async isUserActive(userId: string): Promise<boolean> {
+      return withTenantTransaction(tenant, undefined, async (tx) => {
+        const result = await tx.query(`SELECT 1 FROM users WHERE tenant_id = $1 AND id = $2 AND status = 'active'`, [tenant.id, userId]);
+        return (result.rowCount ?? 0) > 0;
+      });
+    },
+
     async resolveMember(
       organizationId: string,
       workosUserId: string,

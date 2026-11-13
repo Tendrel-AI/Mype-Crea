@@ -148,6 +148,22 @@ export async function startAgentWorker(
       return;
     }
 
+    // D43: a queued task of a deactivated owner is canceled, never started. A failed check leaves
+    // the row pending (fail closed) for the recovery sweep.
+    if (deps.isUserActive && preClaim.status === 'pending') {
+      try {
+        const owner = await deps.resolveConversationOwner(tenantId as UUID, preClaim.conversationId);
+        if (owner && !(await deps.isUserActive(tenantId, owner))) {
+          const canceled = await repo.cancelPending(preClaim.conversationId, taskId);
+          child.warn({ ownerUserId: owner, canceled }, `${logScope}.canceled_owner_inactive`);
+          return;
+        }
+      } catch (err) {
+        child.error({ err }, `${logScope}.owner_status_check_failed`);
+        return;
+      }
+    }
+
     let claimed;
     try {
       claimed = await repo.claimById(taskId, AGENT_ID);

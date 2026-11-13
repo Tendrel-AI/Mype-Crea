@@ -29,6 +29,7 @@ export const FAILURE_CAUSE_BY_KIND: Readonly<Record<TaskErrorKind, string>> = {
   not_implemented: 'Este entregable aún no está disponible.',
   handler_threw: 'Ocurrió un error inesperado.',
   usage_limited: 'Alcanzaste un límite de uso. Inténtalo más tarde.',
+  account_inactive: 'Tu cuenta está desactivada. Contacta al administrador de tu organización.',
   lab_report_unusable: 'No pudimos usar el análisis de laboratorio.',
   lab_report_missing: 'No encontramos tus análisis guardados. Súbelos de nuevo.',
 };

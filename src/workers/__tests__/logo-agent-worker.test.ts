@@ -345,6 +345,37 @@ describe('logo-agent worker', () => {
     expect(onTaskSettled).not.toHaveBeenCalled();
   });
 
+  it('cancels a pending task whose owner is inactive and never starts it (D43)', async () => {
+    const subscriber = new FakeSubscriber();
+    const registry = new AgentRegistry();
+    const fakeHandler = vi.fn();
+    registry.register(logoCard as AgentCard, fakeHandler as never, undefined);
+    const row = buildAgentTaskRow({ status: 'pending' });
+    const findById = vi.fn(async () => row);
+    const claimById = vi.fn();
+    const cancelPending = vi.fn(async () => true);
+    const isUserActive = vi.fn(async () => false);
+    await startLogoAgentWorker(
+      buildWorkerTestContext({
+        subscriber,
+        registry,
+        isUserActive,
+        systemReposFor: () => ({ agentTasks: { findById, claimById, cancelPending } as never, llmCalls: {} as never }),
+      }),
+    );
+    subscriber.emitMessage(
+      channelForAgent('logo-agent' as AgentId),
+      wakeUp({ taskId: row.id, tenantId: '66666666-6666-6666-6666-666666666666', agentId: 'logo-agent' }),
+    );
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(isUserActive).toHaveBeenCalledWith('66666666-6666-6666-6666-666666666666', '22222222-2222-2222-2222-222222222222');
+    expect(cancelPending).toHaveBeenCalledWith(row.conversationId, row.id);
+    expect(claimById).not.toHaveBeenCalled();
+    expect(fakeHandler).not.toHaveBeenCalled();
+  });
+
   it('does not claim a non-logo task delivered on the logo channel', async () => {
     const subscriber = new FakeSubscriber();
     const registry = new AgentRegistry();

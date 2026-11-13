@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   repos: vi.fn(),
 }));
 
+vi.mock('../../../services/account-status', () => ({ isUserActive: async () => true }));
 vi.mock('../../../services/redis', () => ({ getRedisPublisher: () => null, getRedisSubscriber: () => null }));
 vi.mock('../../../repos/global', () => ({ globalRepos: () => ({ organizations: { list: async () => [] } }) }));
 vi.mock('../../../repos/conversations', () => ({ getConversationOwnerUserId: async () => OWNER }));
