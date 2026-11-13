@@ -364,18 +364,31 @@ export async function createOwnedProduct(
   return startedConversation(identity, conversationId, input.brandId, created.product.id, created.pin);
 }
 
+/** SQLSTATE 23505 on one of the one-chat-per-brand/product indexes. */
+function isSingleChatViolation(error: unknown): boolean {
+  const e = error as { code?: unknown; constraint?: unknown } | null;
+  return e?.code === '23505' && typeof e.constraint === 'string' && e.constraint.startsWith('conversations_one_active_per_');
+}
+
 /**
  * Server-side only (no UI entry point, D40 / D44): pin the single conversation of one of the owner's
  * active brands (or of one of its products). A second one is the typed refusal `conversation_exists`.
  */
 export async function createOwnedConversation(identity: ResolvedIdentity, brandId: UUID, productId?: UUID): Promise<NewOwnedConversation> {
   const conversationId = randomUUID() as ConversationId;
-  const created = await repository(identity).brands.createConversation({
-    brandId,
-    productId,
-    conversationId,
-    schemas: buildDefaultRegistry().getFieldSchemas(),
-  });
+  let created: Awaited<ReturnType<ReturnType<typeof repository>['brands']['createConversation']>>;
+  try {
+    created = await repository(identity).brands.createConversation({
+      brandId,
+      productId,
+      conversationId,
+      schemas: buildDefaultRegistry().getFieldSchemas(),
+    });
+  } catch (error) {
+    // A concurrent creator won the race: the partial unique index (D40 / D44) is the final arbiter.
+    if (isSingleChatViolation(error)) return { ok: false, code: 'conversation_exists', message: CONVERSATION_EXISTS_MESSAGE };
+    throw error;
+  }
   if (!created.ok) {
     if (created.code === 'conversation_exists') return { ok: false, code: 'conversation_exists', message: CONVERSATION_EXISTS_MESSAGE };
     return created.code === 'brand_not_found'
