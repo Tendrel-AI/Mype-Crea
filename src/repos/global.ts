@@ -2,6 +2,7 @@ import { globalIdentityRepo } from './global-identity';
 import { globalOrganizationsRepo } from './global-organizations';
 import { globalAuditRepo } from './global-audit';
 import { globalCreditsRepo } from './global-credits';
+import { globalForecastRepo } from './global-forecast';
 import { platformConfigRepo } from './platform-config';
 import { platformTraceRepo } from './platform-trace';
 
@@ -14,6 +15,7 @@ export function globalRepos() {
     config: platformConfigRepo(),
     trace: platformTraceRepo(),
     credits: globalCreditsRepo(),
+    forecast: globalForecastRepo(),
   };
 }
 
