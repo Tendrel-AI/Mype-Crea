@@ -97,6 +97,7 @@ describe('CreaMype progress and reload (KAN-30)', () => {
         userName="Ana"
         initialConversationId={CONVERSATION}
         initialTurns={turns}
+        initialWelcome="Bienvenida guardada"
         initialDeliverables={deliverables}
         initialStates={states}
       />,
@@ -106,6 +107,8 @@ describe('CreaMype progress and reload (KAN-30)', () => {
   it('the first paint restores messages, the task in progress and the deliverables, and the chat stays usable', () => {
     const html = render([logoView({ state: 'generating', activeTask: { taskId: 't2', status: 'in_progress', iteration: 2 } })]);
     expect(html).toContain('Quiero un logo rústico');
+    expect(html.indexOf('Bienvenida guardada')).toBeGreaterThan(-1);
+    expect(html.indexOf('Bienvenida guardada')).toBeLessThan(html.indexOf('Quiero un logo rústico'));
     expect(html).toContain('Listo, toca Generar cuando quieras.');
     expect(html).toContain('Generando');
     expect(html).toContain('Iteración 2');
