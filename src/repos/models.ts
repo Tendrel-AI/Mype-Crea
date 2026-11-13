@@ -198,16 +198,13 @@ export interface UsageSummary {
   readonly budgetStatus: BudgetStatus;
 }
 
-/** KAN-43: the tenant's monthly budget from the usage ledger (`usage_reservations`). */
+/** D36: the tenant's prepaid credits (ledger balance minus estimates held by calls in flight). */
 export interface BudgetStatus {
   readonly state: 'within_budget' | 'exhausted';
-  readonly limitUsd: number;
-  /** Reserved estimates plus settled real costs this calendar month. */
-  readonly committedUsd: number;
-  /** limitUsd - committedUsd, never below 0. */
-  readonly remainingUsd: number;
-  /** Start of the calendar month in America/Lima, as an ISO instant. */
-  readonly periodStart: string;
+  readonly balanceUsd: number;
+  readonly reservedUsd: number;
+  /** balanceUsd - reservedUsd; <= 0 means `exhausted` (calls fail closed). */
+  readonly availableUsd: number;
 }
 
 // ---------------------------------------------------------------------------

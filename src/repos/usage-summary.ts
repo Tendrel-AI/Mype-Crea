@@ -1,5 +1,5 @@
 import type { UsageSummary } from './models';
-import { USAGE_POLICY } from '../services/usage/policy';
+import { availableCreditsUsd } from '../services/usage/policy';
 
 export interface UsageAggregate {
   readonly attempts: number;
@@ -14,9 +14,10 @@ export interface UsageAggregate {
 /** Preserve unknown accounting separately from any known subtotal. */
 export function summarizeUsage(
   aggregate: UsageAggregate,
-  budget: { readonly committedUsd: number; readonly periodStart: string },
+  credits: { readonly balanceUsd: number; readonly reservedUsd: number },
 ): UsageSummary {
   const { attempts, unknownCostAttempts } = aggregate;
+  const availableUsd = availableCreditsUsd(credits);
   const costAccountingStatus = attempts === 0
     ? 'no_attempts'
     : unknownCostAttempts >= attempts
@@ -35,12 +36,10 @@ export function summarizeUsage(
     unknownCostAttempts,
     costAccountingStatus,
     budgetStatus: {
-      state: budget.committedUsd >= USAGE_POLICY.tenantMonthlyBudgetUsd ? 'exhausted' : 'within_budget',
-      limitUsd: USAGE_POLICY.tenantMonthlyBudgetUsd,
-      committedUsd: budget.committedUsd,
-      // Rounded to the ledger's numeric(12,6) so 30 - 4.5 style float noise never shows.
-      remainingUsd: Math.max(0, Math.round((USAGE_POLICY.tenantMonthlyBudgetUsd - budget.committedUsd) * 1_000_000) / 1_000_000),
-      periodStart: budget.periodStart,
+      state: availableUsd <= 0 ? 'exhausted' : 'within_budget',
+      balanceUsd: credits.balanceUsd,
+      reservedUsd: credits.reservedUsd,
+      availableUsd,
     },
   };
 }

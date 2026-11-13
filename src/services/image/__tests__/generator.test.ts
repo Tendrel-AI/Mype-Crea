@@ -110,7 +110,7 @@ describe('ImageGeneratorService', () => {
       expect(def.generate).toHaveBeenCalledTimes(1);
       expect(events).toEqual([
         { op: 'reserve', kind: 'image', estimatedCostUsd: IMAGE_PRICE_USD, provider: 'fal', conversationId: 'conversation-a', agentTaskId: 'task-a' },
-        { op: 'settle', reservationId: 'reservation-1', actualCostUsd: IMAGE_PRICE_USD, outcome: 'succeeded' },
+        { op: 'settle', reservationId: 'reservation-1', actualCostUsd: IMAGE_PRICE_USD, outcome: 'succeeded', costSource: 'flat' },
       ]);
     });
 
@@ -131,7 +131,7 @@ describe('ImageGeneratorService', () => {
         const { events, resolver } = gate();
         const svc = new ImageGeneratorService(failing, resolver);
         await expect(svc.generate({ prompt: 'x', usage: scope })).rejects.toMatchObject({ kind });
-        expect(events[1]).toEqual({ op: 'settle', reservationId: 'reservation-1', actualCostUsd: cost, outcome: 'failed' });
+        expect(events[1]).toEqual({ op: 'settle', reservationId: 'reservation-1', actualCostUsd: cost, outcome: 'failed', costSource: 'estimate' });
       }
     });
 

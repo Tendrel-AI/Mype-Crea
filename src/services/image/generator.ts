@@ -74,7 +74,7 @@ export class ImageGeneratorService implements IImageGenerator {
           agentTaskId: req.usage.agentTaskId,
         },
         call: () => provider.generate(req),
-        actualCostUsd: () => IMAGE_PRICE_USD,
+        actualCost: () => ({ usd: IMAGE_PRICE_USD, source: 'flat' }),
         // A typed rejection was not billed; a timeout or untyped failure may have been.
         failureCostUsd: (error) => error instanceof TaskError && error.kind !== 'timeout' ? 0 : IMAGE_PRICE_USD,
       });

@@ -1,6 +1,7 @@
 import { globalIdentityRepo } from './global-identity';
 import { globalOrganizationsRepo } from './global-organizations';
 import { globalAuditRepo } from './global-audit';
+import { globalCreditsRepo } from './global-credits';
 import { platformConfigRepo } from './platform-config';
 import { platformTraceRepo } from './platform-trace';
 
@@ -12,6 +13,7 @@ export function globalRepos() {
     audit: globalAuditRepo(),
     config: platformConfigRepo(),
     trace: platformTraceRepo(),
+    credits: globalCreditsRepo(),
   };
 }
 

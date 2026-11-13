@@ -207,7 +207,7 @@ function toOpenRouterToolChoice(
   return choice.type;
 }
 
-function fromOpenRouterResponse(
+export function fromOpenRouterResponse(
   response: OpenAI.Chat.Completions.ChatCompletion,
 ) {
   return {
@@ -238,9 +238,16 @@ function fromOpenRouterResponse(
           prompt_tokens: response.usage.prompt_tokens,
           completion_tokens: response.usage.completion_tokens,
           total_tokens: response.usage.total_tokens,
+          ...providerCost(response.usage),
         }
       : undefined,
   };
+}
+
+/** OpenRouter adds `usage.cost` (USD) beside the OpenAI fields; the SDK types do not know it. */
+function providerCost(usage: object): { cost?: number } {
+  const cost = (usage as { cost?: unknown }).cost;
+  return typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? { cost } : {};
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

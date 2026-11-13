@@ -294,13 +294,13 @@ describe('AiConfigRuntime', () => {
       expect(ledger).toHaveLength(2);
       expect(ledger[0]).toMatchObject({ op: 'reserve', kind: 'llm', provider: 'openrouter', model: 'google/gemini-2.5-flash', conversationId: 'conversation-a', turnId: 'turn-usage-ok', attemptId: 'attempt-1', requestsSoFar: 0 });
       expect(ledger[0].estimatedCostUsd as number).toBeGreaterThan(0);
-      expect(ledger[1]).toEqual({ op: 'settle', reservationId: 'reservation-1', outcome: 'succeeded', actualCostUsd: llmCostUsd('google/gemini-2.5-flash', { prompt_tokens: 12, completion_tokens: 4 }) });
+      expect(ledger[1]).toEqual({ op: 'settle', reservationId: 'reservation-1', outcome: 'succeeded', costSource: 'estimate', actualCostUsd: llmCostUsd('google/gemini-2.5-flash', { prompt_tokens: 12, completion_tokens: 4 }) });
     });
 
     it('denied: never calls the provider or a fallback, fails the attempt and carries the reason', async () => {
-      const { runtime, requests, finishes, attempts, usage } = harness({ usageDenied: 'tenant_budget' });
+      const { runtime, requests, finishes, attempts, usage } = harness({ usageDenied: 'tenant_credits' });
       await expect(runtime.runPurpose(identity, turn('turn-usage-denied'), callExtractor))
-        .rejects.toMatchObject({ category: 'usage_limited', usageDenial: 'tenant_budget', ambiguous: false });
+        .rejects.toMatchObject({ category: 'usage_limited', usageDenial: 'tenant_credits', ambiguous: false });
       expect(requests).toHaveLength(0);
       expect(attempts.startAttempt).toHaveBeenCalledTimes(1);
       expect(finishes).toEqual([expect.objectContaining({ outcome: 'failed', failureCategory: 'usage_limited' })]);

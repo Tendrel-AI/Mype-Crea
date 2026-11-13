@@ -4,9 +4,12 @@ import { getWorkOS } from '@workos-inc/authkit-nextjs';
 import { requireGlobalMfa } from '../../src/auth/resolve-identity';
 import { globalRepos } from '../../src/repos/global';
 import { PlatformOrganizationService } from '../../src/services/platform/organizations';
+import { defaultTenantKeyService } from '../../src/services/openrouter/tenant-keys';
+import { loggerFor } from '../../src/services/logger';
 import { getPlatformMonthlyMetrics, getPlatformAuditTrail } from '../../src/services/platform/metrics/monthly';
 
 const repositories = globalRepos();
+const log = loggerFor('actions.platform-admin');
 
 export async function getPlatformOrganizations() {
   await requireGlobalMfa();
@@ -92,7 +95,42 @@ export async function setPlatformOrganizationActive(input: { tenantId: string; a
   const identity = await requireGlobalMfa();
   const reason = input.reason.trim();
   if (!reason) throw new Error('Escribe el motivo.');
-  return repositories.organizations.setStatus({ tenantId: input.tenantId, status: input.active ? 'active' : 'inactive', actorWorkosUserId: identity.workosUserId, reason });
+  const changed = await repositories.organizations.setStatus({ tenantId: input.tenantId, status: input.active ? 'active' : 'inactive', actorWorkosUserId: identity.workosUserId, reason });
+  // D36: a suspended tenant's OpenRouter sub-key stops spending; the ledger status is already authoritative.
+  if (changed) {
+    try { await defaultTenantKeyService()?.setEnabled(input.tenantId, input.active); }
+    catch (err) { log.error({ tenantId: input.tenantId, err: err instanceof Error ? err.name : 'unknown' }, 'credits.key_toggle_failed'); }
+  }
+  return changed;
+}
+
+const MAX_RECHARGE_USD = 100_000;
+
+export interface RechargeResult { readonly created: boolean; readonly balanceUsd: number; readonly keySynced: boolean }
+
+/** F21/F24: record a recharge AFTER the tenant paid outside the platform (D36). Audited, idempotent per `operationKey`. */
+export async function rechargeTenantCredits(input: { tenantId: string; operationKey: string; amountUsd: number; reference: string; reason: string }): Promise<RechargeResult> {
+  const identity = await requireGlobalMfa();
+  const reference = input.reference.trim();
+  const reason = input.reason.trim();
+  const amountUsd = Math.round(Number(input.amountUsd) * 1_000_000) / 1_000_000;
+  if (!Number.isFinite(amountUsd) || amountUsd <= 0 || amountUsd > MAX_RECHARGE_USD) throw new Error('Escribe un monto válido en USD.');
+  if (!reference || !reason) throw new Error('Escribe la referencia del pago y el motivo.');
+  if (!input.operationKey.trim()) throw new Error('No se pudo iniciar la operación. Inténtalo de nuevo.');
+  const { created, balanceUsd } = await repositories.credits.recordEntry({
+    tenantId: input.tenantId, kind: 'recharge', amountUsd, idempotencyKey: `recharge:${input.operationKey}`,
+    externalRef: reference, reason, actorWorkosUserId: identity.workosUserId,
+  });
+  log.debug({ tenantId: input.tenantId, created }, 'credits.recharge');
+  // The ledger is the truth; a failed sub-key sync is retried on the next settlement/recharge.
+  let keySynced = false;
+  try {
+    const keys = defaultTenantKeyService();
+    if (keys) { await keys.ensureKey(input.tenantId, identity.workosUserId); await keys.syncLimit(input.tenantId); keySynced = true; }
+  } catch (err) {
+    log.error({ tenantId: input.tenantId, err: err instanceof Error ? err.name : 'unknown' }, 'credits.key_sync_failed');
+  }
+  return { created, balanceUsd, keySynced };
 }
 
 export async function getMonthlyPlatformMetrics(month: string) {
@@ -103,4 +141,20 @@ export async function getMonthlyPlatformMetrics(month: string) {
 export async function getPlatformAuditEvents() {
   const identity = await requireGlobalMfa();
   return getPlatformAuditTrail(identity.workosUserId);
+}
+
+export async function getTenantCreditsView(tenantId: string) {
+  const identity = await requireGlobalMfa();
+  const [balanceUsd, ledger] = await Promise.all([
+    repositories.credits.balance(tenantId),
+    repositories.credits.listLedger(identity.workosUserId, tenantId),
+  ]);
+  return { balanceUsd, ledger };
+}
+
+export async function getTenantReconciliation(tenantId: string) {
+  const identity = await requireGlobalMfa();
+  const keys = defaultTenantKeyService();
+  if (!keys) return null;
+  return keys.reconcile(identity.workosUserId, tenantId);
 }

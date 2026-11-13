@@ -13,6 +13,7 @@ import {
   PRICING_VERSION,
   USAGE_POLICY,
   evaluateUsage,
+  type CostSource,
   type UsageAsk,
   type UsageCounters,
   type UsageDenialReason,
@@ -37,6 +38,7 @@ export type UsageVerdict =
 export interface UsageSettlement {
   readonly reservationId: string;
   readonly actualCostUsd: number;
+  readonly costSource: CostSource;
   readonly outcome: 'succeeded' | 'failed';
 }
 
@@ -45,37 +47,38 @@ export interface UsageRepo {
   reserve(request: UsageRequest): Promise<UsageVerdict>;
   /** Check without reserving; a denial is still recorded. `reservationId` is null when allowed. */
   preflight(request: UsageRequest): Promise<UsageVerdict>;
-  /** Reconcile a `reserved` row with the real cost. False when it is not the caller's reserved row. */
+  /**
+   * Reconcile a `reserved` row with the real cost and, in the same transaction, append the matching
+   * `consumption` ledger entry (idempotent on the reservation). False when it is not the caller's reserved row.
+   */
   settle(settlement: UsageSettlement): Promise<boolean>;
 }
 
-/** Committed counters of the tenant (and of `userId`, when given) under the current policy. */
-export async function readUsageCounters(tx: TxClient, tenantId: string, userId: string | null): Promise<UsageCounters & { readonly periodStart: string }> {
-  const result = await tx.query<{ committed: string; llm_hour: number; image_day: number; period_start: Date }>(
+/** Credit and call counters of the tenant (and of `userId`, when given) under the current policy. */
+export async function readUsageCounters(tx: TxClient, tenantId: string, userId: string | null): Promise<UsageCounters> {
+  const result = await tx.query<{ balance: string; reserved: string; llm_hour: number; image_day: number }>(
     `WITH bounds AS (
-       SELECT (date_trunc('month', now() AT TIME ZONE $3::text) AT TIME ZONE $3::text) AS month_start,
-              (date_trunc('day', now() AT TIME ZONE $3::text) AT TIME ZONE $3::text) AS day_start
+       SELECT (date_trunc('day', now() AT TIME ZONE $3::text) AT TIME ZONE $3::text) AS day_start
      )
-     SELECT coalesce(sum(CASE r.status WHEN 'reserved' THEN r.estimated_cost_usd
-                                       WHEN 'settled' THEN r.actual_cost_usd ELSE 0 END)
-                       FILTER (WHERE r.created_at >= b.month_start), 0)::text AS committed,
+     SELECT (SELECT coalesce(sum(amount_usd), 0) FROM tenant_credit_entries WHERE tenant_id = $1)::text AS balance,
+            (SELECT coalesce(sum(estimated_cost_usd), 0) FROM usage_reservations
+              WHERE tenant_id = $1 AND status = 'reserved')::text AS reserved,
             count(*) FILTER (WHERE r.user_id = $2 AND r.kind = 'llm' AND r.status <> 'denied'
                                AND r.created_at > now() - interval '1 hour')::int AS llm_hour,
             count(*) FILTER (WHERE r.user_id = $2 AND r.kind = 'image' AND r.status <> 'denied'
-                               AND r.created_at >= b.day_start)::int AS image_day,
-            b.month_start AS period_start
+                               AND r.created_at >= b.day_start)::int AS image_day
        FROM bounds b
        LEFT JOIN usage_reservations r
-         ON r.tenant_id = $1 AND r.created_at >= least(b.month_start, now() - interval '1 hour')
-      GROUP BY b.month_start`,
+         ON r.tenant_id = $1 AND r.created_at >= least(b.day_start, now() - interval '1 hour')
+      GROUP BY b.day_start`,
     [tenantId, userId, USAGE_POLICY.timeZone],
   );
   const row = result.rows[0];
   return {
-    committedUsd: Number(row.committed),
+    balanceUsd: Number(row.balance),
+    reservedUsd: Number(row.reserved),
     userLlmCallsLastHour: row.llm_hour,
     userImagesToday: row.image_day,
-    periodStart: new Date(row.period_start).toISOString(),
   };
 }
 
@@ -120,15 +123,27 @@ export function usageRepo(tenant: Tenant, user: User): UsageRepo {
   return {
     reserve: (request) => decide(request, true),
     preflight: (request) => decide(request, false),
-    async settle({ reservationId, actualCostUsd, outcome }) {
+    async settle({ reservationId, actualCostUsd, costSource, outcome }) {
       return withTenantTransaction(tenant, user, async (tx) => {
-        const result = await tx.query(
+        const result = await tx.query<{ actual_cost_usd: string }>(
           `UPDATE usage_reservations
-              SET status = 'settled', actual_cost_usd = $4, outcome = $5, settled_at = now()
-            WHERE tenant_id = $1 AND user_id = $2 AND id = $3 AND status = 'reserved'`,
-          [tenant.id, user.id, reservationId, actualCostUsd, outcome],
+              SET status = 'settled', actual_cost_usd = $4, cost_source = $6, outcome = $5, settled_at = now()
+            WHERE tenant_id = $1 AND user_id = $2 AND id = $3 AND status = 'reserved'
+            RETURNING actual_cost_usd::text`,
+          [tenant.id, user.id, reservationId, actualCostUsd, outcome, costSource],
         );
-        return (result.rowCount ?? 0) === 1;
+        if (result.rows.length !== 1) return false;
+        // Stored (rounded) cost, so ledger and reservation agree to the cent-micro; zero cost writes nothing.
+        const stored = Number(result.rows[0].actual_cost_usd);
+        if (stored > 0) {
+          await tx.query(
+            `INSERT INTO tenant_credit_entries (tenant_id, kind, amount_usd, source, idempotency_key, usage_reservation_id)
+             VALUES ($1, 'consumption', $2, 'settlement', $3, $4)
+             ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`,
+            [tenant.id, -stored, `settle:${reservationId}`, reservationId],
+          );
+        }
+        return true;
       });
     },
   };

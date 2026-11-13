@@ -2,12 +2,11 @@
  * KAN-43 usage policy: THE place for the approved limits, the cost estimates and the
  * client-facing denial copy. Pure (no I/O). Owner-approved values (2026-11-02); the policy
  * record is pipeline/decisions/KAN-43-usage-limits-policy.md. Change a limit here, nowhere else.
+ * D36: the tenant cap is its prepaid credit balance (ledger), not a fixed monthly amount.
  */
 import { codePointLength } from '../../core/refinement';
 
 export const USAGE_POLICY = Object.freeze({
-  /** Tenant budget per calendar month (America/Lima), in USD. */
-  tenantMonthlyBudgetUsd: 30,
   /** LLM calls per user in a rolling 60-minute window. */
   userLlmCallsPerHour: 60,
   /** Image generations per user per calendar day (America/Lima). */
@@ -20,12 +19,14 @@ export const USAGE_POLICY = Object.freeze({
 
 export type UsagePolicy = typeof USAGE_POLICY;
 export type UsageKind = 'llm' | 'image';
-export type UsageDenialReason = 'tenant_budget' | 'user_llm_hourly' | 'user_image_daily' | 'input_too_long';
+export type UsageDenialReason = 'tenant_credits' | 'user_llm_hourly' | 'user_image_daily' | 'input_too_long';
 
 /** What the ledger has already committed, read under the tenant lock. */
 export interface UsageCounters {
-  /** Reserved estimates plus settled real costs this month, all users of the tenant. */
-  readonly committedUsd: number;
+  /** Credit ledger sum of the tenant (recharges - consumption +/- adjustments), USD. */
+  readonly balanceUsd: number;
+  /** Estimates held by `reserved` rows (calls in flight), all users of the tenant. */
+  readonly reservedUsd: number;
   readonly userLlmCallsLastHour: number;
   readonly userImagesToday: number;
 }
@@ -46,11 +47,16 @@ export function evaluateUsage(
 ): UsageDenialReason | null {
   const calls = ask.calls ?? 1;
   if (ask.inputChars !== undefined && ask.inputChars > policy.maxInputChars) return 'input_too_long';
-  const budget = policy.tenantMonthlyBudgetUsd;
-  if (counters.committedUsd >= budget || counters.committedUsd + ask.estimatedCostUsd > budget) return 'tenant_budget';
+  const available = availableCreditsUsd(counters);
+  if (available <= 0 || ask.estimatedCostUsd > available) return 'tenant_credits';
   if (ask.kind === 'llm' && counters.userLlmCallsLastHour + calls > policy.userLlmCallsPerHour) return 'user_llm_hourly';
   if (ask.kind === 'image' && counters.userImagesToday + calls > policy.userImagesPerDay) return 'user_image_daily';
   return null;
+}
+
+/** Credits the tenant can still commit: balance minus what in-flight calls hold. Ledger precision. */
+export function availableCreditsUsd(counters: Pick<UsageCounters, 'balanceUsd' | 'reservedUsd'>): number {
+  return roundUsd(counters.balanceUsd - counters.reservedUsd);
 }
 
 export function inputChars(text: string): number {
@@ -60,8 +66,8 @@ export function inputChars(text: string): number {
 /** Neutral Latin-American Spanish, tuteo. Shown to the user when a call is denied. */
 export function usageLimitMessage(reason: UsageDenialReason): string {
   switch (reason) {
-    case 'tenant_budget':
-      return 'Alcanzaste el límite de uso de este mes. Avísale al administrador de tu organización.';
+    case 'tenant_credits':
+      return 'Tu organización debe recargar créditos. Avísale al administrador de tu organización.';
     case 'user_llm_hourly':
       return 'Alcanzaste el límite de mensajes por hora. Espera un momento e inténtalo de nuevo.';
     case 'user_image_daily':
@@ -72,8 +78,8 @@ export function usageLimitMessage(reason: UsageDenialReason): string {
 }
 
 // ---------------------------------------------------------------------------
-// Prices. shortcut: list prices typed in by hand on 2026-11-03, not read from provider invoices
-// or the provider's own cost field; replace with provider-reported cost when KAN-42 lands.
+// Prices. Estimates (pre-call hold) and the fallback when a provider reports no cost: list prices
+// typed in by hand on 2026-11-03. OpenRouter's own `usage.cost` wins whenever it is present (D36).
 // Unknown models use the conservative default so an unpriced model can't look cheap.
 // ---------------------------------------------------------------------------
 
@@ -121,7 +127,23 @@ export function llmCostUsd(
   return roundUsd((usage.prompt_tokens * price.inputPerMTok + usage.completion_tokens * price.outputPerMTok) / 1_000_000);
 }
 
+/** Where a settled cost came from: `provider` = reported by the provider, `estimate` = hand-typed prices, `flat` = reviewed flat price. */
+export type CostSource = 'provider' | 'estimate' | 'flat';
+export interface ActualCost { readonly usd: number; readonly source: CostSource }
+
+/** Settlement cost of a finished LLM call: the provider-reported `usage.cost`, else the hand-typed estimate. */
+export function llmActualCost(
+  model: string,
+  usage: { readonly prompt_tokens: number; readonly completion_tokens: number; readonly cost?: number } | undefined,
+): ActualCost | null {
+  if (usage && typeof usage.cost === 'number' && Number.isFinite(usage.cost) && usage.cost >= 0) {
+    return { usd: usage.cost, source: 'provider' };
+  }
+  const usd = llmCostUsd(model, usage);
+  return usd === null ? null : { usd, source: 'estimate' };
+}
+
 /** numeric(12,6) in the ledger. */
-function roundUsd(value: number): number {
+export function roundUsd(value: number): number {
   return Math.round(value * 1_000_000) / 1_000_000;
 }

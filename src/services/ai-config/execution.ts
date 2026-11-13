@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { knownSecrets } from '../secrets/redaction';
 import type { ResolvedIdentity } from '../../auth/resolve-identity';
 import type { AdapterExecution, AdapterBehaviorSnapshot } from './adapter-behavior';
 import type { ChatCompletion, ChatRequest, ResolvedModel } from '../llm/types';
@@ -6,7 +7,7 @@ import { ProviderRegistry, ProfileUnavailableError } from './provider-registry';
 import { ProviderCallError } from '../llm/provider-error';
 import { freezeManifest, type AiConfigManifestV1, type ModelProfile, type Purpose } from './manifest';
 import { runWithUsage, UsageLimitError, type UsageLedger } from '../usage/gateway';
-import { estimateLlmCostUsd, llmCostUsd, type UsageDenialReason } from '../usage/policy';
+import { estimateLlmCostUsd, llmActualCost, type UsageDenialReason } from '../usage/policy';
 
 export type ExecutionFailureCategory =
   | 'legacy_unversioned'
@@ -182,6 +183,7 @@ export class AiConfigRuntime {
     }
     const firstProfileIndex = priorAttempts.length;
 
+    await this.providers.warmTenantKey(identity.tenant.id);
     let lastFailure: AiConfigExecutionError | undefined;
     for (let index = firstProfileIndex; index < profileIds.length; index += 1) {
       const profile = profileById.get(profileIds[index]);
@@ -244,6 +246,7 @@ export class AiConfigRuntime {
           async () => (await store.getProviderAvailability(profile.provider)).enabled,
         );
         value = await operation(Object.freeze({ model: tracedModel, behavior }));
+        this.providers.noteCall(identity.tenant.id, profile.provider);
       } catch (error) {
         if (error instanceof UsageLimitError) {
           // KAN-43: denied before the provider was called; never substituted by a fallback.
@@ -444,7 +447,7 @@ export async function usageGatedCompletion(
   const completion = await runWithUsage(usage, {
     request: { kind: 'llm', estimatedCostUsd, model: params.model, ...correlation },
     call: () => client.chat.completions.create(params),
-    actualCostUsd: (result) => llmCostUsd(params.model, result.usage) ?? estimatedCostUsd,
+    actualCost: (result) => llmActualCost(params.model, result.usage) ?? { usd: estimatedCostUsd, source: 'estimate' },
     // A typed non-ambiguous provider failure was not billed; anything else may have been.
     failureCostUsd: (error) => error instanceof ProviderCallError && error.category !== 'ambiguous' ? 0 : estimatedCostUsd,
   });
@@ -487,7 +490,7 @@ function safeResponseContent(value: unknown): string | undefined {
 /** Redact only the persisted evidence copy; the provider receives the original request. */
 export function redactEvidenceContent(content: string): string {
   let redacted = content;
-  for (const secret of [process.env.OPENROUTER_API_KEY, process.env.ANTHROPIC_API_KEY]) {
+  for (const secret of knownSecrets()) {
     if (secret) redacted = redacted.split(secret).join('[REDACTED]');
   }
   return redacted.replace(

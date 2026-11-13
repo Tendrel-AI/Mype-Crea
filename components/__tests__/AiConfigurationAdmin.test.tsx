@@ -7,10 +7,10 @@ vi.mock('../../app/actions/conversations', () => ({}));
 import AiConfigurationAdmin from '../AiConfigurationAdmin';
 import { summarizeUsage } from '../../src/repos/usage-summary';
 
-function render(committedUsd: number): string {
+function render(balanceUsd: number): string {
   const usage = summarizeUsage(
     { attempts: 3, inputTokens: 10, outputTokens: 5, unknownInputAttempts: 0, unknownOutputAttempts: 0, knownCost: '0.01', unknownCostAttempts: 0 },
-    { committedUsd, periodStart: '2026-11-01T05:00:00.000Z' },
+    { balanceUsd, reservedUsd: 0.5 },
   );
   return renderToStaticMarkup(<AiConfigurationAdmin initialData={{
     tenantId: 't', organizationId: 'o', tenantRole: 'admin', platformAdmin: false,
@@ -19,17 +19,17 @@ function render(committedUsd: number): string {
 }
 
 describe('AiConfigurationAdmin budget status (KAN-70)', () => {
-  it('shows the recorded monthly spend, the USD 30 limit and what remains', () => {
-    const html = render(12.4);
-    expect(html).toContain('USD 12.40 gastados o reservados de USD 30.00; quedan USD 17.60');
+  it('shows the credit balance, what is held and what is available', () => {
+    const html = render(12.5);
+    expect(html).toContain('USD 12.50 de saldo, USD 0.50 reservados; disponibles USD 12.00');
     expect(html).not.toContain('agotado');
     expect(html).not.toMatch(/unconfigured|sin configurar|se define por separado/i);
     expect(html).not.toMatch(/\b(querés|tenés|podés|vos|sos)\b/i);
   });
 
-  it('marks the budget as exhausted once recorded usage reaches the limit', () => {
-    const html = render(30);
-    expect(html).toContain('quedan USD 0.00');
+  it('marks the credits as exhausted once nothing is available', () => {
+    const html = render(0.5);
+    expect(html).toContain('disponibles USD 0.00');
     expect(html).toContain('agotado');
   });
 });

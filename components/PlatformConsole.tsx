@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { createPlatformOrganization, grantPlatformOperator, renamePlatformOrganization, revokePlatformOperator, setPlatformOrganizationActive } from '../app/actions/platform-admin';
+import { createPlatformOrganization, grantPlatformOperator, rechargeTenantCredits, renamePlatformOrganization, revokePlatformOperator, setPlatformOrganizationActive } from '../app/actions/platform-admin';
 import { applyPlatformModuleRollout, previewPlatformModuleRollout, publishAiModuleVersion, publishPlatformModuleVersion, retryPlatformModuleRollout, rollbackPlatformModule } from '../app/actions/platform-modules';
 import type { PlatformModule } from '../src/services/platform/modules/contract';
 import type { ModuleVersion, RolloutScope } from '../src/services/platform/rollout/service';
@@ -62,6 +62,33 @@ export function OrganizationEditForm({ tenantId, name, active }: { tenantId: str
       <span role="status" className="text-sm text-neutral-600">{message}</span>
     </form>
   </div>;
+}
+
+/** F21/F24: the super admin records a recharge AFTER the tenant paid outside the platform. */
+export function CreditRechargeForm({ tenantId }: { tenantId: string }) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [message, setMessage] = useState('');
+  const [operationKey, setOperationKey] = useState(() => crypto.randomUUID());
+  return <form className="grid gap-3 rounded-xl border bg-white p-4 md:grid-cols-4" onSubmit={(event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    start(async () => {
+      try {
+        const result = await rechargeTenantCredits({ tenantId, operationKey, amountUsd: Number(data.get('amount')), reference: String(data.get('reference') ?? ''), reason: String(data.get('reason') ?? '') });
+        setMessage(`Recarga registrada. Saldo: USD ${result.balanceUsd.toFixed(2)}.${result.keySynced ? '' : ' La llave de OpenRouter se sincronizará en la próxima operación.'}`);
+        form.reset();
+        setOperationKey(crypto.randomUUID());
+        router.refresh();
+      } catch { setMessage('No pudimos registrar la recarga. Revisa los datos e inténtalo de nuevo.'); }
+    });
+  }}>
+    <label className="grid gap-1 text-sm">Monto (USD)<input required name="amount" type="number" min="0.01" step="0.01" className="rounded border p-2" /></label>
+    <label className="grid gap-1 text-sm">Referencia del pago<input required name="reference" maxLength={200} className="rounded border p-2" /></label>
+    <label className="grid gap-1 text-sm">Motivo<input required name="reason" maxLength={500} className="rounded border p-2" /></label>
+    <div className="flex items-end gap-3"><button disabled={pending} className="rounded bg-orange-600 px-4 py-2 text-white">Registrar recarga</button><span role="status" className="text-sm">{message}</span></div>
+  </form>;
 }
 
 export function PlatformOperatorAdmin({ operators }: { operators: readonly { workosUserId: string; grantedAt: Date; revokedAt: Date | null }[] }) {

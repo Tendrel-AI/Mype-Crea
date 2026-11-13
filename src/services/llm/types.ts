@@ -48,6 +48,8 @@ export interface ChatCompletion {
     readonly prompt_tokens: number;
     readonly completion_tokens: number;
     readonly total_tokens?: number;
+    /** Provider-reported cost of the call in USD (OpenRouter `usage.cost`); absent when not reported. */
+    readonly cost?: number;
   };
 }
 
