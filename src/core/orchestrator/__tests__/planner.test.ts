@@ -439,6 +439,15 @@ describe('planNextDecision', () => {
       expect(real).toMatchObject({ level: 'product', uploads: [{ kind: 'lab_report', min: 1 }] });
     });
 
+    it('KAN-110: pending fields and upload merge into one request_fields; either alone is unchanged', () => {
+      const entry = { agentId: 'label', deliverableKind: 'label', uploadKind: 'lab_report', promptHint: 'sube el PDF' };
+      const both = plan(productChat(empty), { lab_report: 0 });
+      expect(both).toHaveLength(1);
+      expect(both[0]).toMatchObject({ kind: 'request_fields', uploads: [entry] });
+      expect(plan(productChat(empty), { lab_report: 1 })[0]).not.toHaveProperty('uploads');
+      expect(plan(productChat(filled), { lab_report: 0 })[0]).toMatchObject({ kind: 'request_upload', ...entry });
+    });
+
     it('asks the missing fields first, then the upload', () => {
       expect(plan(productChat(empty), { lab_report: 0 })[0].kind).toBe('request_fields');
       expect(plan(productChat(filled), { lab_report: 0 })).toEqual([

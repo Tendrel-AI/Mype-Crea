@@ -110,7 +110,7 @@ import {
   type DeliverableStateView,
   type PlannerDecision,
   type RequestFieldEntry,
-  type RequestUploadDecision,
+  type UploadRequestEntry,
 } from '../contracts';
 import { loggerFor } from '../../services/logger';
 import type { AgentRegistry, DeliverableSpec } from './agent-registry';
@@ -251,8 +251,10 @@ export function planNextDecision(
       promptHint: registry.getPromptHint(focusAgentId, fieldName),
     }));
 
+    // KAN-110 / D48: a pending upload is asked in the same message; the field question never waits for it.
+    const pendingUpload = pickUploadRequest(specs.filter((s) => inScope(s.agentId)), scopedContext);
     return decide(
-      [{ kind: 'request_fields', agentId: focusAgentId, fields }],
+      [{ kind: 'request_fields', agentId: focusAgentId, fields, ...(pendingUpload ? { uploads: [pendingUpload] } : {}) }],
       'focus_agent_request_fields',
     );
   }
@@ -309,7 +311,7 @@ const NO_UPLOAD_NEEDED_STATES = new Set(['generating', 'in_review', 'approved', 
 function pickUploadRequest(
   specs: ReadonlyArray<DeliverableSpec>,
   context: PlannerContext,
-): Omit<RequestUploadDecision, 'kind'> | null {
+): UploadRequestEntry | null {
   const counts = context.uploadCounts;
   if (!counts) return null;
   for (const spec of specs) {

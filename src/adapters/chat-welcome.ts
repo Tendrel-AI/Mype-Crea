@@ -25,17 +25,18 @@ export function welcomeContextLine(context: ChatContext | null | undefined): str
   const brand = context.brandName?.trim() || UNNAMED_BRAND_LABEL;
   if (!context.productId) return `Este es el chat de tu marca «${brand}».`;
   const product = context.productName?.trim() || UNNAMED_PRODUCT_LABEL;
-  return `Este es el chat de tu producto «${product}» de la marca «${brand}».`;
+  return `Este es el chat de tu producto «${product}» de la marca «${brand}». Aquí creamos su etiqueta nutricional y su foto publicitaria.`;
 }
 
 function describe(decision: PlannerDecision, context: ChatContext | null | undefined, registry: AgentRegistry): string {
   switch (decision.kind) {
     case 'request_fields': {
+      const uploadHints = (decision.uploads ?? []).map((u) => `- ${u.promptHint}`);
       if (decision.fields.length <= 2) {
-        return ['Para avanzar necesito esto:', ...decision.fields.map((f) => `- ${f.promptHint}`)].join('\n');
+        return ['Para avanzar necesito esto:', ...uploadHints, ...decision.fields.map((f) => `- ${f.promptHint}`)].join('\n');
       }
       // D29: no per-field list; one open invitation. The Extractor maps the answer; unaddressed delegable fields are delegated in code (D35).
-      return 'Para avanzar, cuéntame en un solo mensaje lo que tengas claro: qué quieres lograr, qué te inspira, el estilo que imaginas y lo que no quieres ver o no puedes usar.';
+      return [...uploadHints, 'Para avanzar, cuéntame en un solo mensaje lo que tengas claro: qué quieres lograr, qué te inspira, el estilo que imaginas y lo que no quieres ver o no puedes usar.'].join('\n');
     }
     case 'request_upload':
       return decision.promptHint;

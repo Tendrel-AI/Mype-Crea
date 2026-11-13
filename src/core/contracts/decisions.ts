@@ -45,6 +45,18 @@ export interface RequestFieldsDecision {
   readonly kind: 'request_fields';
   readonly agentId: AgentId;
   readonly fields: ReadonlyArray<RequestFieldEntry>;
+  /** KAN-110 / D48: a pending upload for the same conversation rides along so both are asked in one message. */
+  readonly uploads?: ReadonlyArray<UploadRequestEntry>;
+}
+
+/** What `request_upload` carries, also embeddable in `request_fields`. */
+export interface UploadRequestEntry {
+  readonly agentId: AgentId;
+  readonly deliverableKind: string;
+  /** `brand_files.kind` being asked for (e.g. "lab_report"). */
+  readonly uploadKind: string;
+  /** The human-facing hint from the Agent Card. */
+  readonly promptHint: string;
 }
 
 export interface RequestFieldEntry {
@@ -108,14 +120,8 @@ export interface OfferGenerationDecision {
  * D34: an in-scope deliverable needs a file upload (Agent Card `mypes:requirements.uploads`) and the
  * conversation has fewer than `min`. The user has a panel button to upload it.
  */
-export interface RequestUploadDecision {
+export interface RequestUploadDecision extends UploadRequestEntry {
   readonly kind: 'request_upload';
-  readonly agentId: AgentId;
-  readonly deliverableKind: string;
-  /** `brand_files.kind` being asked for (e.g. "lab_report"). */
-  readonly uploadKind: string;
-  /** The human-facing hint from the Agent Card. */
-  readonly promptHint: string;
 }
 
 /** Inform the user (via the adapter) that a sub-agent task has just been dispatched. */
