@@ -2,6 +2,9 @@ import { globalIdentityRepo } from './global-identity';
 import { globalOrganizationsRepo } from './global-organizations';
 import { globalAuditRepo } from './global-audit';
 import { globalCreditsRepo } from './global-credits';
+import { globalLimitsRepo } from './global-limits';
+import { globalCountersRepo } from './global-counters';
+import { dictionaryChangesRepo } from './dictionary-changes';
 import { platformConfigRepo } from './platform-config';
 import { platformTraceRepo } from './platform-trace';
 
@@ -14,6 +17,9 @@ export function globalRepos() {
     config: platformConfigRepo(),
     trace: platformTraceRepo(),
     credits: globalCreditsRepo(),
+    limitDefaults: globalLimitsRepo(),
+    counters: globalCountersRepo(),
+    dictionaries: dictionaryChangesRepo(),
   };
 }
 
