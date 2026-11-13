@@ -20,6 +20,15 @@ export function chatFor(
     : entry.brandId === target.brandId && !entry.productId);
 }
 
+/** KAN-111: the chat id pinned on the brand/product entry (any age); falls back to the recent list. */
+export function chatIdFor(
+  conversations: ReadonlyArray<ConversationListEntry>,
+  target: { readonly brandId: string; readonly productId?: string },
+  pinned?: string | null,
+): string | undefined {
+  return pinned ?? chatFor(conversations, target)?.conversationId;
+}
+
 /** The URL of the brand's (or product's) single chat; null when it is not in the list. */
 export function conversationHrefFor(conversations: ReadonlyArray<ConversationListEntry>, target: { readonly brandId: string; readonly productId?: string }): string | null {
   const entry = chatFor(conversations, target);
@@ -35,16 +44,33 @@ export { UNNAMED_BRAND_LABEL, UNNAMED_PRODUCT_LABEL };
 
 const itemClass = 'w-full flex items-center gap-2 px-3 py-2 text-left text-sm font-medium text-orange-600 hover:bg-orange-50';
 
-function ConversationLink({ entry, current, label }: { entry: ConversationListEntry; current: boolean; label?: string }) {
+export function ConversationLink({ conversationId, current, label }: { conversationId: string; current: boolean; label: string }) {
   return (
     <a
       role="menuitem"
-      href={conversationHref(entry.conversationId)}
+      href={conversationHref(conversationId)}
       aria-current={current ? 'page' : undefined}
       className={`block truncate px-3 py-2 text-sm hover:bg-neutral-100 ${current ? 'font-semibold text-neutral-900 bg-neutral-50' : 'text-neutral-700'}`}
     >
-      {label ?? entry.label}
+      {label}
     </a>
+  );
+}
+
+/** Inline «Archivar marca» confirm step (no `window.confirm`), shared by the dropdown and the brand tree. */
+export function ArchiveConfirm({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div className="px-3 py-2 text-xs text-neutral-700">
+      <p>¿Archivar esta marca? Su chat y los de sus productos dejarán de aparecer aquí y no podrás reactivarla.</p>
+      <div className="mt-2 flex gap-2">
+        <button type="button" onClick={onConfirm} className="px-2 py-1 rounded-md bg-red-600 text-white">
+          Sí, archivar
+        </button>
+        <button type="button" onClick={onCancel} className="px-2 py-1 rounded-md hover:bg-neutral-100">
+          Cancelar
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -105,15 +131,15 @@ export function ConversationMenuItems({
         <div key={brand.brandId} role="group" aria-label={brand.name ?? UNNAMED_BRAND_LABEL} className="border-b border-neutral-100 pb-1">
           <p className="px-3 pt-2 text-xs font-semibold uppercase text-neutral-500 truncate">{brand.name ?? UNNAMED_BRAND_LABEL}</p>
           {(() => {
-            const chat = chatFor(conversations, { brandId: brand.brandId });
-            return chat && <ConversationLink entry={chat} current={chat.conversationId === currentConversationId} label="Chat de la marca" />;
+            const chatId = chatIdFor(conversations, { brandId: brand.brandId }, brand.chatConversationId);
+            return chatId && <ConversationLink conversationId={chatId} current={chatId === currentConversationId} label="Chat de la marca" />;
           })()}
           {brand.products.map((product) => (
             <div key={product.productId} role="group" aria-label={`Producto: ${product.name ?? UNNAMED_PRODUCT_LABEL}`} className="ml-3 border-l border-neutral-200">
               <p className="px-3 pt-2 text-xs font-semibold text-neutral-500 truncate">Producto: {product.name ?? UNNAMED_PRODUCT_LABEL}</p>
               {(() => {
-                const chat = chatFor(conversations, { brandId: brand.brandId, productId: product.productId });
-                return chat && <ConversationLink entry={chat} current={chat.conversationId === currentConversationId} label="Chat del producto" />;
+                const chatId = chatIdFor(conversations, { brandId: brand.brandId, productId: product.productId }, product.chatConversationId);
+                return chatId && <ConversationLink conversationId={chatId} current={chatId === currentConversationId} label="Chat del producto" />;
               })()}
               <button type="button" role="menuitem" onClick={() => onEditProduct(product.productId)} className={subItemClass}>
                 Editar producto
@@ -127,17 +153,7 @@ export function ConversationMenuItems({
             Editar marca
           </button>
           {confirmingBrandId === brand.brandId ? (
-            <div className="px-3 py-2 text-xs text-neutral-700">
-              <p>¿Archivar esta marca? Su chat y los de sus productos dejarán de aparecer aquí y no podrás reactivarla.</p>
-              <div className="mt-2 flex gap-2">
-                <button type="button" onClick={() => onConfirmArchive(brand.brandId)} className="px-2 py-1 rounded-md bg-red-600 text-white">
-                  Sí, archivar
-                </button>
-                <button type="button" onClick={onCancelArchive} className="px-2 py-1 rounded-md hover:bg-neutral-100">
-                  Cancelar
-                </button>
-              </div>
-            </div>
+            <ArchiveConfirm onConfirm={() => onConfirmArchive(brand.brandId)} onCancel={onCancelArchive} />
           ) : (
             <button type="button" role="menuitem" onClick={() => onAskArchive(brand.brandId)} className="w-full px-3 py-2 text-left text-xs text-neutral-500 hover:bg-neutral-100">
               Archivar marca
@@ -149,7 +165,7 @@ export function ConversationMenuItems({
         <div role="group" aria-label="Conversaciones anteriores">
           <p className="px-3 pt-2 text-xs font-semibold uppercase text-neutral-500">Conversaciones anteriores</p>
           {legacy.map((entry) => (
-            <ConversationLink key={entry.conversationId} entry={entry} current={entry.conversationId === currentConversationId} />
+            <ConversationLink key={entry.conversationId} conversationId={entry.conversationId} current={entry.conversationId === currentConversationId} label={entry.label} />
           ))}
         </div>
       )}

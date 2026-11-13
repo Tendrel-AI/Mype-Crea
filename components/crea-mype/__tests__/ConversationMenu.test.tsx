@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { ConversationMenu, ConversationMenuItems, conversationHref, conversationHrefFor } from '../ConversationMenu';
+import { ArchiveConfirm, ConversationMenu, ConversationMenuItems, conversationHref, conversationHrefFor } from '../ConversationMenu';
 import { ChatPanel } from '../ChatPanel';
 import { contextLine } from '../ChatPanel';
 import type { BrandAssets } from '../types';
@@ -124,8 +124,8 @@ describe('«Mis conversaciones» menu (KAN-25)', () => {
       confirmingBrandId: BRAND, onConfirmArchive,
     });
     expect(renderToStaticMarkup(<>{confirming}</>)).toContain('¿Archivar esta marca?');
-    const [confirm] = findAll(confirming, (el) => el.type === 'button' && textOf(el.props.children) === 'Sí, archivar');
-    confirm.props.onClick?.();
+    const [confirm] = findAll(confirming, (el) => el.type === ArchiveConfirm);
+    (confirm.props as unknown as { onConfirm: () => void }).onConfirm();
     expect(onConfirmArchive).toHaveBeenCalledWith(BRAND);
   });
 

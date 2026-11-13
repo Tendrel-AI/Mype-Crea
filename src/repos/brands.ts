@@ -28,6 +28,8 @@ export interface BrandRow {
   readonly name: string | null;
   readonly attributes: Record<string, unknown>;
   readonly createdAt: string;
+  /** KAN-111: the brand's own chat (brand-level, no product), set by `listActive`; null when it has none. */
+  readonly chatConversationId?: UUID | null;
 }
 
 export type LimitRefusal = { readonly ok: false; readonly code: 'brand_limit_reached'; readonly limit: number };
@@ -142,14 +144,19 @@ export function brandsRepo(tenant: Tenant, user: User): BrandsRepo {
 
     async listActive() {
       return withTenantTransaction(tenant, user, async (tx) => {
-        const res = await tx.query<{ id: UUID; name: string | null; attributes: Record<string, unknown>; created_at: Date; agent_states: unknown }>(
-          `SELECT b.id, b.name, b.attributes, b.created_at, latest.agent_states
+        const res = await tx.query<{ id: UUID; name: string | null; attributes: Record<string, unknown>; created_at: Date; agent_states: unknown; chat_id: UUID | null }>(
+          `SELECT b.id, b.name, b.attributes, b.created_at, latest.agent_states, chat.id AS chat_id
              FROM brands b
              LEFT JOIN LATERAL (
                SELECT c.agent_states FROM conversations c
                 WHERE c.tenant_id = b.tenant_id AND c.brand_id = b.id AND c.status = 'active'
                 ORDER BY c.started_at DESC, c.id DESC LIMIT 1
              ) latest ON true
+             LEFT JOIN LATERAL (
+               SELECT c.id FROM conversations c
+                WHERE c.tenant_id = b.tenant_id AND c.brand_id = b.id AND c.product_id IS NULL AND c.status = 'active'
+                ORDER BY c.started_at, c.id LIMIT 1
+             ) chat ON true
             WHERE b.tenant_id = $1 AND b.user_id = $2 AND b.status = 'active'
             ORDER BY b.created_at, b.id`,
           [tenant.id, user.id],
@@ -159,6 +166,7 @@ export function brandsRepo(tenant: Tenant, user: User): BrandsRepo {
           name: row.name?.trim() || businessNameFromAgentStates(row.agent_states),
           attributes: row.attributes,
           createdAt: row.created_at.toISOString(),
+          chatConversationId: row.chat_id,
         }));
       });
     },

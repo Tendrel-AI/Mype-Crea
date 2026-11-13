@@ -37,12 +37,16 @@ export const INVALID_FIELDS_MESSAGE = 'Revisa los campos marcados.';
 export interface ProductListEntry {
   readonly productId: UUID;
   readonly name: string | null;
+  /** KAN-111: the product's single chat, resolved regardless of how recent it is. */
+  readonly chatConversationId?: UUID | null;
 }
 
 /** A brand in «Mis conversaciones»; `name` is null until the brief names the business. */
 export interface BrandListEntry {
   readonly brandId: UUID;
   readonly name: string | null;
+  /** KAN-111: the brand's single chat, resolved regardless of how recent it is. */
+  readonly chatConversationId?: UUID | null;
   readonly products: ReadonlyArray<ProductListEntry>;
 }
 
@@ -175,7 +179,8 @@ export async function listOwnedBrands(identity: ResolvedIdentity): Promise<Brand
   return rows.map((row) => ({
     brandId: row.id,
     name: row.name,
-    products: products.filter((p) => p.brandId === row.id).map((p) => ({ productId: p.id, name: p.name })),
+    chatConversationId: row.chatConversationId ?? null,
+    products: products.filter((p) => p.brandId === row.id).map((p) => ({ productId: p.id, name: p.name, chatConversationId: p.chatConversationId ?? null })),
   }));
 }
 
