@@ -7,6 +7,8 @@ import { handler as taglineHandler } from '../../../agents/tagline-agent/handler
 import taglineCard from '../../../agents/tagline-agent/agent-card.json';
 import { handler as labelHandler } from '../../../agents/label-agent/handler';
 import labelCard from '../../../agents/label-agent/agent-card.json';
+import { handler as socialHandler } from '../../../agents/social-agent/handler';
+import socialCard from '../../../agents/social-agent/agent-card.json';
 
 /**
  * Build the canonical AgentRegistry by registering every Agent Card under
@@ -16,12 +18,8 @@ import labelCard from '../../../agents/label-agent/agent-card.json';
  *
  * Live: logo-agent, name-agent (KAN-31), tagline-agent (KAN-32) and label-agent (D32: deterministic,
  * it has no brief fields, so it never competes in the planner).
- * social-agent is a stub that throws "not implemented" — registering it
- * is unsafe because the planner picks the lex-first ready agent, so e.g.
- * `social-agent` would beat `logo-agent` to dispatch the moment its required
- * fields happen to be filled, and the stub throw would surface to the user
- * as a silent failure (only visible in agent_tasks.error). Re-add a card to
- * this list as soon as its handler returns a real artifact.
+ * social-agent (product ad photo): its only required field is `ad_brief`, asked once per product chat.
+ * Register a card only once its handler returns real artifacts: the planner picks the lex-first ready agent.
  */
 export function buildDefaultRegistry(): AgentRegistry {
   const registry = new AgentRegistry();
@@ -29,5 +27,6 @@ export function buildDefaultRegistry(): AgentRegistry {
   registry.register(nameCard as AgentCard, nameHandler, undefined);
   registry.register(taglineCard as AgentCard, taglineHandler, undefined);
   registry.register(labelCard as AgentCard, labelHandler, undefined);
+  registry.register(socialCard as AgentCard, socialHandler, undefined);
   return registry;
 }

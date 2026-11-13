@@ -38,7 +38,7 @@ function toRun(r: any, kind: RunKind): Run {
 }
 
 // Ledger keys per agent; llm_calls.purpose stays 'naming' for both (versions keep them apart).
-const PRODUCTION_PURPOSE: Record<string, string> = { 'name-agent': 'naming', 'tagline-agent': 'naming' };
+const PRODUCTION_PURPOSE: Record<string, string> = { 'name-agent': 'naming', 'tagline-agent': 'naming', 'social-agent': 'naming' };
 
 export class PostgresLedgerStore implements LedgerStore {
   constructor(private readonly db: TransactionalQueryable) {}

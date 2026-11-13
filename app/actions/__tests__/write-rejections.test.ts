@@ -293,8 +293,8 @@ describe('KAN-44 deliverable command channel', () => {
 
   it('refuses an unregistered agent', async () => {
     await fillBrief();
-    const input = await command({ agentId: 'social-agent' });
-    const result = await expectRefused(() => deliverableCommandAction(input as never), { channel: 'command', reason: 'command_not_found', agentId: 'social-agent' });
+    const input = await command({ agentId: 'web-agent' });
+    const result = await expectRefused(() => deliverableCommandAction(input as never), { channel: 'command', reason: 'command_not_found', agentId: 'web-agent' });
     expect(result).toMatchObject({ ok: false, reason: 'not_found', message: 'No encontramos este entregable.' });
   });
 
@@ -383,7 +383,7 @@ describe('KAN-44 chat channel', () => {
 
   it.each<[string, FieldDelta['fields'], Record<string, unknown>, unknown]>([
     ['an unknown agent', { 'ghost-agent': { business_name: { value: 'X', confidence: 1 } } }, { reason: 'unknown_agent', agentId: 'ghost-agent', fieldName: 'business_name' }, 'X'],
-    ['a field owned by an unregistered agent', { 'social-agent': { tone: { value: 'cálido', confidence: 1 } } }, { reason: 'unknown_agent', agentId: 'social-agent', fieldName: 'tone' }, 'cálido'],
+    ['a field owned by an unregistered agent', { 'web-agent': { tone: { value: 'cálido', confidence: 1 } } }, { reason: 'unknown_agent', agentId: 'web-agent', fieldName: 'tone' }, 'cálido'],
     ['an unknown field', { 'logo-agent': { tenant_id: { value: FORGED_TENANT, confidence: 1 } } }, { reason: 'unknown_field', agentId: 'logo-agent', fieldName: 'tenant_id' }, FORGED_TENANT],
     ['an over-long value', { 'logo-agent': { business_name: { value: 'D'.repeat(121), confidence: 1 } } }, { reason: 'invalid_value', fieldName: 'business_name' }, 'D'.repeat(121)],
     ['control characters', { 'logo-agent': { business_name: { value: 'A\u0007B', confidence: 1 } } }, { reason: 'invalid_value', fieldName: 'business_name' }, 'A\u0007B'],

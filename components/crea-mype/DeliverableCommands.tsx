@@ -89,6 +89,7 @@ const KIND_LABELS: Readonly<Record<string, string>> = {
   business_name: 'nombre comercial',
   logo: 'logo',
   tagline: 'lema',
+  social_pack: 'foto publicitaria',
 };
 
 const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);

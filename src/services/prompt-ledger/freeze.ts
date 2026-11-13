@@ -18,6 +18,7 @@ const VERSION_SOURCE: Record<string, string> = {
   'name-agent': 'agents/name-agent/handler.ts',
   'tagline-agent': 'agents/tagline-agent/handler.ts',
   'logo-agent': 'agents/logo-agent/handler.ts',
+  'social-agent': 'agents/social-agent/handler.ts',
 };
 
 export type FreezePlan =

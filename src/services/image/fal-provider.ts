@@ -48,7 +48,7 @@ export class FalImageProvider implements IImageProvider {
       prompt: req.prompt,
       image_size: 'square_hd' as const,
       enable_safety_checker: true,
-      ...(isEdit ? { image_urls: req.referenceUrls! } : {}),
+      ...(isEdit ? { image_urls: await Promise.all(req.referenceUrls!.map(toFalUrl)) } : {}),
     };
 
     const child = log.child({ modelId, isEdit });
@@ -75,6 +75,13 @@ export class FalImageProvider implements IImageProvider {
     child.info({ latencyMs, safetyVerdict: safety.verdict }, 'image.request.complete');
     return { url, providerId: this.id, modelId, latencyMs, safety };
   }
+}
+
+/** A `data:` reference (e.g. a private product photo) is uploaded to fal storage; https references pass through. */
+async function toFalUrl(reference: string): Promise<string> {
+  const match = /^data:([^;,]+);base64,([\s\S]*)$/.exec(reference);
+  if (!match) return reference;
+  return fal.storage.upload(new Blob([Buffer.from(match[2], 'base64')], { type: match[1] }));
 }
 
 /** Map fal's `has_nsfw_concepts[0]` onto the recorded verdict (KAN-33). Missing or not a boolean → indeterminate. */

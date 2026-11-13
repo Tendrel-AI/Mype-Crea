@@ -12,7 +12,7 @@ const log = loggerFor('services.prompts');
 const files = frozenFiles as unknown as FrozenFile[];
 const hashes = lock as Record<string, Record<string, string>>;
 
-export const PROMPT_KEYS = ['extractor', 'responder', 'name-agent', 'tagline-agent', 'logo-agent'] as const;
+export const PROMPT_KEYS = ['extractor', 'responder', 'name-agent', 'tagline-agent', 'logo-agent', 'social-agent'] as const;
 export type PromptKey = (typeof PROMPT_KEYS)[number];
 export type PromptVersions = Record<string, string>;
 

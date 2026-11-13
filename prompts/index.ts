@@ -17,7 +17,8 @@ import f13 from './responder/responder.chat-step1.v6.json';
 import f14 from './responder/responder.chat-step1.v7.json';
 import f15 from './responder/responder.chat-step1.v8.json';
 import f16 from './responder/responder.chat-step1.v9.json';
-import f17 from './tagline-agent/tagline-agent.v1.json';
+import f17 from './social-agent/social-agent.v1.json';
+import f18 from './tagline-agent/tagline-agent.v1.json';
 
-export const frozenFiles = [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17];
+export const frozenFiles = [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18];
 export { lock };

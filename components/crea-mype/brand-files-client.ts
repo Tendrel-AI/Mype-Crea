@@ -63,3 +63,19 @@ export async function removeLabReport(fileId: string): Promise<string | null> {
     return 'No pudimos quitar el análisis. Revisa tu conexión.';
   }
 }
+
+/** Upload product photos (kind `asset`) one by one. No «Quitar» yet: `DELETE /api/brand-files/[id]` only handles lab reports. */
+export async function uploadProductPhotos(
+  brandId: string,
+  productId: string,
+  files: ReadonlyArray<File>,
+): Promise<{ uploaded: number; errors: string[] }> {
+  const errors: string[] = [];
+  let uploaded = 0;
+  for (const file of files) {
+    const error = await uploadBrandFile({ brandId, productId, kind: 'asset', file });
+    if (error) errors.push(error);
+    else uploaded += 1;
+  }
+  return { uploaded, errors };
+}

@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../app/actions/brief', () => ({ loadBriefAction: vi.fn(), updateBriefFieldAction: vi.fn() }));
+vi.mock('../../app/actions/product-photos', () => ({ listProductPhotoNamesAction: vi.fn(async () => ({ ok: true, photos: [] })) }));
 vi.mock('../../app/actions/lab-reports', () => ({ listLabReportNamesAction: vi.fn(async () => ({ ok: true, reports: [] })) }));
 vi.mock('../../app/actions/brand-assets', () => ({ loadBrandAssetsAction: vi.fn(async () => ({ ok: false, message: 'x' })) }));
 vi.mock('../../app/actions/limits', () => ({ getRemainingCountsAction: vi.fn(async () => ({ ok: false, message: 'x' })) }));

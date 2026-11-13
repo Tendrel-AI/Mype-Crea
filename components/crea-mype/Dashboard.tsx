@@ -8,7 +8,7 @@ import { type BrandAssets, type Tab } from './types';
 import { LandingPageRenderer } from './LandingPageRenderer';
 
 
-export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls, nameControls, labelControls, briefPanel, brandAssetsPanel }: {
+export function Dashboard({ assets, processingAgents, step, setActiveTab, logoControls, nameControls, labelControls, socialControls, briefPanel, brandAssetsPanel }: {
   assets: BrandAssets;
   processingAgents: Set<string>;
   step: number;
@@ -19,6 +19,8 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
   nameControls?: React.ReactNode;
   /** D32: the nutrition label card; only product conversations pass it, so a brand chat shows no label panel. */
   labelControls?: React.ReactNode;
+  /** Advertising-photo card; product conversations only. */
+  socialControls?: React.ReactNode;
   /** KAN-26: the editable brief (BriefPanel). Replaces the brand placeholder when present. */
   briefPanel?: React.ReactNode;
   /** D34: product conversations only. Read-only brand assets; replaces the logo/name command panels. */
@@ -136,6 +138,20 @@ export function Dashboard({ assets, processingAgents, step, setActiveTab, logoCo
                     <ImageIcon size={16} /> Etiqueta
                   </h2>
                   {labelControls}
+                </motion.div>
+              )}
+
+              {socialControls && (
+                <motion.div
+                  id="brand-step-5"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-white border border-neutral-200 shadow-sm rounded-2xl p-6 flex flex-col scroll-mt-4"
+                >
+                  <h2 className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-4 flex items-center gap-2">
+                    <Megaphone size={16} /> Foto publicitaria
+                  </h2>
+                  {socialControls}
                 </motion.div>
               )}
             </div>

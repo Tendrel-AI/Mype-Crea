@@ -21,6 +21,7 @@ vi.mock('../../../../prompts', async () => {
     make('name-agent', 'name-agent.v1', 'n'),
     make('tagline-agent', 'tagline-agent.v1', 't'),
     make('logo-agent', 'logo-agent.v1', 'l'),
+    make('social-agent', 'social-agent.v1', 's'),
   ];
   const lock: Record<string, Record<string, string>> = {};
   for (const f of files) (lock[f.key] ??= {})[f.version] = f.contentHash;

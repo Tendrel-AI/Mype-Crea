@@ -6,7 +6,7 @@
  * and runs that agent's registered handler against the authoritative
  * agent_tasks row from Postgres (architecture §2.5). One worker per entry of
  * `REDIS_DISPATCH_AGENTS` (runtime.ts): `LOGO_WORKER`, `NAME_WORKER` (KAN-31),
- * `TAGLINE_WORKER` (KAN-32), `LABEL_WORKER` (D32).
+ * `TAGLINE_WORKER` (KAN-32), `LABEL_WORKER` (D32), `SOCIAL_WORKER`.
  *
  * Flow per wake-up:
  *   1. Receive `{ taskId, tenantId }` on `mypes:agent_task:dispatch:<agentId>`.
@@ -66,6 +66,9 @@ export const TAGLINE_WORKER: AgentWorkerSpec = { agentId: 'tagline-agent' as Age
 
 /** D32: non-LLM, deterministic (no `LLM_AGENTS`, no `ModelPurpose`). */
 export const LABEL_WORKER: AgentWorkerSpec = { agentId: 'label-agent' as AgentId, deliverableKind: 'label', logScope: 'worker.label' };
+
+/** Product ad photo: an LLM director + image generation (`naming` + image usage). */
+export const SOCIAL_WORKER: AgentWorkerSpec = { agentId: 'social-agent' as AgentId, deliverableKind: 'social_pack', logScope: 'worker.social' };
 
 export interface AgentWorkerHandle {
   /** Tear down the subscription and drop the message listener. */

@@ -7,8 +7,9 @@ import { FormModal } from './crea-mype/FormModal';
 import { BrandForm, brandFormTitle, type BrandFiles, type BrandFormMode, type BrandFormResult } from './crea-mype/BrandForm';
 import { ProductForm, productFormTitle } from './crea-mype/ProductForm';
 import type { FormResult } from './crea-mype/CatalogForm';
-import { removeLabReport, uploadBrandFiles, uploadLabReports } from './crea-mype/brand-files-client';
+import { removeLabReport, uploadBrandFiles, uploadLabReports, uploadProductPhotos } from './crea-mype/brand-files-client';
 import { LabelCard, labelCommandAfterUpload } from './crea-mype/label-card';
+import { SocialCard, SOCIAL_AGENT_ID } from './crea-mype/social-card';
 import { LAB_UPLOAD_WAIT_MESSAGE } from './crea-mype/lab-upload-copy';
 import { ConversationMenu } from './crea-mype/ConversationMenu';
 import { ChatPanel } from './crea-mype/ChatPanel';
@@ -27,6 +28,7 @@ import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/ac
 import { loadBrandAssetsAction, type BrandAssetsResult } from '../app/actions/brand-assets';
 import { BrandAssetsReadOnly } from './crea-mype/BrandAssetsReadOnly';
 import { listLabReportNamesAction } from '../app/actions/lab-reports';
+import { listProductPhotoNamesAction } from '../app/actions/product-photos';
 import { LABEL_AGENT_ID } from '../src/labeling/lab-report-refs';
 import { deliverableFeedbackAction, loadDeliverableFeedbackAction } from '../app/actions/deliverable-feedback';
 import type { FeedbackValue } from '../src/repos/deliverable-feedback';
@@ -176,6 +178,9 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
   const labelView = productId ? deliverableStates.find((view) => view.agentId === LABEL_AGENT_ID) : undefined;
   const [labReportNames, setLabReportNames] = useState<ReadonlyArray<{ id: string; name: string }>>([]);
   const [labUploading, setLabUploading] = useState(false);
+  const socialView = productId ? deliverableStates.find((view) => view.agentId === SOCIAL_AGENT_ID) : undefined;
+  const [productPhotoNames, setProductPhotoNames] = useState<ReadonlyArray<{ id: string; name: string }>>([]);
+  const [photoUploading, setPhotoUploading] = useState(false);
   // D34: a product conversation shows the brand's approved assets read-only.
   const [brandAssets, setBrandAssets] = useState<Extract<BrandAssetsResult, { ok: true }> | null>(null);
   // KAN-26: the brief exactly as the server last returned it.
@@ -283,6 +288,15 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     }
   }, []);
 
+  const refreshProductPhotos = useCallback(async (forConversation: string) => {
+    try {
+      const result = await listProductPhotoNamesAction({ conversationId: forConversation });
+      if (result.ok && currentConversationRef.current === forConversation) setProductPhotoNames(result.photos);
+    } catch (error) {
+      console.error('Failed to load product photos', error);
+    }
+  }, []);
+
   useEffect(() => {
     setBrandAssets(null);
     if (!conversationId || !productId) return;
@@ -293,8 +307,12 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
 
   useEffect(() => {
     setLabReportNames([]);
-    if (conversationId && productId) void refreshLabReports(conversationId);
-  }, [conversationId, productId, refreshLabReports]);
+    setProductPhotoNames([]);
+    if (conversationId && productId) {
+      void refreshLabReports(conversationId);
+      void refreshProductPhotos(conversationId);
+    }
+  }, [conversationId, productId, refreshLabReports, refreshProductPhotos]);
 
   // Subscribe to artifact events from the orchestrator. The SSE stream is
   // scoped to the current conversationId; resetting the conversation
@@ -464,6 +482,25 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     }
   };
 
+  /** Upload product photos and refresh the names; the photo is optional input, so no deliverable command is issued. */
+  const handlePhotoUpload = async (files: File[]) => {
+    if (!conversationId || !productId || !context?.brandId || files.length === 0 || photoUploading) return;
+    const forConversation = conversationId;
+    setPhotoUploading(true);
+    setCommandError('');
+    setCommandErrorAgent(SOCIAL_AGENT_ID);
+    try {
+      const { uploaded, errors } = await uploadProductPhotos(context.brandId, productId, files);
+      if (errors.length > 0) setCommandError(errors.join(' '));
+      if (uploaded > 0) await refreshProductPhotos(forConversation);
+    } catch (error) {
+      console.error('Product photo upload failed.', error);
+      setCommandError('No pudimos subir la foto. Inténtalo de nuevo.');
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
+
   /** D32: «Quitar» a lab report, then reload the list. */
   const handleLabRemove = async (fileId: string) => {
     if (!conversationId || labUploading) return;
@@ -528,6 +565,21 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       feedback={feedback}
       feedbackBusy={feedbackBusy}
       onFeedback={(deliverableId, value) => void handleFeedback(LABEL_AGENT_ID, deliverableId, value)}
+    />
+  ) : undefined;
+
+  const renderSocialCard = () => productId ? (
+    <SocialCard
+      view={socialView}
+      photos={productPhotoNames}
+      uploading={photoUploading}
+      busy={commandBusy || photoUploading}
+      error={commandErrorAgent === SOCIAL_AGENT_ID ? commandError : ''}
+      alterations={alterationCounts[SOCIAL_AGENT_ID]}
+      onCommand={(request) => { if (socialView) void handleDeliverableCommand(SOCIAL_AGENT_ID, socialView, request); }}
+      feedback={feedback}
+      feedbackBusy={feedbackBusy}
+      onFeedback={(deliverableId, value) => void handleFeedback(SOCIAL_AGENT_ID, deliverableId, value)}
     />
   ) : undefined;
 
@@ -623,6 +675,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     setBriefError(null);
     setCommandError('');
     setLabReportNames([]);
+    setProductPhotoNames([]);
     setNotFound(false);
     window.history.pushState({}, '', `/?conversationId=${encodeURIComponent(result.conversationId)}`);
   };
@@ -751,7 +804,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
       )}
       {activeTab === 'create' && (
         <>
-          <ChatPanel labUpload={productId ? { busy: labUploading || commandBusy, onFiles: (files) => void handleLabUpload(files) } : undefined} assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} context={context} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || productId || logoView || nameView || taglineView || labelView ? (
+          <ChatPanel photoUpload={productId ? { busy: photoUploading || commandBusy, onFiles: (files) => void handlePhotoUpload(files) } : undefined} labUpload={productId ? { busy: labUploading || commandBusy, onFiles: (files) => void handleLabUpload(files) } : undefined} assets={assets} processingAgents={processingAgents} conversationId={conversationId} handleExportConversation={handleExportConversation} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} context={context} messages={messages} isLoading={isLoading} messagesEndRef={messagesEndRef} conversationError={conversationError} retryTurn={retryTurn} submitTurn={submitTurn} inputText={inputText} setInputText={setInputText} handleKeyDown={handleKeyDown} handleSend={handleSend} needsNewConversation={needsNewConversation} mobileDeliverablePanel={briefFields.length > 0 || productId || logoView || nameView || taglineView || labelView ? (
             <>
               {briefFields.length > 0 && (
                 <details className="mb-2">
@@ -762,6 +815,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
               {productId ? (
                 <>
                   <div className="mt-2"><h3 className="text-sm font-semibold text-neutral-700">Etiqueta nutricional</h3>{renderLabelCard()}</div>
+                  <div className="mt-6"><h3 className="text-sm font-semibold text-neutral-700">Foto publicitaria</h3>{renderSocialCard()}</div>
                   <div className="mt-6"><h3 className="text-sm font-semibold text-neutral-700">Recursos de tu marca</h3>{renderBrandAssets()}</div>
                 </>
               ) : (
@@ -774,7 +828,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
           ) : undefined} conversationNotFound={notFound} liveConnectionLost={liveLost} creationBlocked={creationBlocked} conversationMenu={creationBlocked ? undefined :
             <ConversationMenu initialConversations={initialConversations} initialBrands={initialBrands} currentConversationId={conversationId} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} onNewProduct={(brandId) => void openNewProduct(brandId)} onEditBrand={(brandId) => void openEditBrand(brandId)} onEditProduct={(productId) => void openEditProduct(productId)} onArchiveBrand={handleArchiveBrand} loadConversations={listConversationsAction} />
           } />
-          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} labelControls={renderLabelCard()} brandAssetsPanel={renderBrandAssets()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
+          <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} labelControls={renderLabelCard()} socialControls={renderSocialCard()} brandAssetsPanel={renderBrandAssets()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
       </>
       )}
 

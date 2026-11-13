@@ -62,6 +62,16 @@ export const BRIEF_CATALOG: ReadonlyArray<BriefFieldSpec> = Object.freeze([
   { name: 'logo_applications', type: 'string', analytics: 'text', label: 'Aplicaciones del logo', maxLength: 500 },
   { name: 'logo_production_limits', type: 'string', analytics: 'text', label: 'Límites de producción', maxLength: 500 },
   { name: 'logo_restrictions', type: 'string', analytics: 'text', label: 'Elementos obligatorios y prohibidos', maxLength: 500 },
+  { name: 'ad_brief', type: 'string', analytics: 'text', label: 'Idea de la foto publicitaria', maxLength: 500 },
+  { name: 'ad_medium', type: 'string', analytics: 'none', label: 'Medio o cámara del anuncio', maxLength: 200 },
+  { name: 'ad_action', type: 'string', analytics: 'none', label: 'Acción física del producto', maxLength: 200 },
+  { name: 'ad_lens', type: 'string', analytics: 'none', label: 'Lente del anuncio', maxLength: 200 },
+  { name: 'ad_composition', type: 'string', analytics: 'none', label: 'Composición del anuncio', maxLength: 200 },
+  { name: 'ad_lighting', type: 'string', analytics: 'none', label: 'Iluminación del anuncio', maxLength: 200 },
+  { name: 'ad_textures', type: 'string', analytics: 'none', label: 'Contraste de texturas', maxLength: 200 },
+  { name: 'ad_environment', type: 'string', analytics: 'none', label: 'Ambiente del anuncio', maxLength: 200 },
+  { name: 'ad_palette', type: 'string', analytics: 'none', label: 'Paleta del anuncio', maxLength: 200 },
+  { name: 'ad_filters', type: 'string', analytics: 'none', label: 'Acabado analógico', maxLength: 200 },
   { name: 'product_name', type: 'string', analytics: 'text', label: 'Producto', maxLength: 120 },
 ]);
 
@@ -72,7 +82,7 @@ export const BRIEF_CATALOG: ReadonlyArray<BriefFieldSpec> = Object.freeze([
 export const DELEGATED_FIELD_VALUE = 'A criterio del diseñador';
 
 /** D41: version stamped on every fact. Bump it (`YYYY-MM-DD`) whenever a catalog field is added, retyped or deprecated. */
-export const BRIEF_CATALOG_VERSION = '2026-11-12';
+export const BRIEF_CATALOG_VERSION = '2026-11-13';
 
 /** D41: a deprecated field is not asked any more; its data and its analytics section stay. */
 export function isDeprecatedField(name: string, catalog: ReadonlyArray<BriefFieldSpec> = BRIEF_CATALOG): boolean {

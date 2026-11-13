@@ -6,7 +6,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { subscribeSpy, configSpy, reserveSpy, settleSpy } = vi.hoisted(() => ({
+const { subscribeSpy, configSpy, uploadSpy, reserveSpy, settleSpy } = vi.hoisted(() => ({
+  uploadSpy: vi.fn(),
   subscribeSpy: vi.fn(),
   configSpy: vi.fn(),
   reserveSpy: vi.fn(async () => ({ allowed: true, reservationId: 'reservation-1' })),
@@ -25,6 +26,7 @@ vi.mock('@fal-ai/client', () => ({
   fal: {
     config: configSpy,
     subscribe: subscribeSpy,
+    storage: { upload: uploadSpy },
   },
 }));
 
@@ -101,7 +103,7 @@ describe('FalImageProvider', () => {
 
     const result = await provider.generate({
       prompt: 'refine the logo',
-      referenceUrls: ['data:image/png;base64,AAAA'],
+      referenceUrls: ['https://example.test/logo.png'],
     });
 
     expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/flux-2/edit', {
@@ -109,7 +111,7 @@ describe('FalImageProvider', () => {
         prompt: 'refine the logo',
         image_size: 'square_hd',
         enable_safety_checker: true,
-        image_urls: ['data:image/png;base64,AAAA'],
+        image_urls: ['https://example.test/logo.png'],
       },
     });
     expect(result.modelId).toBe('fal-ai/flux-2/edit');
@@ -192,5 +194,20 @@ describe('classifyFalError', () => {
   it('returns null when the error has no usable signal', () => {
     expect(classifyFalError(new Error('something odd'))).toBeNull();
     expect(classifyFalError('not an error')).toBeNull();
+  });
+});
+
+describe('FalImageProvider data: references', () => {
+  it('uploads a data: reference to fal storage and sends the returned URL; https passes through', async () => {
+    uploadSpy.mockResolvedValue('https://fal.media/files/photo.png');
+    subscribeSpy.mockResolvedValue({ data: { images: [{ url: 'https://fal.cdn/x.png' }], has_nsfw_concepts: [false] } });
+    const provider = new FalImageProvider('k');
+    await provider.generate({ prompt: 'p', referenceUrls: ['data:image/png;base64,AQID', 'https://example.test/a.png'] });
+    const blob = uploadSpy.mock.calls[0][0] as Blob;
+    expect(blob.type).toBe('image/png');
+    expect(blob.size).toBe(3);
+    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/flux-2/edit', {
+      input: expect.objectContaining({ image_urls: ['https://fal.media/files/photo.png', 'https://example.test/a.png'] }),
+    });
   });
 });

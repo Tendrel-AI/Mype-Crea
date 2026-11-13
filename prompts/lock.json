@@ -24,6 +24,9 @@
     "responder.chat-step1.v8": "703d9bfb029ced19b0310f86ded3d302fb7d325cfa8e3db48cc5fc8d082c0bc5",
     "responder.chat-step1.v9": "5aedb8b8532b26c4a1bce424a7e3b1936a3bc7fa4e3d56c3426be41559c676ec"
   },
+  "social-agent": {
+    "social-agent.v1": "e6d7005bb7ffbcc8eb5665b29eb74e60fecc740b201fedbabee8c828c646148b"
+  },
   "tagline-agent": {
     "tagline-agent.v1": "e6069602bc9439bad775d4683c377826c151f6eaeadb50482ae7738df6435a94"
   }
