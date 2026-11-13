@@ -32,6 +32,7 @@ export const brandLimitMessage = (limit: number) =>
   `Llegaste al límite de ${limit} marcas de tu organización. Archiva una marca o pide a tu administrador que lo aumente.`;
 export const productLimitMessage = (limit: number) =>
   `Esta marca llegó al límite de ${limit} productos. Pide a tu administrador que lo aumente.`;
+export const CONVERSATION_EXISTS_MESSAGE = 'Esta marca o producto ya tiene su conversación. Ábrela desde tu lista.';
 export const BRAND_NOT_FOUND_MESSAGE = 'No encontramos esta marca.';
 export const PRODUCT_NOT_FOUND_MESSAGE = 'No encontramos este producto.';
 export const INVALID_FIELDS_MESSAGE = 'Revisa los campos marcados.';
@@ -120,7 +121,7 @@ export type NewOwnedConversation =
   | { readonly ok: true; readonly conversationId: ConversationId; readonly brandId: UUID; readonly productId: UUID | null; readonly context: ConversationContext; readonly welcome: string }
   | {
       readonly ok: false;
-      readonly code: 'brand_limit_reached' | 'product_limit_reached' | 'brand_not_found' | 'product_not_found' | 'invalid_input' | 'configuration_unavailable';
+      readonly code: 'brand_limit_reached' | 'product_limit_reached' | 'brand_not_found' | 'product_not_found' | 'invalid_input' | 'configuration_unavailable' | 'conversation_exists';
       readonly message: string;
       readonly limit?: number;
       /** `invalid_input`: Spanish error per catalog key (`_form` for whole-object errors). */
@@ -363,19 +364,33 @@ export async function createOwnedProduct(
   return startedConversation(identity, conversationId, input.brandId, created.product.id, created.pin);
 }
 
+/** SQLSTATE 23505 on one of the one-chat-per-brand/product indexes. */
+function isSingleChatViolation(error: unknown): boolean {
+  const e = error as { code?: unknown; constraint?: unknown } | null;
+  return e?.code === '23505' && typeof e.constraint === 'string' && e.constraint.startsWith('conversations_one_active_per_');
+}
+
 /**
- * Create and durably pin a new conversation under one of the owner's active brands (and optionally
- * one of its products) before the UI opens SSE. Never touches the caller's other conversations.
+ * Server-side only (no UI entry point, D40 / D44): pin the single conversation of one of the owner's
+ * active brands (or of one of its products). A second one is the typed refusal `conversation_exists`.
  */
 export async function createOwnedConversation(identity: ResolvedIdentity, brandId: UUID, productId?: UUID): Promise<NewOwnedConversation> {
   const conversationId = randomUUID() as ConversationId;
-  const created = await repository(identity).brands.createConversation({
-    brandId,
-    productId,
-    conversationId,
-    schemas: buildDefaultRegistry().getFieldSchemas(),
-  });
+  let created: Awaited<ReturnType<ReturnType<typeof repository>['brands']['createConversation']>>;
+  try {
+    created = await repository(identity).brands.createConversation({
+      brandId,
+      productId,
+      conversationId,
+      schemas: buildDefaultRegistry().getFieldSchemas(),
+    });
+  } catch (error) {
+    // A concurrent creator won the race: the partial unique index (D40 / D44) is the final arbiter.
+    if (isSingleChatViolation(error)) return { ok: false, code: 'conversation_exists', message: CONVERSATION_EXISTS_MESSAGE };
+    throw error;
+  }
   if (!created.ok) {
+    if (created.code === 'conversation_exists') return { ok: false, code: 'conversation_exists', message: CONVERSATION_EXISTS_MESSAGE };
     return created.code === 'brand_not_found'
       ? { ok: false, code: 'brand_not_found', message: BRAND_NOT_FOUND_MESSAGE }
       : { ok: false, code: 'product_not_found', message: PRODUCT_NOT_FOUND_MESSAGE };
@@ -402,7 +417,9 @@ export async function resolveHomeConversation(requestedId: string | string[] | u
 
   if (requestedId === undefined) {
     try {
-      const [latest] = await repository(identity).conversations.listRecent(1);
+      // D40 / D44: open the most recent brand or product chat; chats that predate brands only as a fallback.
+      const recent = await repository(identity).conversations.listRecent();
+      const latest = recent.find((row) => row.brandId) ?? recent[0];
       if (latest) return { kind: 'redirect', conversationId: latest.conversationId };
       return { kind: 'empty', brands: await listOwnedBrands(identity) };
     } catch {

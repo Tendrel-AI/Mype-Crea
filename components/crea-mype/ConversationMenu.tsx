@@ -10,6 +10,22 @@ export function conversationHref(conversationId: string): string {
   return `/?conversationId=${encodeURIComponent(conversationId)}`;
 }
 
+/** D40 / D44: a brand or product has exactly one chat; its entry in the list, or undefined when none is listed. */
+export function chatFor(
+  conversations: ReadonlyArray<ConversationListEntry>,
+  target: { readonly brandId: string; readonly productId?: string },
+): ConversationListEntry | undefined {
+  return conversations.find((entry) => target.productId
+    ? entry.productId === target.productId
+    : entry.brandId === target.brandId && !entry.productId);
+}
+
+/** The URL of the brand's (or product's) single chat; null when it is not in the list. */
+export function conversationHrefFor(conversations: ReadonlyArray<ConversationListEntry>, target: { readonly brandId: string; readonly productId?: string }): string | null {
+  const entry = chatFor(conversations, target);
+  return entry ? conversationHref(entry.conversationId) : null;
+}
+
 export type LoadConversations = () => Promise<
   | { readonly ok: true; readonly conversations: ReadonlyArray<ConversationListEntry>; readonly brands: ReadonlyArray<BrandListEntry> }
   | { readonly ok: false; readonly message: string }
@@ -19,7 +35,7 @@ export { UNNAMED_BRAND_LABEL, UNNAMED_PRODUCT_LABEL };
 
 const itemClass = 'w-full flex items-center gap-2 px-3 py-2 text-left text-sm font-medium text-orange-600 hover:bg-orange-50';
 
-function ConversationLink({ entry, current }: { entry: ConversationListEntry; current: boolean }) {
+function ConversationLink({ entry, current, label }: { entry: ConversationListEntry; current: boolean; label?: string }) {
   return (
     <a
       role="menuitem"
@@ -27,7 +43,7 @@ function ConversationLink({ entry, current }: { entry: ConversationListEntry; cu
       aria-current={current ? 'page' : undefined}
       className={`block truncate px-3 py-2 text-sm hover:bg-neutral-100 ${current ? 'font-semibold text-neutral-900 bg-neutral-50' : 'text-neutral-700'}`}
     >
-      {entry.label}
+      {label ?? entry.label}
     </a>
   );
 }
@@ -35,10 +51,10 @@ function ConversationLink({ entry, current }: { entry: ConversationListEntry; cu
 const subItemClass = 'w-full px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-100';
 
 /**
- * The open menu's content (KAN-85 / KAN-87): «Crear marca» and «Ya tengo una marca» first, then each
- * brand with its own conversations, «Nuevo producto», «Editar marca», «Nueva conversación» and
- * «Archivar marca» (an inline confirm step, no `window.confirm`), its products with their
- * conversations, «Nueva conversación» and «Editar producto», then conversations that predate brands.
+ * The open menu's content (D40 / D44): «Crear marca» and «Ya tengo una marca» first, then each brand
+ * with the link to its single chat, «Nuevo producto», «Editar marca» and «Archivar marca» (an inline
+ * confirm step, no `window.confirm`); under it each product with the link to its single chat and
+ * «Editar producto». Conversations that predate brands close the list.
  */
 export function ConversationMenuItems({
   brands = [],
@@ -49,8 +65,6 @@ export function ConversationMenuItems({
   onNewProduct = () => {},
   onEditBrand = () => {},
   onEditProduct = () => {},
-  onNewProductConversation = () => {},
-  onNewConversation,
   confirmingBrandId = null,
   onAskArchive = () => {},
   onCancelArchive = () => {},
@@ -65,8 +79,6 @@ export function ConversationMenuItems({
   onNewProduct?: (brandId: string) => void;
   onEditBrand?: (brandId: string) => void;
   onEditProduct?: (productId: string) => void;
-  onNewProductConversation?: (brandId: string, productId: string) => void;
-  onNewConversation: (brandId: string) => void;
   confirmingBrandId?: string | null;
   onAskArchive?: (brandId: string) => void;
   onCancelArchive?: () => void;
@@ -92,18 +104,17 @@ export function ConversationMenuItems({
       {brands.map((brand) => (
         <div key={brand.brandId} role="group" aria-label={brand.name ?? UNNAMED_BRAND_LABEL} className="border-b border-neutral-100 pb-1">
           <p className="px-3 pt-2 text-xs font-semibold uppercase text-neutral-500 truncate">{brand.name ?? UNNAMED_BRAND_LABEL}</p>
-          {conversations.filter((entry) => entry.brandId === brand.brandId && !entry.productId).map((entry) => (
-            <ConversationLink key={entry.conversationId} entry={entry} current={entry.conversationId === currentConversationId} />
-          ))}
+          {(() => {
+            const chat = chatFor(conversations, { brandId: brand.brandId });
+            return chat && <ConversationLink entry={chat} current={chat.conversationId === currentConversationId} label="Chat de la marca" />;
+          })()}
           {brand.products.map((product) => (
             <div key={product.productId} role="group" aria-label={`Producto: ${product.name ?? UNNAMED_PRODUCT_LABEL}`} className="ml-3 border-l border-neutral-200">
               <p className="px-3 pt-2 text-xs font-semibold text-neutral-500 truncate">Producto: {product.name ?? UNNAMED_PRODUCT_LABEL}</p>
-              {conversations.filter((entry) => entry.productId === product.productId).map((entry) => (
-                <ConversationLink key={entry.conversationId} entry={entry} current={entry.conversationId === currentConversationId} />
-              ))}
-              <button type="button" role="menuitem" onClick={() => onNewProductConversation(brand.brandId, product.productId)} className={subItemClass}>
-                Nueva conversación
-              </button>
+              {(() => {
+                const chat = chatFor(conversations, { brandId: brand.brandId, productId: product.productId });
+                return chat && <ConversationLink entry={chat} current={chat.conversationId === currentConversationId} label="Chat del producto" />;
+              })()}
               <button type="button" role="menuitem" onClick={() => onEditProduct(product.productId)} className={subItemClass}>
                 Editar producto
               </button>
@@ -115,12 +126,9 @@ export function ConversationMenuItems({
           <button type="button" role="menuitem" onClick={() => onEditBrand(brand.brandId)} className={subItemClass}>
             Editar marca
           </button>
-          <button type="button" role="menuitem" onClick={() => onNewConversation(brand.brandId)} className={itemClass}>
-            Nueva conversación de marca
-          </button>
           {confirmingBrandId === brand.brandId ? (
             <div className="px-3 py-2 text-xs text-neutral-700">
-              <p>¿Archivar esta marca? Sus conversaciones dejarán de aparecer aquí y no podrás reactivarla.</p>
+              <p>¿Archivar esta marca? Su chat y los de sus productos dejarán de aparecer aquí y no podrás reactivarla.</p>
               <div className="mt-2 flex gap-2">
                 <button type="button" onClick={() => onConfirmArchive(brand.brandId)} className="px-2 py-1 rounded-md bg-red-600 text-white">
                   Sí, archivar
@@ -163,8 +171,6 @@ export function ConversationMenu({
   onNewProduct,
   onEditBrand,
   onEditProduct,
-  onNewProductConversation,
-  onNewConversation,
   onArchiveBrand,
   loadConversations,
 }: {
@@ -176,8 +182,6 @@ export function ConversationMenu({
   onNewProduct: (brandId: string) => void;
   onEditBrand: (brandId: string) => void;
   onEditProduct: (productId: string) => void;
-  onNewProductConversation: (brandId: string, productId: string) => void;
-  onNewConversation: (brandId: string) => void;
   onArchiveBrand: (brandId: string) => void;
   loadConversations: LoadConversations;
 }) {
@@ -246,8 +250,6 @@ export function ConversationMenu({
             onNewProduct={(brandId) => { setOpen(false); onNewProduct(brandId); }}
             onEditBrand={(brandId) => { setOpen(false); onEditBrand(brandId); }}
             onEditProduct={(productId) => { setOpen(false); onEditProduct(productId); }}
-            onNewProductConversation={(brandId, productId) => { setOpen(false); onNewProductConversation(brandId, productId); }}
-            onNewConversation={(brandId) => { setOpen(false); onNewConversation(brandId); }}
             confirmingBrandId={confirmingBrandId}
             onAskArchive={setConfirmingBrandId}
             onCancelArchive={() => setConfirmingBrandId(null)}

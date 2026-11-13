@@ -18,7 +18,7 @@ import { DeliverableCommands, NAME_AVAILABILITY_NOTE, type DeliverableCommandReq
 import { BriefPanel } from './crea-mype/BriefPanel';
 import { loadBriefAction, updateBriefFieldAction, type BriefPanelField } from '../app/actions/brief';
 import { chatAction } from '../app/actions/chat';
-import { createConversationAction, exportConversationTraceAction, listConversationsAction } from '../app/actions/conversations';
+import { exportConversationTraceAction, listConversationsAction } from '../app/actions/conversations';
 import { archiveBrandAction, createBrandAction, createProductAction, getBrandAction, getProductAction, updateBrandAction, updateProductAction } from '../app/actions/brands';
 import type { BrandFileView, BrandListEntry, ConversationContext, ConversationListEntry, NewOwnedConversation } from '../src/conversations/selection';
 import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/actions/deliverable-command';
@@ -527,7 +527,6 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     <BrandAssetsReadOnly
       assets={brandAssets}
       brandConversationId={brandAssets?.brandConversationId ?? null}
-      onCreateBrandChat={() => { if (brandId) handleNewConversationInBrand(brandId); }}
     />
   ) : undefined;
 
@@ -617,20 +616,6 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
     setLabReportNames([]);
     setNotFound(false);
     window.history.pushState({}, '', `/?conversationId=${encodeURIComponent(result.conversationId)}`);
-  };
-
-  /** A new conversation in an existing brand; a failure is shown in the chat panel. */
-  const handleNewConversationInBrand = (brandId: string, productId?: string) => {
-    void (async () => {
-      setIsLoading(true);
-      try {
-        const result = await createConversationAction({ brandId, productId });
-        if (result.ok) openConversation(result);
-        else setConversationError(result.message);
-      } finally {
-        setIsLoading(false);
-      }
-    })();
   };
 
   const toFormResult = (result: Extract<NewOwnedConversation, { ok: false }> | { ok: false; message: string; fieldErrors?: Record<string, string> }): FormResult =>
@@ -778,7 +763,7 @@ export default function CreaMype({ userEmail, userName, initialConversationId = 
               )}
             </>
           ) : undefined} conversationNotFound={notFound} liveConnectionLost={liveLost} creationBlocked={creationBlocked} conversationMenu={creationBlocked ? undefined :
-            <ConversationMenu initialConversations={initialConversations} initialBrands={initialBrands} currentConversationId={conversationId} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} onNewProduct={(brandId) => void openNewProduct(brandId)} onEditBrand={(brandId) => void openEditBrand(brandId)} onEditProduct={(productId) => void openEditProduct(productId)} onNewProductConversation={handleNewConversationInBrand} onNewConversation={handleNewConversationInBrand} onArchiveBrand={handleArchiveBrand} loadConversations={listConversationsAction} />
+            <ConversationMenu initialConversations={initialConversations} initialBrands={initialBrands} currentConversationId={conversationId} onCreateBrand={() => setFormModal({ kind: 'brand', mode: 'create' })} onImportBrand={() => setFormModal({ kind: 'brand', mode: 'import' })} onNewProduct={(brandId) => void openNewProduct(brandId)} onEditBrand={(brandId) => void openEditBrand(brandId)} onEditProduct={(productId) => void openEditProduct(productId)} onArchiveBrand={handleArchiveBrand} loadConversations={listConversationsAction} />
           } />
           <Dashboard assets={assets} processingAgents={logoView?.state === 'generating' ? new Set([...processingAgents, LOGO_AGENT_ID]) : processingAgents} step={step} setActiveTab={setActiveTab} logoControls={renderLogoCommands()} nameControls={renderNameCommands()} labelControls={renderLabelCard()} brandAssetsPanel={renderBrandAssets()} briefPanel={briefFields.length > 0 ? briefPanel : undefined} />
       </>

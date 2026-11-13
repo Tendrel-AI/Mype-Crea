@@ -456,6 +456,7 @@ export function conversationsRepo(tenant: Tenant, user: User) {
             WHERE c.tenant_id = $1
               AND c.user_id = $2
               AND c.configuration_state = 'pinned'
+              AND c.status = 'active'
               AND (c.brand_id IS NULL OR b.status = 'active')
             ORDER BY last_activity_at DESC, c.id DESC
             LIMIT $3`,
@@ -478,7 +479,7 @@ export function conversationsRepo(tenant: Tenant, user: User) {
         const res = await tx.query<{ id: ConversationId }>(
           `SELECT id FROM conversations
             WHERE tenant_id = $1 AND user_id = $2 AND brand_id = $3 AND product_id IS NULL
-              AND configuration_state = 'pinned'
+              AND configuration_state = 'pinned' AND status = 'active'
             ORDER BY started_at DESC, id DESC LIMIT 1`,
           [tenant.id, user.id, brandId],
         );

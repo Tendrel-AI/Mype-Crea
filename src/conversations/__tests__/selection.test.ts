@@ -38,6 +38,8 @@ const mocks = vi.hoisted(() => ({
   productLimit: { current: undefined as number | undefined },
   productCreate: vi.fn(),
   brandCreate: vi.fn(),
+  chatExists: { current: false },
+  chatRace: { current: false },
   listTurns: vi.fn(),
   replaceWelcome: vi.fn(async () => true),
   readWelcome: vi.fn(async (): Promise<string | null> => null),
@@ -111,6 +113,8 @@ vi.mock('../../repos', () => ({
         },
         createConversation: async (input: { brandId: string; conversationId: string }) => {
           if (input.brandId !== BRAND) return { ok: false, code: 'brand_not_found' };
+          if (mocks.chatRace.current) throw Object.assign(new Error('duplicate key'), { code: '23505', constraint: 'conversations_one_active_per_brand' });
+          if (mocks.chatExists.current) return { ok: false, code: 'conversation_exists' };
           return { ok: true, pin: await pin(tenant, user, input) };
         },
       },
@@ -192,7 +196,7 @@ describe('resolveHomeConversation (KAN-25)', () => {
   it('without an id, resumes the most recent own pinned conversation by last activity', async () => {
     const result = await resolveHomeConversation(undefined);
     expect(result).toEqual({ kind: 'redirect', conversationId: ids.latest });
-    expect(mocks.listRecent).toHaveBeenCalledWith(OWN.tenant, OWN.user, 1);
+    expect(mocks.listRecent).toHaveBeenCalledWith(OWN.tenant, OWN.user, 20);
     expect(mocks.ensurePinnedConversation).not.toHaveBeenCalled();
     expect(mocks.startConversation).not.toHaveBeenCalled();
   });
@@ -400,6 +404,27 @@ describe('brand and product creation (KAN-87)', () => {
     mocks.productLimit.current = undefined;
     expect(await createOwnedProduct(OWN as never, { brandId: BRAND as never, attributes: PRODUCT_ATTRIBUTES })).toMatchObject({ ok: true, brandId: BRAND, productId: PRODUCT });
     expect(mocks.startConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it('a second chat for the same brand or product is refused with the typed code and starts nothing (D40 / D44)', async () => {
+    mocks.chatExists.current = true;
+    try {
+      expect(await createOwnedConversation(OWN as never, BRAND as never)).toMatchObject({ ok: false, code: 'conversation_exists' });
+      expect(await createOwnedConversation(OWN as never, BRAND as never, PRODUCT as never)).toMatchObject({ ok: false, code: 'conversation_exists' });
+      expect(mocks.startConversation).not.toHaveBeenCalled();
+    } finally {
+      mocks.chatExists.current = false;
+    }
+  });
+
+  it('a unique-violation from a concurrent creator becomes conversation_exists instead of throwing', async () => {
+    mocks.chatRace.current = true;
+    try {
+      expect(await createOwnedConversation(OWN as never, BRAND as never)).toMatchObject({ ok: false, code: 'conversation_exists' });
+      expect(mocks.startConversation).not.toHaveBeenCalled();
+    } finally {
+      mocks.chatRace.current = false;
+    }
   });
 
   it('a conversation on a foreign brand starts nothing', async () => {
