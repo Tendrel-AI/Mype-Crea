@@ -118,11 +118,19 @@ import type { AgentFieldSchema } from './in-memory-store';
 
 const log = loggerFor('orchestrator.planner');
 
+/** D39: remaining counts, filled by the runtime from the limit gate (same shape as `RemainingCounts`). */
+export interface PlannerLimits {
+  readonly turns: { readonly limit: number; readonly used: number; readonly remaining: number };
+  readonly alterations: Readonly<Record<string, { readonly limit: number; readonly used: number; readonly remaining: number }>>;
+}
+
 /** Optional, already-derived inputs. Plain data; reading them keeps the planner pure. */
 export interface PlannerContext {
   /** Output of `deriveDeliverableStates` for the same snapshot. */
   /** D34: uploaded files of the conversation's product, count per kind (`brand_files.kind`). Absent = unknown, never asked. */
   readonly uploadCounts?: Readonly<Record<string, number>>;
+  /** D39: absent = unknown, nothing is reported as exhausted. */
+  readonly limits?: PlannerLimits;
   readonly deliverableStates?: ReadonlyArray<
     Pick<DeliverableStateView, 'agentId' | 'deliverableKind' | 'state' | 'allowedCommands'> & Partial<Pick<DeliverableStateView, 'inheritedFromBrand'>>
   >;
@@ -139,7 +147,12 @@ export function planNextDecision(
     tenantId: snapshot.tenantId,
   });
 
-  const decide = (plan: ReadonlyArray<PlannerDecision>, reason: string): ReadonlyArray<PlannerDecision> => {
+  const decide = (basePlan: ReadonlyArray<PlannerDecision>, reason: string): ReadonlyArray<PlannerDecision> => {
+    // D39: when the turns are used up, say it after the normal answer (generic; no agent knowledge).
+    const turns = context.limits?.turns;
+    const plan: ReadonlyArray<PlannerDecision> = turns && turns.remaining <= 0
+      ? [...basePlan, { kind: 'exhausted', scope: 'turns', limit: turns.limit, used: turns.used }]
+      : basePlan;
     child.info(
       {
         kinds: plan.map((d) => d.kind),
@@ -261,6 +274,14 @@ export function planNextDecision(
   // Rule 4 (KAN-91): a deliverable needs the user's panel action or is in flight.
   const status = pickStatusReport(scopedContext);
   if (status) {
+    // D39: an in-review deliverable that offers «Iterar» but has no alterations left says so instead.
+    const alterations = context.limits?.alterations[status.agentId];
+    if (status.state === 'in_review' && status.allowedCommands.includes('iterate') && alterations && alterations.remaining <= 0) {
+      return decide(
+        [{ kind: 'exhausted', scope: 'alterations', agentId: status.agentId, deliverableKind: status.deliverableKind, limit: alterations.limit, used: alterations.used }],
+        'alterations_exhausted',
+      );
+    }
     return decide(
       [{
         kind: 'report_deliverable_status',

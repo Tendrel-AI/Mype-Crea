@@ -31,7 +31,8 @@ export type PlannerDecision =
   | AnnounceDispatchDecision
   | AnnounceCompletionDecision
   | ReportDeliverableStatusDecision
-  | AnnounceAllCompleteDecision;
+  | AnnounceAllCompleteDecision
+  | ExhaustedDecision;
 
 /**
  * Ask the user for a small batch of required fields belonging to a single
@@ -163,6 +164,22 @@ export interface AnnounceAllCompleteDecision {
   readonly kind: 'announce_all_complete';
 }
 
+/**
+ * D39: a limit is used up. `scope: 'turns'` = the conversation reached its message limit (appended to
+ * the normal plan so the last answer is still given); `scope: 'alterations'` = the deliverable of
+ * `agentId` has no alterations left (replaces the «toca Iterar» status report). Advisory: the
+ * server gate refuses regardless.
+ */
+export interface ExhaustedDecision {
+  readonly kind: 'exhausted';
+  readonly scope: 'turns' | 'alterations';
+  readonly agentId?: AgentId;
+  /** Deliverable kind of `agentId` (alterations scope only), for the label. */
+  readonly deliverableKind?: string;
+  readonly limit: number;
+  readonly used: number;
+}
+
 // ---------------------------------------------------------------------------
 // Planner constants (live with the decisions they constrain)
 // ---------------------------------------------------------------------------
@@ -205,4 +222,7 @@ export function isReportDeliverableStatus(d: PlannerDecision): d is ReportDelive
 }
 export function isAnnounceAllComplete(d: PlannerDecision): d is AnnounceAllCompleteDecision {
   return d.kind === 'announce_all_complete';
+}
+export function isExhausted(d: PlannerDecision): d is ExhaustedDecision {
+  return d.kind === 'exhausted';
 }

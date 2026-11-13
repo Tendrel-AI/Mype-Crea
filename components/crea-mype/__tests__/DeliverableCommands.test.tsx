@@ -20,6 +20,15 @@ import type { BrandAssets } from '../types';
 
 const noop = () => {};
 
+describe('alterations counter (D39)', () => {
+  const props = { label: 'logo', busy: false, error: '', onCommand: () => {} };
+  it('shows «n de N» in the card and nothing without counts', () => {
+    const withCount = renderToStaticMarkup(<DeliverableCommands {...props} view={view({ state: 'in_review' })} alterations={{ used: 1, limit: 3 }} />);
+    expect(withCount).toContain('1 de 3');
+    expect(renderToStaticMarkup(<DeliverableCommands {...props} view={view({ state: 'in_review' })} />)).not.toContain('alterations-counter');
+  });
+});
+
 function view(partial: Partial<DeliverableStateView>): DeliverableStateView {
   return {
     agentId: 'logo-agent',

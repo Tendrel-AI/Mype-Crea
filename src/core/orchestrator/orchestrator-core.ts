@@ -54,7 +54,7 @@ import type { AgentRegistry } from './agent-registry';
 import type { TaskSettlementContext } from './runtime-config';
 import type { IConversationStore } from './in-memory-store';
 import { mergeFieldDelta, rejectedWrites } from './merge';
-import { planNextDecision } from './planner';
+import { planNextDecision, type PlannerLimits } from './planner';
 import type { IArtifactNotifier } from './artifact-notifier';
 import { InProcessNotificationChannel, type NotificationChannel } from './notification-channels';
 import type { IterationRefinement } from '../refinement';
@@ -141,6 +141,8 @@ export interface OrchestratorCoreDeps {
   readonly taskInputsFor?: (tenantId: UUID, userId: UUID) => (conversationId: ConversationId, agentId: string) => Promise<Record<string, unknown>>;
   /** D34: per-kind count of the files uploaded for the conversation's product (a planner fact); omitted = unknown. */
   readonly uploadCountsFor?: (tenantId: UUID, userId: UUID) => (conversationId: ConversationId) => Promise<Readonly<Record<string, number>>>;
+  /** D39: remaining turns/alterations from the limit gate (a planner fact); omitted = unknown. */
+  readonly limitsFor?: (tenantId: UUID, userId: UUID) => (conversationId: ConversationId) => Promise<PlannerLimits>;
   /**
    * Optional artifact notifier. When provided, onTaskSettled publishes the
    * artifacts produced by a completed task on this channel. The SSE/UI edge
@@ -358,7 +360,7 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
     }
     const deliverableStates = await this.statesForPlanner(conversationId, snapshot);
     const uploadCounts = await this.uploadCountsForPlanner(conversationId);
-    plan.push(...planNextDecision(snapshot, this.deps.registry, { deliverableStates, uploadCounts }));
+    plan.push(...planNextDecision(snapshot, this.deps.registry, { deliverableStates, uploadCounts, limits: await this.limitsForPlanner(conversationId) }));
 
     return plan;
   }
@@ -377,6 +379,19 @@ export class OrchestratorCoreImpl implements OrchestratorCore, DeliverableComman
       return await deriveStatesFor(this.commandContext(conversationId, snapshot), conversationId);
     } catch (err) {
       log.warn({ err, conversationId }, 'orchestrator.deliverable_states.unavailable');
+      return undefined;
+    }
+  }
+
+  /** D39: remaining counts for the planner; on a read failure they are unknown and nothing is reported exhausted. */
+  private async limitsForPlanner(conversationId: ConversationId): Promise<PlannerLimits | undefined> {
+    const tenantId = this.conversationTenants.get(conversationId);
+    const userId = this.conversationUsers.get(conversationId);
+    if (!this.deps.limitsFor || !tenantId || !userId) return undefined;
+    try {
+      return await this.deps.limitsFor(tenantId, userId)(conversationId);
+    } catch (err) {
+      log.warn({ err, conversationId }, 'orchestrator.limits.unavailable');
       return undefined;
     }
   }

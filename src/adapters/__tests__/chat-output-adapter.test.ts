@@ -501,7 +501,7 @@ describe('ChatOutputAdapter', () => {
   });
 
   it('bumps the responder prompt version for the command guidance', () => {
-    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v12');
+    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v13');
   });
 
   it('a release frozen before v6 still renders offer_generation through the fragment fallbacks', async () => {
@@ -536,7 +536,7 @@ describe('ChatOutputAdapter', () => {
 
     await adapter.render(base);
     await adapter.render({ ...base, promptVersions: { responder: 'responder.chat-step1.v6' } });
-    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v12', 'responder.chat-step1.v6']);
+    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v13', 'responder.chat-step1.v6']);
   });
 
   it('falls back to the active version when the pinned one no longer exists', async () => {
@@ -548,7 +548,7 @@ describe('ChatOutputAdapter', () => {
       decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
       promptVersions: { responder: 'responder.chat-step1.v0' },
     });
-    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v12');
+    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v13');
   });
 
   describe('KAN-93 conversation context', () => {
@@ -607,6 +607,13 @@ describe('ChatOutputAdapter', () => {
       expect(failed).toContain('Botones del panel disponibles ahora: Reintentar');
       expect(failed).not.toContain('disponibles ahora: Reintentar, Iterar');
       expect(await renderPrompt(status('generating', ['cancel']))).toContain('se está generando');
+    });
+
+    it('renders exhausted (D39) with scope, counts and label', async () => {
+      const alterations = await renderPrompt({ kind: 'exhausted', scope: 'alterations', agentId: 'test-fixture-agent', deliverableKind: 'logo', limit: 3, used: 3 });
+      expect(alterations).toContain('kind=exhausted');
+      expect(alterations).toContain('ámbito: alterations; usados 3 de 3');
+      expect(await renderPrompt({ kind: 'exhausted', scope: 'turns', limit: 40, used: 40 })).toContain('ámbito: turns; usados 40 de 40');
     });
 
     it('picks the brand or product fragment for announce_all_complete by links.hasProduct', async () => {

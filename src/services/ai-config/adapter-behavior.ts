@@ -114,6 +114,8 @@ const RESPONDER_COMMAND_FRAGMENTS = {
   offerGenerationDecision: `{{kind}}\nDecisión: el entregable "{{deliverableLabel}}" del agente "{{agentId}}" ya tiene todo lo necesario. La generación NO empieza sola: el usuario debe tocar el botón Generar del panel.\nAcción obligatoria: en UNA sola frase, dile que ya tiene todo listo y que, cuando quiera, toque el botón Generar (por ejemplo "Ya tienes todo listo para tu logo. Cuando quieras, toca el botón Generar."). PROHIBIDO decir que ya empezaste a generar o que estás generando.`,
   // D35 / responder.chat-step1.v12: every pending value is confirmed together (same fallback rule).
   confirmFieldsDecision: `{{kind}}\nDecisión: confirmar con el usuario, todos juntos, estos valores de baja confianza.\nValores pendientes (campo: valor):\n{{entryLines}}\nRazón: {{reason}}\nAcción obligatoria: parafrasea en UN solo mensaje breve todos los valores pendientes y haz UNA sola pregunta cerrada (sí/no) para confirmarlos juntos, tipo "¿Es correcto todo esto?". Si son varios, indica que puede decir que sí a todo o corregir solo lo que no sea correcto. NO preguntes por ningún campo que no esté en la lista y NO digas que algo ya quedó registrado.`,
+  // D39 / responder.chat-step1.v13: a limit is used up (same fallback rule).
+  exhaustedDecision: `{{kind}}\nDecisión: se acabó un límite (ámbito: {{scope}}; usados {{used}} de {{limit}}; entregable: "{{deliverableLabel}}").\nAcción obligatoria: en UNA o DOS frases, sin preguntas. Si el ámbito es alterations, dile que ya usó las {{limit}} alteraciones de su {{deliverableLabel}} en esta marca y que puede seguir con los otros entregables; no menciones el botón Iterar. Si el ámbito es turns, dile que esta conversación llegó a su límite de mensajes. Español neutro latinoamericano, tuteo, nunca voseo.`,
   // D34 / responder.chat-step1.v11: the product chat asks for the lab report (card `uploads`).
   requestUploadDecision: `{{kind}}\nDecisión: el entregable "{{deliverableLabel}}" del agente "{{agentId}}" necesita que el usuario suba un archivo (tipo: {{uploadKind}}).\nIndicación de la tarjeta del agente: "{{promptHint}}"\nAcción obligatoria: en UNA o DOS frases, pídele que suba el archivo con el botón indicado en la pista, y di para qué sirve. Mantén el nombre del botón entre « ». NO hagas preguntas de sí/no.`,
   commandGuidanceGuardrail: `- Generar, Iterar, Aprobar, Reintentar y Cancelar son botones del panel. Tú NO puedes ejecutarlos desde el chat: nunca digas que ya generaste, cambiaste, aprobaste o cancelaste algo. Si el usuario pide en el chat un cambio, otra versión o una aprobación de un entregable, guíalo al botón correspondiente, por ejemplo: "Para ajustar este logo, toca el botón Iterar y escribe qué quieres cambiar." o "Si te gusta, toca el botón Aprobar.".`,
@@ -200,6 +202,7 @@ export function createCurrentAdapterBehaviorSnapshot(
       historyPolicyVersion: 'none',
     },
     responder: {
+      // v13 (D39): exhausted decision (turns / alterations used up).
       // v12 (D35): confirm_fields (all pending values in one question), never claims something was saved, never asks about a field outside the decision.
       // v11 (D34): request_upload decision, product-chat guidance (brand deliverables live in the brand chat, label needs the lab report), true product announce_all_complete.
       // v10: request_fields with more than 2 fields = a few open questions grouped by relevance, no list.
@@ -208,7 +211,7 @@ export function createCurrentAdapterBehaviorSnapshot(
       // v8 (KAN-91): report_deliverable_status, brand/product announce_all_complete, no-dead-end guardrail.
       // v7: request_fields with more than 2 fields is a numbered list. v6 (KAN-28): offer_generation,
       // button guidance guardrail, Aprobar/Iterar invitation on visual completion. Real eval pending.
-      promptVersion: 'responder.chat-step1.v12',
+      promptVersion: 'responder.chat-step1.v13',
       promptTemplate: RESPONDER_PROMPT_TEMPLATE,
       rendererVersion: 'responder.renderer.v1',
       parserVersion: 'responder.text.v1',

@@ -250,6 +250,14 @@ function describeDecision(
         commandsLine: decision.allowedCommands.map((c) => COMMAND_BUTTON_LABELS[c]).join(', ') || 'ninguno',
       });
     }
+    case 'exhausted':
+      return applyPromptTemplate(fragments.exhaustedDecision, {
+        kind: kindTag,
+        scope: decision.scope,
+        limit: String(decision.limit),
+        used: String(decision.used),
+        deliverableLabel: decision.agentId ? deliverableLabelFor(decision.agentId, decision.deliverableKind ?? decision.agentId, registry) : '',
+      });
     case 'announce_all_complete':
       return applyPromptTemplate(
         snapshot.links?.hasProduct === true ? fragments.announceAllCompleteProductDecision : fragments.announceAllCompleteBrandDecision,

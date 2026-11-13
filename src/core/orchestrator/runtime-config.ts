@@ -66,6 +66,8 @@ export interface RuntimeConfig {
   readonly taskInputsFor?: OrchestratorCoreDeps['taskInputsFor'];
   /** Per-kind upload counts of the conversation's product (D34); omitted -> unknown. */
   readonly uploadCountsFor?: OrchestratorCoreDeps['uploadCountsFor'];
+  /** Remaining limit counts for the planner (D39); omitted -> unknown. */
+  readonly limitsFor?: OrchestratorCoreDeps['limitsFor'];
   /**
    * Build the agent transport. The factory receives the unified
    * `onTaskSettled` callback; the transport (or any workers it spawns) must
@@ -98,6 +100,7 @@ export function buildRuntime(config: RuntimeConfig): Runtime {
     approvalsFor: config.approvalsFor,
     taskInputsFor: config.taskInputsFor,
     uploadCountsFor: config.uploadCountsFor,
+    limitsFor: config.limitsFor,
   });
   coreRef = core;
 

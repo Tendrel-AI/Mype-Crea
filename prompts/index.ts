@@ -12,11 +12,12 @@ import f8 from './name-agent/name-agent.v1.json';
 import f9 from './responder/responder.chat-step1.v10.json';
 import f10 from './responder/responder.chat-step1.v11.json';
 import f11 from './responder/responder.chat-step1.v12.json';
-import f12 from './responder/responder.chat-step1.v6.json';
-import f13 from './responder/responder.chat-step1.v7.json';
-import f14 from './responder/responder.chat-step1.v8.json';
-import f15 from './responder/responder.chat-step1.v9.json';
-import f16 from './tagline-agent/tagline-agent.v1.json';
+import f12 from './responder/responder.chat-step1.v13.json';
+import f13 from './responder/responder.chat-step1.v6.json';
+import f14 from './responder/responder.chat-step1.v7.json';
+import f15 from './responder/responder.chat-step1.v8.json';
+import f16 from './responder/responder.chat-step1.v9.json';
+import f17 from './tagline-agent/tagline-agent.v1.json';
 
-export const frozenFiles = [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16];
+export const frozenFiles = [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17];
 export { lock };
