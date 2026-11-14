@@ -78,6 +78,15 @@ describe('usageLimitMessage', () => {
   });
 });
 
+describe('llmCostUsd cache pricing', () => {
+  it('prices cache reads at 0.1x and writes at 1.25x input', () => {
+    const base = { prompt_tokens: 1_000_000, completion_tokens: 0 };
+    expect(llmCostUsd('claude-sonnet-5-5', base)).toBe(2);
+    expect(llmCostUsd('claude-sonnet-5-5', { ...base, cached_tokens: 1_000_000 })).toBe(0.2);
+    expect(llmCostUsd('claude-sonnet-5-5', { ...base, cached_tokens: 500_000, cache_write_tokens: 500_000 })).toBe(0.1 + 1.25);
+  });
+});
+
 describe('llmActualCost (D36)', () => {
   const tokens = { prompt_tokens: 1000, completion_tokens: 100 };
   it('prefers the provider-reported cost, even when zero', () => {

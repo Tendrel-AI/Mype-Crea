@@ -40,6 +40,11 @@ export interface LlmCallRecord {
   readonly provider: string;
   readonly input_tokens: number;
   readonly output_tokens: number;
+  /** Prompt tokens read from / written to the provider cache (subset of input_tokens), when reported. */
+  readonly cached_tokens?: number;
+  readonly cache_write_tokens?: number;
+  /** Provider-reported USD (OpenRouter `usage.cost`), when present. */
+  readonly cost_usd?: number;
   readonly latency_ms: number;
   /** Chat turn (1-based) the call belongs to. */
   readonly turn: number;
@@ -66,6 +71,9 @@ export class RecordingProvider implements ILLMProvider {
               provider: resolved.provider ?? 'unknown',
               input_tokens: completion.usage?.prompt_tokens ?? 0,
               output_tokens: completion.usage?.completion_tokens ?? 0,
+              cached_tokens: completion.usage?.cached_tokens,
+              cache_write_tokens: completion.usage?.cache_write_tokens,
+              cost_usd: completion.usage?.cost,
               latency_ms: Date.now() - started,
               turn: this.turn,
             });

@@ -1,5 +1,5 @@
 /**
- * Extractor dataset v3 (v3: a product the user names may also fill `product_name`, optional): synthetic Spanish turns written for the production
+ * Extractor dataset v4 (v4: multi-long-story accepts pastel colors in color_description; v3: a product the user names may also fill `product_name`, optional): synthetic Spanish turns written for the production
  * registry (~30 fields across the live agents). No real pilot data: per the
  * 2026-10-04 decision, datasets hold only synthetic or anonymized conversations.
  *
@@ -15,7 +15,7 @@
 import type { ConfirmFieldsDecision } from '../../src/core/contracts';
 import type { ExtractorExpectation } from '../evaluators/extractor';
 
-export const EXTRACTOR_DATASET_VERSION = 'extractor-cases.v3';
+export const EXTRACTOR_DATASET_VERSION = 'extractor-cases.v4';
 
 export interface ExtractorCase {
   readonly id: string;
@@ -125,8 +125,9 @@ export const extractorCases: ReadonlyArray<ExtractorCase> = [
         product_name: { contains: ['torta'], optional: true },
         target_audience: { contains: ['cumple'], optional: true },
         brand_story: { contains: [], optional: true }, // the name's origin (hija) or the feria story: both are stated
-        color_palette: { contains: ['pastel'] },
-        color_description: { contains: ['pastel'], optional: true },
+        // Colors without hex codes: both fields reach the logo the same way (colorsToBrief sends non-hex palette text to color_description).
+        color_palette: { contains: ['pastel'], optional: true },
+        color_description: { contains: ['pastel'] },
       },
     },
   },

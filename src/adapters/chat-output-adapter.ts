@@ -34,6 +34,8 @@ import { getProvider } from '../services/llm';
 import {
   assertResolvedModelPurpose,
   RESPONDER_FRAGMENT_FALLBACKS,
+  RESPONDER_TURN_SLOT,
+  splitTemplateAtSlot,
   type AdapterExecution,
 } from '../services/ai-config/adapter-behavior';
 import { resolveAdapterBehavior } from '../services/prompts/adapter-behavior';
@@ -94,7 +96,7 @@ export class ChatOutputAdapter {
       decisionKinds: decisions.map((d) => d.kind),
     });
 
-    const systemPrompt = buildResponderSystemPrompt(
+    const systemParts = buildResponderSystemPrompt(
       decisions,
       snapshot,
       this.registry,
@@ -128,7 +130,7 @@ export class ChatOutputAdapter {
       resolved.client,
       {
         model: resolved.modelId,
-        messages: [{ role: 'system', content: systemPrompt }, ...recent],
+        messages: [...systemParts.map((content) => ({ role: 'system' as const, content })), ...recent],
         temperature: behavior.responder.temperature,
         max_tokens: behavior.responder.maxTokens,
       },
@@ -158,14 +160,21 @@ function buildResponderSystemPrompt(
   template: string,
   frozenFragments: Readonly<Record<string, string>>,
   context?: ChatContext | null,
-): string {
+): string[] {
   // Releases frozen before responder v6 lack the KAN-28 command fragments.
   const fragments = { ...RESPONDER_FRAGMENT_FALLBACKS, ...frozenFragments };
   const statusSummary = describeFieldStatus(snapshot);
   const decisionsBlock = [contextLine(context, fragments), describeDecisions(decisions, registry, fragments, snapshot)].filter(Boolean).join('\n\n');
-  const guardrails = buildGuardrails(decisions, fragments);
+  // Templates from v15 place the per-turn dispatch guardrail after the state (`{{dispatchGuardrail}}`),
+  // keeping `{{guardrails}}` static; older frozen templates keep it inside the guardrails.
+  const lateDispatch = template.includes('{{dispatchGuardrail}}');
+  const guardrails = buildGuardrails(decisions, fragments, !lateDispatch);
+  const dispatchGuardrail = lateDispatch && needsDispatchGuardrail(decisions)
+    ? `\n${fragments.dispatchRequestGuardrail}`
+    : '';
 
-  return template
+  // [static prefix, per-turn tail]; the parts concatenate to the full prompt.
+  return splitTemplateAtSlot(template, RESPONDER_TURN_SLOT).map((part) => part
     .replaceAll('{{persona}}', fragments.personaContextual)
     .replaceAll('{{stateHeading}}', fragments.systemHeading)
     .replaceAll('{{decisionsBlock}}', decisionsBlock)
@@ -173,7 +182,8 @@ function buildResponderSystemPrompt(
       '{{progressBlock}}',
       statusSummary ? `\n${fragments.progressHeading}\n${statusSummary}` : '',
     )
-    .replaceAll('{{guardrails}}', guardrails);
+    .replaceAll('{{guardrails}}', guardrails)
+    .replaceAll('{{dispatchGuardrail}}', dispatchGuardrail));
 }
 
 /** KAN-93: «chat de la marca X» / «chat del producto Y de la marca X»; none for a legacy conversation. */
@@ -310,16 +320,19 @@ function describeDecision(
 function buildGuardrails(
   decisions: ReadonlyArray<PlannerDecision>,
   fragments: Readonly<Record<string, string>>,
+  includeDispatch: boolean,
 ): string {
-  const hasDispatch = decisions.some((d) => d.kind === 'announce_dispatch');
-  const hasRequestFields = decisions.some((d) => d.kind === 'request_fields');
   const lines = [fragments.guardrails];
-  if (hasDispatch && hasRequestFields) lines.push(fragments.dispatchRequestGuardrail);
+  if (includeDispatch && needsDispatchGuardrail(decisions)) lines.push(fragments.dispatchRequestGuardrail);
   // KAN-28: chat never starts, changes or approves a deliverable.
   lines.push(fragments.commandGuidanceGuardrail);
   // KAN-91: never end on a question the system cannot act on.
   lines.push(fragments.noDeadEndGuardrail);
   return lines.join('\n');
+}
+
+function needsDispatchGuardrail(decisions: ReadonlyArray<PlannerDecision>): boolean {
+  return decisions.some((d) => d.kind === 'announce_dispatch') && decisions.some((d) => d.kind === 'request_fields');
 }
 
 /** Spanish panel button names (see components/crea-mype/DeliverableCommands.tsx). */

@@ -14,7 +14,7 @@ const avg = (xs: ReadonlyArray<number>) => (xs.length === 0 ? 0 : sum(xs) / xs.l
 
 /** USD of one run: Extractor + Responder at their recorded tokens, plus the fixed cost of every agent dispatch. */
 export function runCostUsd(run: RunResult, namingModel: string): number {
-  const llm = sum(run.calls.map((c) => llmCostUsd(c.model, { prompt_tokens: c.input_tokens, completion_tokens: c.output_tokens }) ?? 0));
+  const llm = sum(run.calls.map((c) => c.cost_usd ?? llmCostUsd(c.model, { prompt_tokens: c.input_tokens, completion_tokens: c.output_tokens, cached_tokens: c.cached_tokens, cache_write_tokens: c.cache_write_tokens }) ?? 0));
   const agents = sum(run.dispatches.map((d) => {
     const t = AGENT_CALL_TOKENS[d.agentId];
     const naming = t ? llmCostUsd(namingModel, { prompt_tokens: t.in, completion_tokens: t.out }) ?? 0 : 0;
@@ -51,7 +51,7 @@ export function formatSummary(persona: string, runs: ReadonlyArray<RunResult>, n
   const turns = runs.map((r) => r.chatTurns);
   const per = (purpose: 'extractor' | 'responder') => {
     const calls = runs.flatMap((r) => r.calls.filter((c) => c.purpose === purpose));
-    return `${calls.length} calls (${f(calls.length / n, 1)}/run), avg in/out ${f(avg(calls.map((c) => c.input_tokens)))}/${f(avg(calls.map((c) => c.output_tokens)))}`;
+    return `${calls.length} calls (${f(calls.length / n, 1)}/run), avg in/out ${f(avg(calls.map((c) => c.input_tokens)))}/${f(avg(calls.map((c) => c.output_tokens)))}, avg cached ${f(avg(calls.map((c) => c.cached_tokens ?? 0)))}`;
   };
   const growth = runs.map(responderGrowth).filter((g): g is [number, number, number] => g !== null);
   const outcomes: Record<string, number> = {};

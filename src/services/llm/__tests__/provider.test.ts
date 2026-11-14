@@ -218,6 +218,51 @@ describe('LLM provider configuration', () => {
     expect(result.usage?.prompt_tokens).toBe(5);
   });
 
+  it('marks one cache breakpoint at the end of the system prompt for anthropic/* only, and surfaces cache usage', async () => {
+    const bodies: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({
+        id: 'c', model: 'anthropic/claude-haiku-5.5', object: 'chat.completion', created: 1,
+        choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }],
+        usage: { prompt_tokens: 100, completion_tokens: 4, total_tokens: 104, cost: 0.001, prompt_tokens_details: { cached_tokens: 80, cache_write_tokens: 10 } },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+    const client = new OpenRouterProvider('key').resolve('extractor').client;
+    const messages = [{ role: 'system' as const, content: 'static' }, { role: 'system' as const, content: 'tail' }, { role: 'user' as const, content: 'hi' }];
+    const result = await client.chat.completions.create({ model: 'anthropic/claude-haiku-5.5', messages });
+    await client.chat.completions.create({ model: 'google/gemini-2.5-flash', messages });
+
+    expect(bodies[0].messages[0]).toEqual({ role: 'system', content: [{ type: 'text', text: 'static', cache_control: { type: 'ephemeral' } }] });
+    expect(bodies[0].messages[1]).toEqual({ role: 'system', content: 'tail' });
+    expect(JSON.stringify(bodies[0]).match(/cache_control/g)).toHaveLength(1);
+    expect(bodies[1].messages[0]).toEqual({ role: 'system', content: 'static' });
+    expect(JSON.stringify(bodies[1])).not.toContain('cache_control');
+    expect(result.usage).toMatchObject({ cached_tokens: 80, cache_write_tokens: 10, cost: 0.001 });
+  });
+
+  it('sets reasoning per Claude model on OpenRouter and nothing for other models', async () => {
+    const bodies: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({
+        id: 'c', model: 'm', object: 'chat.completion', created: 1,
+        choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+    const client = new OpenRouterProvider('key').resolve('extractor').client;
+    const messages = [{ role: 'user' as const, content: 'hi' }];
+    const tools = [{ type: 'function', function: { name: 'f', parameters: { type: 'object' } } }];
+    await client.chat.completions.create({ model: 'anthropic/claude-haiku-5.5', messages });
+    await client.chat.completions.create({ model: 'anthropic/claude-haiku-5.5', messages, tools });
+    await client.chat.completions.create({ model: 'anthropic/claude-sonnet-5.5', messages });
+    await client.chat.completions.create({ model: 'google/gemini-2.5-flash', messages });
+    expect(bodies[0].reasoning).toEqual({ enabled: false });
+    expect(bodies[1]).not.toHaveProperty('reasoning');
+    expect(bodies[2].reasoning).toEqual({ effort: 'low' });
+    expect(bodies[3]).not.toHaveProperty('reasoning');
+  });
+
   it('sends the configured Anthropic model unchanged', async () => {
     process.env.ANTHROPIC_RESPONDER_MODEL = 'claude-opus-4-1';
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -239,11 +284,29 @@ describe('LLM provider configuration', () => {
 });
 
 describe('Anthropic Messages translation', () => {
+  it('sends system as separate blocks (cache on the first) and surfaces cache read/write tokens', async () => {
+    let sent: any;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      sent = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        id: 'm', model: 'claude-haiku-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }],
+        usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 70, cache_creation_input_tokens: 20 },
+      }), { status: 200 });
+    }));
+    const client = new AnthropicProvider('k').resolve('extractor').client;
+    const result = await client.chat.completions.create({
+      model: 'claude-haiku-5-5', messages: [{ role: 'system', content: 'a' }, { role: 'system', content: 'b' }, { role: 'user', content: 'x' }],
+    });
+    // Static first block carries the only breakpoint; the per-turn tail block has none.
+    expect(sent.system).toEqual([{ type: 'text', text: 'a', cache_control: { type: 'ephemeral' } }, { type: 'text', text: 'b' }]);
+    expect(result.usage).toMatchObject({ prompt_tokens: 100, cached_tokens: 70, cache_write_tokens: 20 });
+  });
+
   it('maps forced tools, uses compatible model options, usage and truncation', async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(JSON.parse(String(init?.body))).toEqual(expect.objectContaining({
         model: 'claude-haiku-5-5', max_tokens: 512,
-        system: 'extract', messages: [{ role: 'user', content: 'input' }],
+        system: [{ type: 'text', text: 'extract', cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: 'input' }],
         tool_choice: { type: 'tool', name: 'extract' },
       }));
       const body = JSON.parse(String(init?.body));
@@ -264,7 +327,7 @@ describe('Anthropic Messages translation', () => {
     });
     expect(result.choices[0].finish_reason).toBe('length');
     expect(result.choices[0].message.tool_calls?.[0].function.arguments).toBe('{"x":1}');
-    expect(result.usage).toEqual({ prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 });
+    expect(result.usage).toEqual({ prompt_tokens: 12, completion_tokens: 4, total_tokens: 16, cached_tokens: 2, cache_write_tokens: 1 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

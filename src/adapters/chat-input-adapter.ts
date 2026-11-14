@@ -80,6 +80,8 @@ import type { AgentRegistry } from '../core/orchestrator/agent-registry';
 import { getProvider } from '../services/llm';
 import {
   assertResolvedModelPurpose,
+  EXTRACTOR_TURN_SLOT,
+  splitTemplateAtSlot,
   type AdapterExecution,
   type AdapterFieldBehavior,
 } from '../services/ai-config/adapter-behavior';
@@ -444,7 +446,7 @@ export class ChatInputAdapter implements InputAdapter {
       fieldNames,
       extractedSchema,
     );
-    const systemPrompt = renderExtractorSystemPrompt(
+    const systemParts = renderExtractorSystemPrompt(
       behavior.extractor.promptTemplate,
       behavior.extractor.toolName,
       fieldEntries,
@@ -475,7 +477,7 @@ export class ChatInputAdapter implements InputAdapter {
       {
         model: resolved.modelId,
         messages: [
-          { role: 'system', content: systemPrompt },
+          ...systemParts.map((content) => ({ role: 'system' as const, content })),
           { role: 'user', content: userMessage },
         ],
         temperature: behavior.extractor.temperature,
@@ -655,7 +657,7 @@ function renderExtractorSystemPrompt(
   toolName: string,
   fields: ReadonlyArray<AdapterFieldBehavior>,
   asked?: RequestFieldsDecision,
-): string {
+): string[] {
   // Same order as the Responder's numbered list: number i = fields[i-1].
   const askedBlock = asked
     ? `\nPreguntas pendientes:\n${asked.fields
@@ -669,10 +671,13 @@ function renderExtractorSystemPrompt(
     )
     .join('\n');
 
-  return template
-    .replaceAll('{{toolName}}', toolName)
-    .replaceAll('{{fieldLines}}', fieldLines)
-    .replaceAll('{{askedBlock}}', askedBlock);
+  // [stable prefix, per-turn tail]; a blank tail (no pending questions) is omitted. Parts concatenate to the full prompt.
+  return splitTemplateAtSlot(template, EXTRACTOR_TURN_SLOT)
+    .map((part) => part
+      .replaceAll('{{toolName}}', toolName)
+      .replaceAll('{{fieldLines}}', fieldLines)
+      .replaceAll('{{askedBlock}}', askedBlock))
+    .filter((part, i) => i === 0 || part.trim() !== '');
 }
 
 function adapterFieldsFromOwnership(ownership: Map<string, FieldOwnership>): AdapterFieldBehavior[] {

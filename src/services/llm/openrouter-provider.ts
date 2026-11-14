@@ -61,13 +61,14 @@ export class OpenRouterProvider implements ILLMProvider {
             try {
               response = await tracedClient.chat.completions.create({
                 model: params.model,
-                messages: toOpenRouterMessages(params.messages),
+                messages: toOpenRouterMessages(params.messages, supportsCacheControl(params.model)),
                 ...(typeof params.temperature === 'number'
                   ? { temperature: params.temperature }
                   : {}),
                 ...(typeof params.max_tokens === 'number'
                   ? { max_tokens: params.max_tokens }
                   : {}),
+                ...openRouterReasoning(params.model, Boolean(params.tools?.length)),
                 ...(params.tools
                   ? { tools: toOpenRouterTools(params.tools) }
                   : {}),
@@ -120,8 +121,12 @@ function assertSupportedRequest(params: ChatRequest): void {
 
 function toOpenRouterMessages(
   messages: ChatRequest['messages'],
+  cache: boolean,
 ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
-  return messages.map((message) => {
+  // One breakpoint on the FIRST system message (the static prefix; a per-turn tail may follow it and is never
+  // marked). Tools + system render before the turn messages, so the tools are cached too.
+  const firstSystem = cache ? messages.findIndex((m) => m.role === 'system') : -1;
+  return messages.map((message, index) => {
     const unsupported = Object.keys(message).filter(
       (key) => key !== 'role' && key !== 'content',
     );
@@ -139,8 +144,32 @@ function toOpenRouterMessages(
     ) {
       throw new Error(`OpenRouter provider does not support message role: ${message.role}.`);
     }
+    if (index === firstSystem) {
+      // `cache_control` is an OpenRouter extension on text parts the SDK types do not know.
+      return {
+        role: 'system',
+        content: [{ type: 'text', text: message.content, cache_control: { type: 'ephemeral' } }],
+      } as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam;
+    }
     return { role: message.role, content: message.content };
   });
+}
+
+/**
+ * Keep Claude's default thinking out of short replies (it is billed as output). Mirrors `thinkingConfig` in
+ * anthropic-provider.ts. OpenRouter maps `reasoning.enabled=false` to `thinking: disabled`, which Sonnet 5.5
+ * rejects with a 400, so Sonnet gets the lowest effort (`output_config.effort`) instead. Haiku tool requests keep
+ * the default, as on the direct provider (forced tool calls return the call without a thinking block).
+ */
+export function openRouterReasoning(model: string, hasTools: boolean): { reasoning?: Record<string, unknown> } {
+  if (model.startsWith('anthropic/claude-sonnet-5.5')) return { reasoning: { effort: 'low' } };
+  if (model.startsWith('anthropic/claude-haiku-5.5') && !hasTools) return { reasoning: { enabled: false } };
+  return {};
+}
+
+/** Only Anthropic models need explicit cache markers; Gemini/DeepSeek/MiniMax cache implicitly. */
+function supportsCacheControl(model: string): boolean {
+  return model.startsWith('anthropic/');
 }
 
 function toOpenRouterTools(
@@ -239,6 +268,7 @@ export function fromOpenRouterResponse(
           completion_tokens: response.usage.completion_tokens,
           total_tokens: response.usage.total_tokens,
           ...providerCost(response.usage),
+          ...cacheUsage(response.usage),
         }
       : undefined,
   };
@@ -248,6 +278,19 @@ export function fromOpenRouterResponse(
 function providerCost(usage: object): { cost?: number } {
   const cost = (usage as { cost?: unknown }).cost;
   return typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? { cost } : {};
+}
+
+/** Cached prompt tokens (OpenRouter `prompt_tokens_details`); absent when the provider reports none. */
+function cacheUsage(usage: object): { cached_tokens?: number; cache_write_tokens?: number } {
+  const details = (usage as { prompt_tokens_details?: { cached_tokens?: unknown; cache_write_tokens?: unknown } })
+    .prompt_tokens_details;
+  const count = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+  const cached = count(details?.cached_tokens);
+  const written = count(details?.cache_write_tokens);
+  return {
+    ...(cached !== undefined ? { cached_tokens: cached } : {}),
+    ...(written !== undefined ? { cache_write_tokens: written } : {}),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

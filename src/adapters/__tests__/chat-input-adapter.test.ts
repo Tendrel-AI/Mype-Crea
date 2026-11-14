@@ -234,6 +234,18 @@ describe('ChatInputAdapter', () => {
 
     await adapter.extract({ conversationId, userMessage: 'hola', llmContext: ctx });
     expect(provider.captured[1].systemPrompt).not.toContain('Preguntas pendientes:');
+
+    // Prompt caching: the pending-questions block is last, so the prefix before it is identical across turns.
+    const withAsked = provider.captured[0].systemPrompt;
+    const without = provider.captured[1].systemPrompt;
+    const askedAt = withAsked.indexOf('\n\nPreguntas pendientes:');
+    expect(askedAt).toBeGreaterThan(withAsked.indexOf('Reglas:'));
+    expect(withAsked.slice(0, askedAt)).toBe(without);
+    // Sent as two system messages: the static part is byte-identical across turns, the tail is omitted when empty.
+    expect(provider.captured[0].systemParts).toHaveLength(2);
+    expect(provider.captured[0].systemParts[0]).toBe(without);
+    expect(provider.captured[0].systemParts[1]).toMatch(/^\n\nPreguntas pendientes:/);
+    expect(provider.captured[1].systemParts).toEqual([without]);
   });
 
   it('returns an empty FieldDelta when the LLM grounds nothing (all nulls)', async () => {
