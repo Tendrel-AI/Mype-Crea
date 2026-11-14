@@ -50,6 +50,9 @@ export interface ChatCompletion {
     readonly total_tokens?: number;
     /** Provider-reported cost of the call in USD (OpenRouter `usage.cost`); absent when not reported. */
     readonly cost?: number;
+    /** Prompt tokens served from the provider cache / written to it (already counted in `prompt_tokens`). */
+    readonly cached_tokens?: number;
+    readonly cache_write_tokens?: number;
   };
 }
 

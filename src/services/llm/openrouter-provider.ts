@@ -61,7 +61,7 @@ export class OpenRouterProvider implements ILLMProvider {
             try {
               response = await tracedClient.chat.completions.create({
                 model: params.model,
-                messages: toOpenRouterMessages(params.messages),
+                messages: toOpenRouterMessages(params.messages, supportsCacheControl(params.model)),
                 ...(typeof params.temperature === 'number'
                   ? { temperature: params.temperature }
                   : {}),
@@ -120,8 +120,13 @@ function assertSupportedRequest(params: ChatRequest): void {
 
 function toOpenRouterMessages(
   messages: ChatRequest['messages'],
+  cache: boolean,
 ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
-  return messages.map((message) => {
+  // One breakpoint on the last system message: tools + system render before the turn messages.
+  const lastSystem = cache
+    ? messages.reduce((last, m, i) => (m.role === 'system' || m.role === 'developer' ? i : last), -1)
+    : -1;
+  return messages.map((message, index) => {
     const unsupported = Object.keys(message).filter(
       (key) => key !== 'role' && key !== 'content',
     );
@@ -139,8 +144,20 @@ function toOpenRouterMessages(
     ) {
       throw new Error(`OpenRouter provider does not support message role: ${message.role}.`);
     }
+    if (index === lastSystem && message.role === 'system') {
+      // `cache_control` is an OpenRouter extension on text parts the SDK types do not know.
+      return {
+        role: 'system',
+        content: [{ type: 'text', text: message.content, cache_control: { type: 'ephemeral' } }],
+      } as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam;
+    }
     return { role: message.role, content: message.content };
   });
+}
+
+/** Only Anthropic models need explicit cache markers; Gemini/DeepSeek/MiniMax cache implicitly. */
+function supportsCacheControl(model: string): boolean {
+  return model.startsWith('anthropic/');
 }
 
 function toOpenRouterTools(
@@ -239,6 +256,7 @@ export function fromOpenRouterResponse(
           completion_tokens: response.usage.completion_tokens,
           total_tokens: response.usage.total_tokens,
           ...providerCost(response.usage),
+          ...cacheUsage(response.usage),
         }
       : undefined,
   };
@@ -248,6 +266,19 @@ export function fromOpenRouterResponse(
 function providerCost(usage: object): { cost?: number } {
   const cost = (usage as { cost?: unknown }).cost;
   return typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? { cost } : {};
+}
+
+/** Cached prompt tokens (OpenRouter `prompt_tokens_details`); absent when the provider reports none. */
+function cacheUsage(usage: object): { cached_tokens?: number; cache_write_tokens?: number } {
+  const details = (usage as { prompt_tokens_details?: { cached_tokens?: unknown; cache_write_tokens?: unknown } })
+    .prompt_tokens_details;
+  const count = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+  const cached = count(details?.cached_tokens);
+  const written = count(details?.cache_write_tokens);
+  return {
+    ...(cached !== undefined ? { cached_tokens: cached } : {}),
+    ...(written !== undefined ? { cache_write_tokens: written } : {}),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

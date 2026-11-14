@@ -76,6 +76,24 @@ describe('ChatOutputAdapter', () => {
     resetProvider();
   });
 
+  it('keeps persona + guardrails as a stable prefix across turns (prompt caching)', async () => {
+    const registry = buildSingleAgentFixtureRegistry().registry;
+    const render = async (decisions: ReadonlyArray<PlannerDecision>) => {
+      setProvider(provider = makeResponderProvider('ok'));
+      await new ChatOutputAdapter(registry).render({ decisions, recentMessages: [{ role: 'user', content: 'hola' }], snapshot: filledSnapshot, llmContext: ctx });
+      return provider.captured[0].systemPrompt;
+    };
+    const ask = (fieldName: string): PlannerDecision => ({ kind: 'request_fields', agentId: 'test-fixture-agent', fields: [{ fieldName, promptHint: 'h' }] });
+    const a = await render([ask('business_name')]);
+    const b = await render([{ kind: 'announce_dispatch', agentId: 'test-fixture-agent' } as PlannerDecision, ask('business_profile')]);
+    const prefixEnd = a.indexOf('Estado actual del orquestador');
+    expect(prefixEnd).toBeGreaterThan(0);
+    expect(a.slice(0, prefixEnd)).toBe(b.slice(0, prefixEnd));
+    // Per-turn dispatch guardrail lands after the state, never inside the static prefix.
+    expect(b.indexOf('Cuando combines un anuncio de despacho')).toBeGreaterThan(prefixEnd);
+    expect(a).not.toContain('Cuando combines un anuncio de despacho');
+  });
+
   it('renders request_fields with both field names in one ask, no leaked user values', async () => {
     setProvider(provider = makeResponderProvider('¿Cómo se llama tu negocio y qué estilo buscas?'));
     const adapter = new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry);
@@ -501,7 +519,7 @@ describe('ChatOutputAdapter', () => {
   });
 
   it('bumps the responder prompt version for the command guidance', () => {
-    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v14');
+    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v15');
   });
 
   it('a release frozen before v6 still renders offer_generation through the fragment fallbacks', async () => {
@@ -536,7 +554,7 @@ describe('ChatOutputAdapter', () => {
 
     await adapter.render(base);
     await adapter.render({ ...base, promptVersions: { responder: 'responder.chat-step1.v6' } });
-    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v14', 'responder.chat-step1.v6']);
+    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v15', 'responder.chat-step1.v6']);
   });
 
   it('falls back to the active version when the pinned one no longer exists', async () => {
@@ -548,7 +566,7 @@ describe('ChatOutputAdapter', () => {
       decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
       promptVersions: { responder: 'responder.chat-step1.v0' },
     });
-    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v14');
+    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v15');
   });
 
   describe('KAN-93 conversation context', () => {

@@ -672,7 +672,8 @@ function renderExtractorSystemPrompt(
   return template
     .replaceAll('{{toolName}}', toolName)
     .replaceAll('{{fieldLines}}', fieldLines)
-    .replaceAll('{{askedBlock}}', askedBlock);
+    .replaceAll('{{askedBlock}}', askedBlock)
+    .trimEnd();
 }
 
 function adapterFieldsFromOwnership(ownership: Map<string, FieldOwnership>): AdapterFieldBehavior[] {

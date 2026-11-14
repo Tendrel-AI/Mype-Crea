@@ -126,11 +126,20 @@ export function estimateLlmCostUsd(request: {
 /** Cost of a finished call from the provider-reported token usage; null when usage is missing. */
 export function llmCostUsd(
   model: string,
-  usage: { readonly prompt_tokens: number; readonly completion_tokens: number } | undefined,
+  usage: {
+    readonly prompt_tokens: number;
+    readonly completion_tokens: number;
+    readonly cached_tokens?: number;
+    readonly cache_write_tokens?: number;
+  } | undefined,
 ): number | null {
   if (!usage) return null;
   const price = priceFor(model);
-  return roundUsd((usage.prompt_tokens * price.inputPerMTok + usage.completion_tokens * price.outputPerMTok) / 1_000_000);
+  // Anthropic cache pricing: reads 0.1x input, writes 1.25x input (both are counted inside prompt_tokens).
+  const cached = Math.min(usage.cached_tokens ?? 0, usage.prompt_tokens);
+  const written = Math.min(usage.cache_write_tokens ?? 0, usage.prompt_tokens - cached);
+  const inputUnits = usage.prompt_tokens - cached - written + cached * 0.1 + written * 1.25;
+  return roundUsd((inputUnits * price.inputPerMTok + usage.completion_tokens * price.outputPerMTok) / 1_000_000);
 }
 
 /** Where a settled cost came from: `provider` = reported by the provider, `estimate` = hand-typed prices, `flat` = reviewed flat price. */
@@ -140,7 +149,13 @@ export interface ActualCost { readonly usd: number; readonly source: CostSource 
 /** Settlement cost of a finished LLM call: the provider-reported `usage.cost`, else the hand-typed estimate. */
 export function llmActualCost(
   model: string,
-  usage: { readonly prompt_tokens: number; readonly completion_tokens: number; readonly cost?: number } | undefined,
+  usage: {
+    readonly prompt_tokens: number;
+    readonly completion_tokens: number;
+    readonly cost?: number;
+    readonly cached_tokens?: number;
+    readonly cache_write_tokens?: number;
+  } | undefined,
 ): ActualCost | null {
   if (usage && typeof usage.cost === 'number' && Number.isFinite(usage.cost) && usage.cost >= 0) {
     return { usd: usage.cost, source: 'provider' };

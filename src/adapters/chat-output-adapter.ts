@@ -163,7 +163,13 @@ function buildResponderSystemPrompt(
   const fragments = { ...RESPONDER_FRAGMENT_FALLBACKS, ...frozenFragments };
   const statusSummary = describeFieldStatus(snapshot);
   const decisionsBlock = [contextLine(context, fragments), describeDecisions(decisions, registry, fragments, snapshot)].filter(Boolean).join('\n\n');
-  const guardrails = buildGuardrails(decisions, fragments);
+  // Templates from v15 place the per-turn dispatch guardrail after the state (`{{dispatchGuardrail}}`),
+  // keeping `{{guardrails}}` static; older frozen templates keep it inside the guardrails.
+  const lateDispatch = template.includes('{{dispatchGuardrail}}');
+  const guardrails = buildGuardrails(decisions, fragments, !lateDispatch);
+  const dispatchGuardrail = lateDispatch && needsDispatchGuardrail(decisions)
+    ? `\n${fragments.dispatchRequestGuardrail}`
+    : '';
 
   return template
     .replaceAll('{{persona}}', fragments.personaContextual)
@@ -173,7 +179,8 @@ function buildResponderSystemPrompt(
       '{{progressBlock}}',
       statusSummary ? `\n${fragments.progressHeading}\n${statusSummary}` : '',
     )
-    .replaceAll('{{guardrails}}', guardrails);
+    .replaceAll('{{guardrails}}', guardrails)
+    .replaceAll('{{dispatchGuardrail}}', dispatchGuardrail);
 }
 
 /** KAN-93: «chat de la marca X» / «chat del producto Y de la marca X»; none for a legacy conversation. */
@@ -310,16 +317,19 @@ function describeDecision(
 function buildGuardrails(
   decisions: ReadonlyArray<PlannerDecision>,
   fragments: Readonly<Record<string, string>>,
+  includeDispatch: boolean,
 ): string {
-  const hasDispatch = decisions.some((d) => d.kind === 'announce_dispatch');
-  const hasRequestFields = decisions.some((d) => d.kind === 'request_fields');
   const lines = [fragments.guardrails];
-  if (hasDispatch && hasRequestFields) lines.push(fragments.dispatchRequestGuardrail);
+  if (includeDispatch && needsDispatchGuardrail(decisions)) lines.push(fragments.dispatchRequestGuardrail);
   // KAN-28: chat never starts, changes or approves a deliverable.
   lines.push(fragments.commandGuidanceGuardrail);
   // KAN-91: never end on a question the system cannot act on.
   lines.push(fragments.noDeadEndGuardrail);
   return lines.join('\n');
+}
+
+function needsDispatchGuardrail(decisions: ReadonlyArray<PlannerDecision>): boolean {
+  return decisions.some((d) => d.kind === 'announce_dispatch') && decisions.some((d) => d.kind === 'request_fields');
 }
 
 /** Spanish panel button names (see components/crea-mype/DeliverableCommands.tsx). */

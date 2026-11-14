@@ -126,7 +126,8 @@ class AnthropicChatClient implements IChatClient {
     const body: Record<string, unknown> = {
       model: params.model,
       max_tokens: params.max_tokens ?? 1024,
-      system,
+      // One breakpoint at the end of the system prompt (tools render before it, so they are cached too).
+      ...(system ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : {}),
       messages,
       ...(tools?.length ? { tools } : {}),
       ...(toolChoice ? { tool_choice: toolChoice } : {}),
@@ -351,6 +352,8 @@ function fromAnthropicResponse(response: AnthropicResponse): ChatCompletion {
         response.usage.output_tokens +
         (response.usage.cache_read_input_tokens ?? 0) +
         (response.usage.cache_creation_input_tokens ?? 0),
+      ...(response.usage.cache_read_input_tokens ? { cached_tokens: response.usage.cache_read_input_tokens } : {}),
+      ...(response.usage.cache_creation_input_tokens ? { cache_write_tokens: response.usage.cache_creation_input_tokens } : {}),
     },
   };
 }
