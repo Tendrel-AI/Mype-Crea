@@ -382,11 +382,14 @@ describe('executeDeliverableCommand — Iterar', () => {
       business_name: 'Sazón Andino',
       upstream_approvals: {},
       refinement: { parameterChanges: {}, observations: ['Más colores cálidos'], anchorDeliverableId: deliverableId },
+      // D61: the anchored version travels with the task so the handler can build on it.
+      previous_version: { deliverableId, storageKey: null, url: expect.stringMatching(/^https:\/\//), metadata: null },
     });
     // The handler receives the refinement separately from the brief requirements.
     expect(h.dispatch.mock.calls.at(-1)![0]).toMatchObject({
       requirements: { business_name: 'Sazón Andino' },
       refinement: { observations: ['Más colores cálidos'], anchorDeliverableId: deliverableId },
+      previous: { deliverableId },
     });
   });
 

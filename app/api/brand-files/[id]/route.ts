@@ -39,7 +39,7 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
   }
 }
 
-/** D32: `DELETE /api/brand-files/<id>` removes one of the caller's lab reports (row first, then the object; a missing object is fine). Any other kind, foreign or missing is the same 404. */
+/** D32/D62: `DELETE /api/brand-files/<id>` removes one of the caller's lab reports or logo references (row first, then the object; a missing object is fine). Any other kind, foreign or missing is the same 404. */
 export async function DELETE(_request: NextRequest, context: { params: Promise<{ id: string }> }): Promise<Response> {
   const { id } = await context.params;
   if (!isConversationId(id)) return plain(404, 'Not found');
@@ -50,7 +50,8 @@ export async function DELETE(_request: NextRequest, context: { params: Promise<{
     return plain(401, 'Unauthorized');
   }
   try {
-    const storageKey = await repos(identity.tenant, identity.user).brandFiles.removeLabReport(id as UUID);
+    const files = repos(identity.tenant, identity.user).brandFiles;
+    const storageKey = (await files.removeLabReport(id as UUID)) ?? (await files.removeLogoReference(id as UUID));
     if (!storageKey) return plain(404, 'Not found');
     await brandFileStorage().deleteObject(storageKey).catch((err) => log.error({ err, fileId: id }, 'brand_files.removed_cleanup_failed'));
     log.debug({ tenantId: identity.tenant.id, fileId: id }, 'brand_files.lab_report_removed');

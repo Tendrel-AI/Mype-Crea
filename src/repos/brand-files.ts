@@ -6,13 +6,15 @@
  */
 import { MAX_BRAND_ASSETS } from '../core/brand-catalog';
 import type { UUID } from '../core/contracts';
+import { MAX_LOGO_REFERENCES } from '../logo/refs';
 import { withTenantTransaction, type Tenant, type User } from '../db/with-transaction';
 
 export const MAX_ASSETS = MAX_BRAND_ASSETS;
 /** D32: lab-report PDFs per product. */
 export const MAX_LAB_REPORTS = 5;
+export { MAX_LOGO_REFERENCES };
 
-export type BrandFileKind = 'logo' | 'asset' | 'lab_report';
+export type BrandFileKind = 'logo' | 'asset' | 'lab_report' | 'logo_reference';
 
 export interface BrandFileRow {
   readonly id: UUID;
@@ -53,6 +55,8 @@ export interface BrandFilesRepo {
   >;
   /** D32: delete one of the caller's lab reports; returns its storage key (the route deletes the object), or null when foreign/missing. */
   removeLabReport(fileId: UUID): Promise<string | null>;
+  /** D62: delete one of the caller's logo references; returns its storage key, or null when foreign/missing/another kind. */
+  removeLogoReference(fileId: UUID): Promise<string | null>;
   /** D32: the product's lab reports (oldest first) with the hash recorded at upload. */
   listLabReports(productId: UUID): Promise<LabReportRow[]>;
   /** The caller's own file, or null when foreign or missing. */
@@ -80,6 +84,7 @@ export function brandFilesRepo(tenant: Tenant, user: User): BrandFilesRepo {
         await tx.query(`SELECT pg_advisory_xact_lock(hashtext('brand_files:' || $1::text))`, [file.brandId]);
         const productId = file.productId ?? null;
         if (file.kind === 'lab_report' && !productId) return { ok: false, code: 'not_found' } as const;
+        if (file.kind === 'logo_reference' && productId) return { ok: false, code: 'not_found' } as const;
         const owner = await tx.query(
           productId
             ? `SELECT 1 FROM products p JOIN brands b ON b.tenant_id = p.tenant_id AND b.id = p.brand_id
@@ -106,7 +111,7 @@ export function brandFilesRepo(tenant: Tenant, user: User): BrandFilesRepo {
             );
             if (same.rows[0]) return { ok: true, file: toRow(same.rows[0]), reused: true } as const;
           }
-          const limit = file.kind === 'lab_report' ? MAX_LAB_REPORTS : MAX_ASSETS;
+          const limit = file.kind === 'lab_report' ? MAX_LAB_REPORTS : file.kind === 'logo_reference' ? MAX_LOGO_REFERENCES : MAX_ASSETS;
           const count = await tx.query<{ n: number }>(
             `SELECT count(*)::int AS n FROM brand_files
               WHERE tenant_id = $1 AND brand_id = $2 AND kind = $4 AND product_id IS NOT DISTINCT FROM $3::uuid`,
@@ -137,6 +142,16 @@ export function brandFilesRepo(tenant: Tenant, user: User): BrandFilesRepo {
       return withTenantTransaction(tenant, user, async (tx) => {
         const res = await tx.query<{ storage_key: string }>(
           `DELETE FROM brand_files WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND kind = 'lab_report' RETURNING storage_key`,
+          [fileId, tenant.id, user.id],
+        );
+        return res.rows[0]?.storage_key ?? null;
+      });
+    },
+
+    async removeLogoReference(fileId) {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<{ storage_key: string }>(
+          `DELETE FROM brand_files WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND kind = 'logo_reference' RETURNING storage_key`,
           [fileId, tenant.id, user.id],
         );
         return res.rows[0]?.storage_key ?? null;

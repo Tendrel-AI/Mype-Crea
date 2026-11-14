@@ -52,7 +52,7 @@ import {
   type DeliverableWorkflowFacts,
 } from './deliverable-state';
 import { validateBriefValue } from '../brief';
-import { UPSTREAM_INPUTS_KEY, UPSTREAM_SNAPSHOT_KEY, type UpstreamInput } from '../deliverable-inputs';
+import { PREVIOUS_VERSION_SNAPSHOT_KEY, UPSTREAM_INPUTS_KEY, UPSTREAM_SNAPSHOT_KEY, type PreviousVersion, type UpstreamInput } from '../deliverable-inputs';
 
 export { requirementsFromSnapshot };
 
@@ -102,6 +102,8 @@ export interface DeliverableCommandContext {
     /** Approved upstream values the task was created under (KAN-32). */
     readonly upstream: Readonly<Record<string, UpstreamInput>>;
     readonly refinement: IterationRefinement | null;
+    /** D61: the version a user «Iterar» builds on; absent otherwise. */
+    readonly previous?: PreviousVersion;
   }): Promise<void>;
   /** Clean up the in-flight marker after a successful cancel. */
   onCanceled(input: { readonly conversationId: ConversationId; readonly agentId: string; readonly taskId: TaskId }): Promise<void>;
@@ -351,6 +353,7 @@ export async function executeDeliverableCommand(
     case 'retry': {
       let iteration: CreateTaskInput['iteration'];
       let refinement: IterationRefinement | null = null;
+      let previous: PreviousVersion | undefined;
 
       if (command.kind === 'retry') {
         if (view.lastFailure?.taskId !== command.failedTaskId) return reject('stale', COMMAND_MESSAGES.stale, states);
@@ -389,6 +392,7 @@ export async function executeDeliverableCommand(
         });
         if (!built.ok) return reject('invalid', built.message, states);
         refinement = built.value;
+        previous = previousVersionOf(facts.candidates.find((c) => c.deliverableId === anchor.deliverableId));
       }
 
       // Requirements always come from the current brief, never from the client.
@@ -416,6 +420,7 @@ export async function executeDeliverableCommand(
         [UPSTREAM_SNAPSHOT_KEY]: upstream,
         ...(Object.keys(upstreamInputs).length > 0 ? { [UPSTREAM_INPUTS_KEY]: upstreamInputs } : {}),
         ...(refinement ? { [REFINEMENT_SNAPSHOT_KEY]: refinement } : {}),
+        ...(previous ? { [PREVIOUS_VERSION_SNAPSHOT_KEY]: previous } : {}),
       };
 
       const created = await ctx.workflow.createTask({
@@ -443,10 +448,22 @@ export async function executeDeliverableCommand(
         requirements,
         upstream: upstreamInputs,
         refinement,
+        ...(previous ? { previous } : {}),
       });
       return accept(false, { taskId: created.task.id });
     }
   }
+}
+
+/**
+ * D61: what a handler needs of the anchored candidate to iterate on it. The image comes from the private bucket
+ * (`storageKey`); a candidate that was never stored keeps its provider https URL (local dev). Null when it has neither.
+ */
+function previousVersionOf(candidate: DeliverableWorkflowFacts['candidates'][number] | undefined): PreviousVersion | undefined {
+  if (!candidate) return undefined;
+  const storageKey = candidate.storageKey ?? null;
+  const url = !storageKey && candidate.contentUrl?.startsWith('https://') ? candidate.contentUrl : null;
+  return { deliverableId: candidate.deliverableId, storageKey, url, metadata: candidate.metadata ?? null };
 }
 
 /**

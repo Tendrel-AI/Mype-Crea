@@ -20,7 +20,7 @@ import { SAFETY_POLICY_VERSION, type SafetyRecord } from '../../core/deliverable
 import { TaskError } from '../../core/task-errors';
 import { loggerFor } from '../logger';
 import { IMAGE_PRICES_USD, type ImageModelKey } from '../usage/policy';
-import type { IImageProvider, ImageRequest, ImageResult } from './types';
+import { MAX_REFERENCE_IMAGES, type IImageProvider, type ImageRequest, type ImageResult } from './types';
 
 const log = loggerFor('service.image.fal');
 const PROVIDER_ID = 'fal';
@@ -77,7 +77,7 @@ export class FalImageProvider implements IImageProvider {
     const input = {
       prompt: req.prompt,
       ...spec.input,
-      ...(isEdit ? { image_urls: await Promise.all(req.referenceUrls!.map(toFalUrl)) } : {}),
+      ...(isEdit ? { image_urls: await Promise.all(req.referenceUrls!.slice(0, MAX_REFERENCE_IMAGES).map(toFalUrl)) } : {}),
     };
 
     const child = log.child({ modelId, isEdit });

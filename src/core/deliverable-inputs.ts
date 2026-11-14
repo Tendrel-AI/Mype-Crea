@@ -46,6 +46,36 @@ export interface UpstreamInput {
   readonly value: string;
 }
 
+/** Reserved `requirements_snapshot` key: the version an «Iterar» builds on (D61), as a `PreviousVersion`. */
+export const PREVIOUS_VERSION_SNAPSHOT_KEY = 'previous_version';
+
+/**
+ * The deliverable version an «Iterar» task builds on (D61), recorded server-side at command time
+ * (never from the client) and handed to the handler as `A2AMessage.iteration.previous`.
+ * `storageKey`: the private-bucket object of an image; `url`: the provider https URL when it was not stored (local dev).
+ */
+export interface PreviousVersion {
+  readonly deliverableId: string;
+  readonly storageKey: string | null;
+  readonly url: string | null;
+  /** The artifact metadata the handler recorded (slots, prompt, ...); null when none. */
+  readonly metadata: Readonly<Record<string, unknown>> | null;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+/** The previous version recorded in a task snapshot; absent or malformed → undefined. */
+export function recordedPreviousVersion(snapshot: Readonly<Record<string, unknown>> | null | undefined): PreviousVersion | undefined {
+  const raw = snapshot?.[PREVIOUS_VERSION_SNAPSHOT_KEY];
+  if (!isRecord(raw) || typeof raw.deliverableId !== 'string') return undefined;
+  return {
+    deliverableId: raw.deliverableId,
+    storageKey: typeof raw.storageKey === 'string' ? raw.storageKey : null,
+    url: typeof raw.url === 'string' ? raw.url : null,
+    metadata: isRecord(raw.metadata) ? raw.metadata : null,
+  };
+}
+
 /** Stable version of a brief value: the same value always yields the same fingerprint. */
 export function inputVersion(value: string): string {
   return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;

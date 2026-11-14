@@ -57,6 +57,7 @@ import {
 } from './notifiers';
 import { labelTaskInputs, uploadCountsOfConversation } from '../../labeling/lab-task-inputs';
 import { socialTaskInputs } from '../../social/ad-task-inputs';
+import { logoTaskInputs } from '../../logo/logo-task-inputs';
 import { getLimitGate } from '../limits/runtime';
 import { loggerFor } from '../../services/logger';
 import { activePromptVersions, resolvePinnedPrompt, type PromptKey } from '../../services/prompts';
@@ -235,7 +236,12 @@ function build(): Runtime {
     taskInputsFor: (tenantId: UUID, userId: UUID) => {
       const label = labelTaskInputs({ id: tenantId }, { id: userId });
       const social = socialTaskInputs({ id: tenantId }, { id: userId });
-      return async (conversationId, agentId) => ({ ...(await label(conversationId, agentId)), ...(await social(conversationId, agentId)) });
+      const logo = logoTaskInputs({ id: tenantId }, { id: userId });
+      return async (conversationId, agentId) => ({
+        ...(await label(conversationId, agentId)),
+        ...(await social(conversationId, agentId)),
+        ...(await logo(conversationId, agentId)),
+      });
     },
     uploadCountsFor: (tenantId: UUID, userId: UUID) => uploadCountsOfConversation({ id: tenantId }, { id: userId }),
     limitsFor: (tenantId: UUID, userId: UUID) => (conversationId) => getLimitGate({ id: tenantId }, { id: userId }).remaining(conversationId),

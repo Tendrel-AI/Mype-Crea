@@ -61,7 +61,7 @@ export interface ConversationContext {
 /** KAN-87: an uploaded logo/asset as the forms list it; `url` is the authorized route. */
 export interface BrandFileView {
   readonly id: UUID;
-  readonly kind: 'logo' | 'asset' | 'lab_report';
+  readonly kind: 'logo' | 'asset' | 'lab_report' | 'logo_reference';
   readonly productId: UUID | null;
   readonly originalName: string;
   readonly byteSize: number;

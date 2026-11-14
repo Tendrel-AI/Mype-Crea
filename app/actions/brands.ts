@@ -89,7 +89,7 @@ export async function getBrandAction(input: { readonly brandId: string }): Promi
     const brand = await owned.brands.get(input.brandId as UUID);
     if (!brand) return NOT_FOUND;
     const files = await owned.brandFiles.listByBrand(brand.id);
-    return { ok: true, brandId: brand.id, name: brand.name, attributes: brand.attributes, files: files.filter((f) => !f.productId).map(fileView) };
+    return { ok: true, brandId: brand.id, name: brand.name, attributes: brand.attributes, files: files.filter((f) => !f.productId && f.kind !== 'logo_reference').map(fileView) };
   } catch (error) {
     log.error({ err: error }, 'brands.get_failed');
     return { ok: false, code: 'failed', message: FAILED };

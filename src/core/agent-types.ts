@@ -19,7 +19,7 @@
  */
 
 import type { AgentId, TaskId, UUID, ISOTimestamp } from './contracts';
-import type { UpstreamInput } from './deliverable-inputs';
+import type { PreviousVersion, UpstreamInput } from './deliverable-inputs';
 
 // ---------------------------------------------------------------------------
 // A2A Message (what the core sends to an agent)
@@ -60,6 +60,11 @@ export interface A2AMessage {
     readonly observations?: ReadonlyArray<string>;
     /** Candidate the observations are anchored to. */
     readonly anchorDeliverableId?: string | null;
+    /**
+     * D61: the version the observations are anchored to (its stored image and recorded metadata), read by
+     * the server at command time. Set on a user «Iterar» of a candidate; absent on retries and failed-task changes.
+     */
+    readonly previous?: PreviousVersion;
   };
 
   /**

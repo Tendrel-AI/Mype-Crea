@@ -19,6 +19,9 @@
 
 import type { SafetyRecord } from '../../core/deliverable-safety';
 
+/** Reference images sent to an edit endpoint, at most (Klein: 10, Nano Banana 2: 14). */
+export const MAX_REFERENCE_IMAGES = 10;
+
 export type ImagePurpose = 'logo' | 'label' | 'social';
 
 export interface ImageRequest {

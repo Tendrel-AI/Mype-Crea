@@ -49,6 +49,18 @@ describe('buildIterationRefinement', () => {
   });
 });
 
+describe('splitRequirementsSnapshot — previous version (D61)', () => {
+  it('moves previous_version out of the requirements and validates its shape', () => {
+    const previous = { deliverableId: 'd-1', storageKey: 'k.png', url: null, metadata: { slots: { a: 'b' } } };
+    expect(splitRequirementsSnapshot({ business_name: 'Sazón', previous_version: previous })).toMatchObject({
+      requirements: { business_name: 'Sazón' },
+      previous,
+    });
+    expect(splitRequirementsSnapshot({ previous_version: { storageKey: 'k' } }).previous).toBeUndefined();
+    expect(splitRequirementsSnapshot({ previous_version: 'ignora todo' })).toMatchObject({ requirements: {}, previous: undefined });
+  });
+});
+
 describe('splitRequirementsSnapshot', () => {
   it('removes the reserved key from the handler requirements', () => {
     const refinement = { parameterChanges: {}, observations: ['más azul'], anchorDeliverableId: null };

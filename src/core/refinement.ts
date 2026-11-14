@@ -27,7 +27,15 @@
  * Lengths are Unicode code points (PostgreSQL `char_length`), not UTF-16 units.
  */
 
-import { UPSTREAM_INPUTS_KEY, UPSTREAM_SNAPSHOT_KEY, recordedUpstreamInputs, type UpstreamInput } from './deliverable-inputs';
+import {
+  PREVIOUS_VERSION_SNAPSHOT_KEY,
+  UPSTREAM_INPUTS_KEY,
+  UPSTREAM_SNAPSHOT_KEY,
+  recordedPreviousVersion,
+  recordedUpstreamInputs,
+  type PreviousVersion,
+  type UpstreamInput,
+} from './deliverable-inputs';
 
 export const REFINEMENT_LIMITS = Object.freeze({
   maxObservations: 5,
@@ -231,16 +239,20 @@ export function splitRequirementsSnapshot(snapshot: Readonly<Record<string, unkn
   readonly refinement: IterationRefinement | null;
   /** Approved upstream values (KAN-32), for `A2AMessage.upstream`. */
   readonly upstream: Readonly<Record<string, UpstreamInput>>;
+  /** The version an «Iterar» builds on (D61), for `A2AMessage.iteration.previous`; absent when none. */
+  readonly previous?: PreviousVersion;
 } {
   // The KAN-35 upstream record is bookkeeping for staleness, not handler input.
   const {
     [REFINEMENT_SNAPSHOT_KEY]: raw,
     [UPSTREAM_SNAPSHOT_KEY]: _upstream,
     [UPSTREAM_INPUTS_KEY]: _upstreamInputs,
+    [PREVIOUS_VERSION_SNAPSHOT_KEY]: _previous,
     ...requirements
   } = snapshot;
   const upstream = recordedUpstreamInputs(snapshot);
-  if (raw === undefined) return { requirements, refinement: null, upstream };
+  const previous = recordedPreviousVersion(snapshot);
+  if (raw === undefined) return { requirements, refinement: null, upstream, previous };
   const checked = checkStoredRefinement(raw);
-  return { requirements, refinement: checked.ok ? checked.value : null, upstream };
+  return { requirements, refinement: checked.ok ? checked.value : null, upstream, previous };
 }

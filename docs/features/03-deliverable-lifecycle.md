@@ -43,7 +43,7 @@ failed. This is the same panel, not a second gallery.
    `iteration` too. `DeliverableCommands` renders it with `candidateStatusLine`,
    `provenanceRows` and `formatGeneratedAt` (`es-PE`, `America/Lima`); rows that recorded
    nothing say «No registrado». The logo handler records `LOGO_PROMPT_VERSION` and its
-   agent card version; name and tagline already did. The «Nombre comercial» card and, under it, the «Lema» card
+   agent card version (v5 also `imageMode` and `referenceCount`); name and tagline already did. The «Nombre comercial» card and, under it, the «Lema» card
    (KAN-32 taglines, same text list) sit in step 1 of the dashboard and in the mobile panel
    (`components/CreaMype.tsx:renderNameCommands`). A card blocked by an unapproved upstream names
    it (`missingUpstreamMessage`: «Primero aprueba tu nombre comercial.»).
