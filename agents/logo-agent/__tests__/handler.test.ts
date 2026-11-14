@@ -1,5 +1,5 @@
 /**
- * Unit tests for the logo-agent handler. Inject a fake IAgentLlm (the v4 art director) and a fake
+ * Unit tests for the logo-agent handler. Inject a fake IAgentLlm (the v4+ art director) and a fake
  * IImageGenerator via setters so we never call a real model. Verify:
  *   - v4: the image prompt is the English formula from the director slots + the exact upper-cased name
  *   - pinned v1-v3 (frozen prompt without a schema) render the legacy template with no LLM call
@@ -175,11 +175,32 @@ describe('logo-agent handler', () => {
 });
 
 describe('frozen logo prompts', () => {
-  it('v4 frozen text and tool are the working director prompt and tool', () => {
+  it('v5 frozen text and tool are the working director prompt and tool', () => {
+    const v5 = getFrozenPrompt('logo-agent', 'logo-agent.v5')!;
+    expect(v5.text).toBe(LOGO_SYSTEM_PROMPT);
+    expect(v5.schema).toEqual(JSON.parse(JSON.stringify(LOGO_TOOL)));
+    expect(LOGO_PROMPT_VERSION).toBe('logo-agent.v5');
+  });
+
+  it('pinned v4 keeps the same ten slot keys, so its director output still parses', () => {
     const v4 = getFrozenPrompt('logo-agent', 'logo-agent.v4')!;
-    expect(v4.text).toBe(LOGO_SYSTEM_PROMPT);
-    expect(v4.schema).toEqual(JSON.parse(JSON.stringify(LOGO_TOOL)));
-    expect(LOGO_PROMPT_VERSION).toBe('logo-agent.v4');
+    expect((v4.schema as typeof LOGO_TOOL).function.parameters.required).toEqual(LOGO_TOOL.function.parameters.required);
+  });
+
+  it('renders the owner\'s «Mar Ancestral» prompt from its variables (D60)', () => {
+    expect(renderLogoFormula({
+      brand_name: 'MAR ANCESTRAL',
+      format_style: 'Bold, monolithic block-stamp vector',
+      purpose_industry: 'an artisan coastal seafood brand',
+      primary_entity: 'a bipedal, anthropomorphic fisherman figure holding a large, stylized fish, seamlessly morphing into churning ocean waves',
+      cultural_anchor: 'ancient coastal petroglyphs and vintage maritime linocut prints',
+      structural_mechanics: 'thick, undulating organic shapes and broad, high-contrast white-space cutouts',
+      motifs: 'bold, cascading wave crests and the silhouette of a traditional fishing net woven into the figure',
+      layout: 'dynamically asymmetric, heavily weighted on the left with the surging waves while the figure reaches toward the right',
+      typography: 'a heavy, hand-carved, blocky typeface anchored at the bottom',
+      palette: 'a solid, deep navy blue and off-white',
+      voice: 'rugged, handcrafted, and premium maritime',
+    })).toBe('Bold, monolithic block-stamp vector logo for an artisan coastal seafood brand called "MAR ANCESTRAL". Features a bipedal, anthropomorphic fisherman figure holding a large, stylized fish, seamlessly morphing into churning ocean waves as the primary entity. Grounded in the visual language of ancient coastal petroglyphs and vintage maritime linocut prints, the design relies entirely on thick, undulating organic shapes and broad, high-contrast white-space cutouts to create the forms, strictly avoiding fine lines, tiny patterns, or shading. It integrates exactly two scalable motifs: bold, cascading wave crests and the silhouette of a traditional fishing net woven into the figure. The layout is dynamically asymmetric, heavily weighted on the left with the surging waves while the figure reaches toward the right, with "MAR ANCESTRAL" set in a heavy, hand-carved, blocky typeface anchored at the bottom. The palette is restricted to a solid, deep navy blue and off-white, prioritizing a rugged, handcrafted, and premium maritime identity with massive visual weight and scalability over generic modern minimalism.');
   });
 });
 
