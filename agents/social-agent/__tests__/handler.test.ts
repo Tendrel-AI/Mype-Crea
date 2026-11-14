@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const storage = vi.hoisted(() => ({ getObject: vi.fn<(key: string) => Promise<Uint8Array | null>>() }));
 vi.mock('../../../src/services/storage/brand-upload', () => ({ brandFileStorage: () => storage }));
 
-import { AD_SLOTS, SOCIAL_PROMPT_VERSION, buildSocialMessages, handler, parseAdSlots, renderAdPrompt } from '../handler';
+import { AD_SLOTS, SOCIAL_PROMPT_VERSION, SOCIAL_SYSTEM_PROMPT, SOCIAL_TOOL, buildSocialMessages, handler, parseAdSlots, renderAdPrompt } from '../handler';
+import { getFrozenPrompt } from '../../../src/services/prompts';
 import { isPresentable } from '../../../src/core/deliverable-safety';
 import { resetAgentLlm, setAgentLlm, type AgentCompletionRequest } from '../../../src/services/llm/agent-completion';
 import { resetImageGenerator, setImageGenerator } from '../../../src/services/image';
@@ -102,6 +103,24 @@ describe('social-agent handler', () => {
     expect(result.status === 'completed' && result.artifacts[0].metadata?.productPhoto).toEqual({ fileId: 'f1', originalName: 'a.png' });
   });
 
+  it('tells the image model to keep the product of the reference photo', async () => {
+    const { images } = fakes();
+    storage.getObject.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    await handler(message({ ad_brief: 'x', product_photos: [{ fileId: 'f1', storageKey: 'k1', contentType: 'image/png', originalName: 'a.png' }] }), undefined);
+    expect(images[0].prompt).toBe(renderAdPrompt(SLOTS as never, true));
+    expect(images[0].prompt).toMatch(/exactly the one in the reference image/);
+  });
+
+  it('prints the director headline on the image, and leaves it out when empty (D60)', async () => {
+    const { images } = fakes(JSON.stringify({ ...SLOTS, headline: 'Fría, como en el mercado' }));
+    const result = await handler(message({ ad_brief: 'x' }), undefined);
+    expect(images[0].prompt).toContain('The bold printed headline "Fría, como en el mercado" is integrated into the composition');
+    expect(result.status === 'completed' && result.artifacts[0].metadata?.slots).toMatchObject({ headline: 'Fría, como en el mercado' });
+    const empty = fakes(JSON.stringify({ ...SLOTS, headline: '' }));
+    await handler(message({ ad_brief: 'x' }), undefined);
+    expect(empty.images[0].prompt).toBe(renderAdPrompt(SLOTS as never));
+  });
+
   it('generates without reference when the photo bytes are missing', async () => {
     const { images } = fakes();
     storage.getObject.mockResolvedValue(null);
@@ -136,6 +155,14 @@ describe('ad prompt helpers', () => {
     for (const key of ['subject', ...AD_SLOTS]) {
       expect(() => parseAdSlots(JSON.stringify({ ...SLOTS, [key]: ' ' }))).toThrow(TaskError);
     }
+  });
+
+  it('v2 frozen text and tool are the working director prompt and tool; pinned v1 has no headline', () => {
+    const v2 = getFrozenPrompt('social-agent', 'social-agent.v2')!;
+    expect(v2.text).toBe(SOCIAL_SYSTEM_PROMPT);
+    expect(v2.schema).toEqual(JSON.parse(JSON.stringify(SOCIAL_TOOL)));
+    expect(SOCIAL_PROMPT_VERSION).toBe('social-agent.v2');
+    expect(parseAdSlots(JSON.stringify(SLOTS))).not.toHaveProperty('headline');
   });
 
   it('buildSocialMessages tells the director to be surprising when there is no data', () => {
