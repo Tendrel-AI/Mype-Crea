@@ -122,10 +122,9 @@ function toOpenRouterMessages(
   messages: ChatRequest['messages'],
   cache: boolean,
 ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
-  // One breakpoint on the last system message: tools + system render before the turn messages.
-  const lastSystem = cache
-    ? messages.reduce((last, m, i) => (m.role === 'system' || m.role === 'developer' ? i : last), -1)
-    : -1;
+  // One breakpoint on the FIRST system message (the static prefix; a per-turn tail may follow it and is never
+  // marked). Tools + system render before the turn messages, so the tools are cached too.
+  const firstSystem = cache ? messages.findIndex((m) => m.role === 'system') : -1;
   return messages.map((message, index) => {
     const unsupported = Object.keys(message).filter(
       (key) => key !== 'role' && key !== 'content',
@@ -144,7 +143,7 @@ function toOpenRouterMessages(
     ) {
       throw new Error(`OpenRouter provider does not support message role: ${message.role}.`);
     }
-    if (index === lastSystem && message.role === 'system') {
+    if (index === firstSystem) {
       // `cache_control` is an OpenRouter extension on text parts the SDK types do not know.
       return {
         role: 'system',

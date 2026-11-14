@@ -241,6 +241,11 @@ describe('ChatInputAdapter', () => {
     const askedAt = withAsked.indexOf('\n\nPreguntas pendientes:');
     expect(askedAt).toBeGreaterThan(withAsked.indexOf('Reglas:'));
     expect(withAsked.slice(0, askedAt)).toBe(without);
+    // Sent as two system messages: the static part is byte-identical across turns, the tail is omitted when empty.
+    expect(provider.captured[0].systemParts).toHaveLength(2);
+    expect(provider.captured[0].systemParts[0]).toBe(without);
+    expect(provider.captured[0].systemParts[1]).toMatch(/^\n\nPreguntas pendientes:/);
+    expect(provider.captured[1].systemParts).toEqual([without]);
   });
 
   it('returns an empty FieldDelta when the LLM grounds nothing (all nulls)', async () => {

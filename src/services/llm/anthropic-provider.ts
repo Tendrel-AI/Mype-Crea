@@ -126,8 +126,11 @@ class AnthropicChatClient implements IChatClient {
     const body: Record<string, unknown> = {
       model: params.model,
       max_tokens: params.max_tokens ?? 1024,
-      // One breakpoint at the end of the system prompt (tools render before it, so they are cached too).
-      ...(system ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : {}),
+      // One breakpoint on the FIRST system block (the static prefix; later blocks are per-turn and unmarked).
+      // Tools render before system, so they are cached too.
+      ...(system.length
+        ? { system: system.map((text, i) => ({ type: 'text', text, ...(i === 0 ? { cache_control: { type: 'ephemeral' } } : {}) })) }
+        : {}),
       messages,
       ...(tools?.length ? { tools } : {}),
       ...(toolChoice ? { tool_choice: toolChoice } : {}),
@@ -214,7 +217,7 @@ function assertSupportedRequest(params: ChatRequest): void {
 }
 
 function toAnthropicMessages(input: ReadonlyArray<ChatMessage>): {
-  system: string;
+  system: string[];
   messages: AnthropicMessage[];
 } {
   const system: string[] = [];
@@ -231,7 +234,7 @@ function toAnthropicMessages(input: ReadonlyArray<ChatMessage>): {
     }
 
     if (message.role === 'system' || message.role === 'developer') {
-      system.push(message.content);
+      if (message.content) system.push(message.content);
       continue;
     }
 
@@ -247,7 +250,7 @@ function toAnthropicMessages(input: ReadonlyArray<ChatMessage>): {
     }
   }
 
-  return { system: system.join('\n\n'), messages };
+  return { system, messages };
 }
 
 function toAnthropicTool(tool: Record<string, unknown>): Record<string, unknown> {

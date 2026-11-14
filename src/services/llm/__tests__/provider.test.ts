@@ -229,11 +229,12 @@ describe('LLM provider configuration', () => {
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     }));
     const client = new OpenRouterProvider('key').resolve('extractor').client;
-    const messages = [{ role: 'system' as const, content: 'static' }, { role: 'user' as const, content: 'hi' }];
+    const messages = [{ role: 'system' as const, content: 'static' }, { role: 'system' as const, content: 'tail' }, { role: 'user' as const, content: 'hi' }];
     const result = await client.chat.completions.create({ model: 'anthropic/claude-haiku-5.5', messages });
     await client.chat.completions.create({ model: 'google/gemini-2.5-flash', messages });
 
     expect(bodies[0].messages[0]).toEqual({ role: 'system', content: [{ type: 'text', text: 'static', cache_control: { type: 'ephemeral' } }] });
+    expect(bodies[0].messages[1]).toEqual({ role: 'system', content: 'tail' });
     expect(JSON.stringify(bodies[0]).match(/cache_control/g)).toHaveLength(1);
     expect(bodies[1].messages[0]).toEqual({ role: 'system', content: 'static' });
     expect(JSON.stringify(bodies[1])).not.toContain('cache_control');
@@ -261,7 +262,7 @@ describe('LLM provider configuration', () => {
 });
 
 describe('Anthropic Messages translation', () => {
-  it('sends system as one cached block and surfaces cache read/write tokens', async () => {
+  it('sends system as separate blocks (cache on the first) and surfaces cache read/write tokens', async () => {
     let sent: any;
     vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       sent = JSON.parse(String(init?.body));
@@ -274,7 +275,8 @@ describe('Anthropic Messages translation', () => {
     const result = await client.chat.completions.create({
       model: 'claude-haiku-5-5', messages: [{ role: 'system', content: 'a' }, { role: 'system', content: 'b' }, { role: 'user', content: 'x' }],
     });
-    expect(sent.system).toEqual([{ type: 'text', text: 'a\n\nb', cache_control: { type: 'ephemeral' } }]);
+    // Static first block carries the only breakpoint; the per-turn tail block has none.
+    expect(sent.system).toEqual([{ type: 'text', text: 'a', cache_control: { type: 'ephemeral' } }, { type: 'text', text: 'b' }]);
     expect(result.usage).toMatchObject({ prompt_tokens: 100, cached_tokens: 70, cache_write_tokens: 20 });
   });
 

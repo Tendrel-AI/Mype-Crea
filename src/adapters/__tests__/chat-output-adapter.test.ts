@@ -81,11 +81,18 @@ describe('ChatOutputAdapter', () => {
     const render = async (decisions: ReadonlyArray<PlannerDecision>) => {
       setProvider(provider = makeResponderProvider('ok'));
       await new ChatOutputAdapter(registry).render({ decisions, recentMessages: [{ role: 'user', content: 'hola' }], snapshot: filledSnapshot, llmContext: ctx });
-      return provider.captured[0].systemPrompt;
+      return provider.captured[0];
     };
     const ask = (fieldName: string): PlannerDecision => ({ kind: 'request_fields', agentId: 'test-fixture-agent', fields: [{ fieldName, promptHint: 'h' }] });
-    const a = await render([ask('business_name')]);
-    const b = await render([{ kind: 'announce_dispatch', agentId: 'test-fixture-agent' } as PlannerDecision, ask('business_profile')]);
+    const ca = await render([ask('business_name')]);
+    const cb = await render([{ kind: 'announce_dispatch', agentId: 'test-fixture-agent' } as PlannerDecision, ask('business_profile')]);
+    // Two system messages: the static part is byte-identical across turns, the tail is per-turn.
+    expect(ca.systemParts).toHaveLength(2);
+    expect(ca.systemParts[0]).toBe(cb.systemParts[0]);
+    expect(ca.systemParts[1]).not.toBe(cb.systemParts[1]);
+    expect(ca.systemParts[1]).toMatch(/^\n\nEstado actual del orquestador/);
+    const a = ca.systemPrompt;
+    const b = cb.systemPrompt;
     const prefixEnd = a.indexOf('Estado actual del orquestador');
     expect(prefixEnd).toBeGreaterThan(0);
     expect(a.slice(0, prefixEnd)).toBe(b.slice(0, prefixEnd));
@@ -451,8 +458,8 @@ describe('ChatOutputAdapter', () => {
       llmContext: ctx,
     });
 
-    // 1 system + 2 chat turns; the system row from recentMessages is dropped.
-    expect(provider.captured[0].messageCount).toBe(3);
+    // 2 system (static + per-turn) + 2 chat turns; the system row from recentMessages is dropped.
+    expect(provider.captured[0].messageCount).toBe(4);
   });
 
   it('takes the prompt from the frozen file and the model/settings from the execution (D22)', async () => {
@@ -472,7 +479,7 @@ describe('ChatOutputAdapter', () => {
     expect(provider.create).toHaveBeenCalledTimes(1);
     expect(provider.captured[0].systemPrompt).not.toContain('ignored');
     expect(provider.captured[0].systemPrompt).toContain('español neutro latinoamericano');
-    expect(provider.captured[0].messageCount).toBe(2);
+    expect(provider.captured[0].messageCount).toBe(3);
     expect((provider.create.mock.calls[0][0] as any).temperature).toBe(0.7);
     // KAN-69 A6: the llm_calls row carries the execution's effective provenance.
     expect(recordSpy).toHaveBeenCalledTimes(1);

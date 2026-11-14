@@ -34,6 +34,8 @@ import { getProvider } from '../services/llm';
 import {
   assertResolvedModelPurpose,
   RESPONDER_FRAGMENT_FALLBACKS,
+  RESPONDER_TURN_SLOT,
+  splitTemplateAtSlot,
   type AdapterExecution,
 } from '../services/ai-config/adapter-behavior';
 import { resolveAdapterBehavior } from '../services/prompts/adapter-behavior';
@@ -94,7 +96,7 @@ export class ChatOutputAdapter {
       decisionKinds: decisions.map((d) => d.kind),
     });
 
-    const systemPrompt = buildResponderSystemPrompt(
+    const systemParts = buildResponderSystemPrompt(
       decisions,
       snapshot,
       this.registry,
@@ -128,7 +130,7 @@ export class ChatOutputAdapter {
       resolved.client,
       {
         model: resolved.modelId,
-        messages: [{ role: 'system', content: systemPrompt }, ...recent],
+        messages: [...systemParts.map((content) => ({ role: 'system' as const, content })), ...recent],
         temperature: behavior.responder.temperature,
         max_tokens: behavior.responder.maxTokens,
       },
@@ -158,7 +160,7 @@ function buildResponderSystemPrompt(
   template: string,
   frozenFragments: Readonly<Record<string, string>>,
   context?: ChatContext | null,
-): string {
+): string[] {
   // Releases frozen before responder v6 lack the KAN-28 command fragments.
   const fragments = { ...RESPONDER_FRAGMENT_FALLBACKS, ...frozenFragments };
   const statusSummary = describeFieldStatus(snapshot);
@@ -171,7 +173,8 @@ function buildResponderSystemPrompt(
     ? `\n${fragments.dispatchRequestGuardrail}`
     : '';
 
-  return template
+  // [static prefix, per-turn tail]; the parts concatenate to the full prompt.
+  return splitTemplateAtSlot(template, RESPONDER_TURN_SLOT).map((part) => part
     .replaceAll('{{persona}}', fragments.personaContextual)
     .replaceAll('{{stateHeading}}', fragments.systemHeading)
     .replaceAll('{{decisionsBlock}}', decisionsBlock)
@@ -180,7 +183,7 @@ function buildResponderSystemPrompt(
       statusSummary ? `\n${fragments.progressHeading}\n${statusSummary}` : '',
     )
     .replaceAll('{{guardrails}}', guardrails)
-    .replaceAll('{{dispatchGuardrail}}', dispatchGuardrail);
+    .replaceAll('{{dispatchGuardrail}}', dispatchGuardrail));
 }
 
 /** KAN-93: «chat de la marca X» / «chat del producto Y de la marca X»; none for a legacy conversation. */

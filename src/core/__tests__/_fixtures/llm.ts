@@ -23,7 +23,10 @@ import type {
 
 export interface CapturedCall {
   readonly params: unknown;
+  /** All system messages concatenated (what the model reads as the system prompt). */
   readonly systemPrompt: string;
+  /** Each system message as sent: [static prefix, per-turn tail?]. */
+  readonly systemParts: string[];
   readonly messageCount: number;
 }
 
@@ -44,10 +47,12 @@ export class FakeLLMProvider implements ILLMProvider {
 
   constructor(private readonly opts: FakeLLMProviderOptions = {}) {
     this.create = vi.fn(async (params: { messages?: Array<{ role: string; content: string }> }) => {
-      const sys = params.messages?.find((m) => m.role === 'system')?.content ?? '';
+      const systemParts = (params.messages ?? []).filter((m) => m.role === 'system').map((m) => m.content);
+      const sys = systemParts.join('');
       this.captured.push({
         params,
         systemPrompt: sys,
+        systemParts,
         messageCount: params.messages?.length ?? 0,
       });
       return this.buildResponse();

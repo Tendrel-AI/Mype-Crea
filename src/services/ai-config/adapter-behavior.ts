@@ -172,6 +172,19 @@ const RESPONDER_PROMPT_FRAGMENTS: Readonly<Record<string, string>> = {
   dispatchRequestGuardrail: `- Cuando combines un anuncio de despacho con una pregunta, escribe UNA sola respuesta de hasta 2 oraciones que primero confirme el despacho en una cláusula breve y luego pivotee a la pregunta del siguiente agente. Ejemplo de pivote: "Ya estoy generando tu logo. Para el slogan, ¿cómo describirías el tono que buscas?".`,
 };
 
+/**
+ * Splits a prompt template at the first per-turn slot into [stable prefix, per-turn tail] (prompt caching).
+ * The two parts concatenate back to the template. A slot at the start or absent means no split.
+ */
+export function splitTemplateAtSlot(template: string, slot: string): readonly string[] {
+  const at = template.indexOf(slot);
+  return at > 0 ? [template.slice(0, at), template.slice(at)] : [template];
+}
+
+/** Per-turn slots: everything from here on is the dynamic tail of each system prompt. */
+export const EXTRACTOR_TURN_SLOT = '\n{{askedBlock}}';
+export const RESPONDER_TURN_SLOT = '\n\n{{stateHeading}}';
+
 export function createCurrentAdapterBehaviorSnapshot(
   fields: ReadonlyArray<AdapterFieldBehavior> = [],
 ): AdapterBehaviorSnapshot {
