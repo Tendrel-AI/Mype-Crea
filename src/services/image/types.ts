@@ -51,6 +51,8 @@ export interface ImageResult {
 
 export interface IImageProvider {
   readonly id: string;
+  /** USD per image of this provider's model: what the usage gate reserves and settles (KAN-43). */
+  readonly priceUsd: number;
   generate(req: ImageRequest): Promise<ImageResult>;
 }
 

@@ -12,11 +12,15 @@ import { ImageGeneratorService } from '../generator';
 import type { IImageProvider, ImageRequest, ImageResult } from '../types';
 import { TaskError } from '../../../core/task-errors';
 import type { UsageLedger } from '../../usage/gateway';
-import { IMAGE_PRICE_USD, usageLimitMessage } from '../../usage/policy';
+import { usageLimitMessage } from '../../usage/policy';
+
+/** What the gate must reserve and settle: the provider's own price per image. */
+const PRICE = 0.05;
 
 function fakeProvider(id: string, urlPrefix: string): IImageProvider {
   return {
     id,
+    priceUsd: PRICE,
     generate: vi.fn(async (req: ImageRequest): Promise<ImageResult> => ({
       url: `${urlPrefix}/${encodeURIComponent(req.prompt)}`,
       providerId: id,
@@ -73,6 +77,7 @@ describe('ImageGeneratorService', () => {
   it('propagates provider errors', async () => {
     const failing: IImageProvider = {
       id: 'failing',
+      priceUsd: PRICE,
       generate: vi.fn(async () => {
         throw new Error('provider boom');
       }),
@@ -109,8 +114,8 @@ describe('ImageGeneratorService', () => {
       expect(resolver).toHaveBeenCalledWith(scope);
       expect(def.generate).toHaveBeenCalledTimes(1);
       expect(events).toEqual([
-        { op: 'reserve', kind: 'image', estimatedCostUsd: IMAGE_PRICE_USD, provider: 'fal', conversationId: 'conversation-a', agentTaskId: 'task-a' },
-        { op: 'settle', reservationId: 'reservation-1', actualCostUsd: IMAGE_PRICE_USD, outcome: 'succeeded', costSource: 'flat' },
+        { op: 'reserve', kind: 'image', estimatedCostUsd: PRICE, provider: 'fal', conversationId: 'conversation-a', agentTaskId: 'task-a' },
+        { op: 'settle', reservationId: 'reservation-1', actualCostUsd: PRICE, outcome: 'succeeded', costSource: 'flat' },
       ]);
     });
 
@@ -126,8 +131,8 @@ describe('ImageGeneratorService', () => {
     });
 
     it('failure: a typed rejection settles at 0, a timeout keeps the price (may have been billed)', async () => {
-      for (const [kind, cost] of [['provider_rejected', 0], ['timeout', IMAGE_PRICE_USD]] as const) {
-        const failing: IImageProvider = { id: 'fal', generate: vi.fn(async () => { throw new TaskError(kind, 'boom'); }) };
+      for (const [kind, cost] of [['provider_rejected', 0], ['timeout', PRICE]] as const) {
+        const failing: IImageProvider = { id: 'fal', priceUsd: PRICE, generate: vi.fn(async () => { throw new TaskError(kind, 'boom'); }) };
         const { events, resolver } = gate();
         const svc = new ImageGeneratorService(failing, resolver);
         await expect(svc.generate({ prompt: 'x', usage: scope })).rejects.toMatchObject({ kind });

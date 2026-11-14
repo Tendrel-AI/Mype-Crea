@@ -30,7 +30,7 @@ vi.mock('@fal-ai/client', () => ({
   },
 }));
 
-import { classifyFalError, FalImageProvider, falSafety } from '../fal-provider';
+import { classifyFalError, FalImageProvider, falSafety, readImageModel } from '../fal-provider';
 import { TaskError } from '../../../core/task-errors';
 import { getImageGenerator, resetImageGenerator } from '../index';
 
@@ -47,6 +47,7 @@ describe('FalImageProvider', () => {
 
   it.each(['openrouter', 'anthropic'])('keeps fal.ai independent of the %s LLM mode and credentials', async (provider) => {
     vi.stubEnv('LLM_PROVIDER', provider);
+    vi.stubEnv('IMAGE_MODEL', undefined);
     vi.stubEnv('OPENROUTER_API_KEY', undefined);
     vi.stubEnv('ANTHROPIC_API_KEY', undefined);
     vi.stubEnv('FAL_KEY', 'test-fal-key');
@@ -59,11 +60,36 @@ describe('FalImageProvider', () => {
     expect(settleSpy).toHaveBeenCalledWith(expect.objectContaining({ reservationId: 'reservation-1', outcome: 'succeeded' }));
 
     expect(configSpy).toHaveBeenCalledWith({ credentials: 'test-fal-key' });
-    expect(subscribeSpy).toHaveBeenCalledWith('blackforestlabs/flux-3/klein/text-to-image', {
-      input: { prompt: 'un logo', image_size: 'square_hd', enable_safety_checker: true, enable_prompt_expansion: false },
+    expect(reserveSpy).toHaveBeenCalledWith(expect.objectContaining({ estimatedCostUsd: 0.08 }));
+    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/nano-banana-2', {
+      input: { prompt: 'un logo', aspect_ratio: '1:1', resolution: '1K', output_format: 'png', safety_tolerance: '2' },
     });
     expect(result.providerId).toBe('fal');
     expect(result.url).toBe('https://fal.cdn/independent.png');
+  });
+
+  describe('IMAGE_MODEL (D63)', () => {
+    it('defaults to Nano Banana 2 and accepts klein; an unknown value fails loudly', () => {
+      expect(readImageModel({})).toBe('nano-banana-2');
+      expect(readImageModel({ IMAGE_MODEL: ' klein ' })).toBe('klein');
+      expect(() => readImageModel({ IMAGE_MODEL: 'flux-9' })).toThrow(expect.objectContaining({ kind: 'config_missing' }));
+    });
+
+    it('prices each model per image', () => {
+      expect(new FalImageProvider('k', 'nano-banana-2').priceUsd).toBe(0.08);
+      expect(new FalImageProvider('k', 'klein').priceUsd).toBe(0.009);
+    });
+
+    it('sends Gemini edits with the references and records its filter as the safety verdict', async () => {
+      subscribeSpy.mockResolvedValueOnce({ data: { images: [{ url: 'https://fal.cdn/nb.png' }], description: '' } });
+      const result = await new FalImageProvider('k', 'nano-banana-2').generate({ prompt: 'ajusta', referenceUrls: ['https://ref/a.png'] });
+
+      expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/nano-banana-2/edit', {
+        input: { prompt: 'ajusta', aspect_ratio: '1:1', resolution: '1K', output_format: 'png', safety_tolerance: '2', image_urls: ['https://ref/a.png'] },
+      });
+      expect(result.modelId).toBe('fal-ai/nano-banana-2/edit');
+      expect(result.safety).toEqual(expect.objectContaining({ verdict: 'passed', category: null, classifier: 'google-gemini-safety-filter', model: 'fal-ai/nano-banana-2/edit' }));
+    });
   });
 
   it('throws cleanly when constructed without an API key', () => {
@@ -77,13 +103,13 @@ describe('FalImageProvider', () => {
   });
 
   it('calls fal.config with the provided API key', () => {
-    new FalImageProvider('test-key');
+    new FalImageProvider('test-key', 'klein');
     expect(configSpy).toHaveBeenCalledWith({ credentials: 'test-key' });
   });
 
   it('uses the base endpoint when no reference URLs are supplied', async () => {
     subscribeSpy.mockResolvedValueOnce({ data: { images: [{ url: 'https://fal.cdn/img.png' }] } });
-    const provider = new FalImageProvider('test-key');
+    const provider = new FalImageProvider('test-key', 'klein');
 
     const result = await provider.generate({ prompt: 'una marca minimalista' });
 
@@ -99,7 +125,7 @@ describe('FalImageProvider', () => {
 
   it('uses the edit endpoint when reference URLs are supplied', async () => {
     subscribeSpy.mockResolvedValueOnce({ data: { images: [{ url: 'https://fal.cdn/edited.png' }] } });
-    const provider = new FalImageProvider('test-key');
+    const provider = new FalImageProvider('test-key', 'klein');
 
     const result = await provider.generate({
       prompt: 'refine the logo',
@@ -127,7 +153,7 @@ describe('FalImageProvider', () => {
     ['indeterminate', [], null],
   ])('records a %s safety verdict with classifier provenance (has_nsfw_concepts=%j, KAN-33)', async (verdict, flags, category) => {
     subscribeSpy.mockResolvedValueOnce({ data: { images: [{ url: 'https://fal.cdn/img.png' }], has_nsfw_concepts: flags } });
-    const provider = new FalImageProvider('test-key');
+    const provider = new FalImageProvider('test-key', 'klein');
 
     const result = await provider.generate({ prompt: 'x', referenceUrls: ['https://ref'] });
 
@@ -148,20 +174,20 @@ describe('FalImageProvider', () => {
 
   it('throws when fal returns no image URL', async () => {
     subscribeSpy.mockResolvedValueOnce({ data: { images: [] } });
-    const provider = new FalImageProvider('test-key');
+    const provider = new FalImageProvider('test-key', 'klein');
     await expect(provider.generate({ prompt: 'x' })).rejects.toThrow(/no image URL/);
   });
 
   it('propagates untyped errors from fal.subscribe unchanged', async () => {
     const upstream = new Error('fal upstream error');
     subscribeSpy.mockRejectedValueOnce(upstream);
-    const provider = new FalImageProvider('test-key');
+    const provider = new FalImageProvider('test-key', 'klein');
     await expect(provider.generate({ prompt: 'x' })).rejects.toBe(upstream);
   });
 
   it('rethrows a fal HTTP error as a typed TaskError', async () => {
     subscribeSpy.mockRejectedValueOnce(Object.assign(new Error('Too Many Requests'), { status: 429 }));
-    const provider = new FalImageProvider('test-key');
+    const provider = new FalImageProvider('test-key', 'klein');
     const rejection = provider.generate({ prompt: 'x' });
     await expect(rejection).rejects.toBeInstanceOf(TaskError);
     await expect(rejection).rejects.toMatchObject({ kind: 'rate_limited', message: 'Too Many Requests' });
@@ -202,7 +228,7 @@ describe('FalImageProvider data: references', () => {
   it('uploads a data: reference to fal storage and sends the returned URL; https passes through', async () => {
     uploadSpy.mockResolvedValue('https://fal.media/files/photo.png');
     subscribeSpy.mockResolvedValue({ data: { images: [{ url: 'https://fal.cdn/x.png' }], has_nsfw_concepts: [false] } });
-    const provider = new FalImageProvider('k');
+    const provider = new FalImageProvider('k', 'klein');
     await provider.generate({ prompt: 'p', referenceUrls: ['data:image/png;base64,AQID', 'https://example.test/a.png'] });
     const blob = uploadSpy.mock.calls[0][0] as Blob;
     expect(blob.type).toBe('image/png');

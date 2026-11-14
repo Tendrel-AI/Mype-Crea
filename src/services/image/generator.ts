@@ -13,7 +13,6 @@ import { TaskError } from '../../core/task-errors';
 import { loggerFor } from '../logger';
 import { assertOwnerActive, type OwnerActiveCheck } from '../account-status';
 import { runWithUsage, UsageLimitError, type UsageLedger } from '../usage/gateway';
-import { IMAGE_PRICE_USD } from '../usage/policy';
 import type { IImageGenerator, IImageProvider, ImagePurpose, ImageRequest, ImageResult, ImageUsageScope } from './types';
 
 /** KAN-43: the ledger of the user who pays for an image, plus its conversation for correlation. */
@@ -68,15 +67,15 @@ export class ImageGeneratorService implements IImageGenerator {
       return await runWithUsage(ledger, {
         request: {
           kind: 'image',
-          estimatedCostUsd: IMAGE_PRICE_USD,
+          estimatedCostUsd: provider.priceUsd,
           provider: provider.id,
           conversationId,
           agentTaskId: req.usage.agentTaskId,
         },
         call: () => provider.generate(req),
-        actualCost: () => ({ usd: IMAGE_PRICE_USD, source: 'flat' }),
+        actualCost: () => ({ usd: provider.priceUsd, source: 'flat' }),
         // A typed rejection was not billed; a timeout or untyped failure may have been.
-        failureCostUsd: (error) => error instanceof TaskError && error.kind !== 'timeout' ? 0 : IMAGE_PRICE_USD,
+        failureCostUsd: (error) => error instanceof TaskError && error.kind !== 'timeout' ? 0 : provider.priceUsd,
       });
     } catch (error) {
       if (error instanceof UsageLimitError) throw new TaskError('usage_limited', error.userMessage, { cause: error });

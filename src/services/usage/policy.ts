@@ -87,7 +87,7 @@ export function usageLimitMessage(reason: UsageDenialReason): string {
 // Unknown models use the conservative default so an unpriced model can't look cheap.
 // ---------------------------------------------------------------------------
 
-export const PRICING_VERSION = 'kan-43.2026-11-14';
+export const PRICING_VERSION = 'kan-43.2026-11-14.2';
 
 interface TokenPrice { readonly inputPerMTok: number; readonly outputPerMTok: number }
 
@@ -101,8 +101,12 @@ const LLM_PRICES: Readonly<Record<string, TokenPrice>> = {
   'anthropic/claude-haiku-5.5': { inputPerMTok: 0.1, outputPerMTok: 0.5 },
 };
 const DEFAULT_LLM_PRICE: TokenPrice = { inputPerMTok: 5, outputPerMTok: 25 };
-/** One fal FLUX.3 Klein 1K image (text-to-image or edit, per output image): USD 0.009 (fal schedule, 2026-11-14). */
-export const IMAGE_PRICE_USD = 0.009;
+/**
+ * USD per 1K output image (generation or edit), fal list prices 2026-11-14, by the `IMAGE_MODEL` choice (D63):
+ * FLUX.3 Klein 0.009, Nano Banana 2 (Gemini 3.1 Flash Image) 0.08. Reserved and settled flat.
+ */
+export const IMAGE_PRICES_USD = { klein: 0.009, 'nano-banana-2': 0.08 } as const;
+export type ImageModelKey = keyof typeof IMAGE_PRICES_USD;
 /** Output tokens assumed when a request sets no max_tokens. */
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 
