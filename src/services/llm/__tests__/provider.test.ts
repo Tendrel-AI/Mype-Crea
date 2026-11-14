@@ -241,6 +241,28 @@ describe('LLM provider configuration', () => {
     expect(result.usage).toMatchObject({ cached_tokens: 80, cache_write_tokens: 10, cost: 0.001 });
   });
 
+  it('sets reasoning per Claude model on OpenRouter and nothing for other models', async () => {
+    const bodies: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({
+        id: 'c', model: 'm', object: 'chat.completion', created: 1,
+        choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+    const client = new OpenRouterProvider('key').resolve('extractor').client;
+    const messages = [{ role: 'user' as const, content: 'hi' }];
+    const tools = [{ type: 'function', function: { name: 'f', parameters: { type: 'object' } } }];
+    await client.chat.completions.create({ model: 'anthropic/claude-haiku-5.5', messages });
+    await client.chat.completions.create({ model: 'anthropic/claude-haiku-5.5', messages, tools });
+    await client.chat.completions.create({ model: 'anthropic/claude-sonnet-5.5', messages });
+    await client.chat.completions.create({ model: 'google/gemini-2.5-flash', messages });
+    expect(bodies[0].reasoning).toEqual({ enabled: false });
+    expect(bodies[1]).not.toHaveProperty('reasoning');
+    expect(bodies[2].reasoning).toEqual({ effort: 'low' });
+    expect(bodies[3]).not.toHaveProperty('reasoning');
+  });
+
   it('sends the configured Anthropic model unchanged', async () => {
     process.env.ANTHROPIC_RESPONDER_MODEL = 'claude-opus-4-1';
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {

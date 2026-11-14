@@ -68,6 +68,7 @@ export class OpenRouterProvider implements ILLMProvider {
                 ...(typeof params.max_tokens === 'number'
                   ? { max_tokens: params.max_tokens }
                   : {}),
+                ...openRouterReasoning(params.model, Boolean(params.tools?.length)),
                 ...(params.tools
                   ? { tools: toOpenRouterTools(params.tools) }
                   : {}),
@@ -152,6 +153,18 @@ function toOpenRouterMessages(
     }
     return { role: message.role, content: message.content };
   });
+}
+
+/**
+ * Keep Claude's default thinking out of short replies (it is billed as output). Mirrors `thinkingConfig` in
+ * anthropic-provider.ts. OpenRouter maps `reasoning.enabled=false` to `thinking: disabled`, which Sonnet 5.5
+ * rejects with a 400, so Sonnet gets the lowest effort (`output_config.effort`) instead. Haiku tool requests keep
+ * the default, as on the direct provider (forced tool calls return the call without a thinking block).
+ */
+export function openRouterReasoning(model: string, hasTools: boolean): { reasoning?: Record<string, unknown> } {
+  if (model.startsWith('anthropic/claude-sonnet-5.5')) return { reasoning: { effort: 'low' } };
+  if (model.startsWith('anthropic/claude-haiku-5.5') && !hasTools) return { reasoning: { enabled: false } };
+  return {};
 }
 
 /** Only Anthropic models need explicit cache markers; Gemini/DeepSeek/MiniMax cache implicitly. */
