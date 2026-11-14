@@ -11,16 +11,20 @@
  */
 import type { Redis as RedisClient } from 'ioredis';
 import type {
+  AgentId,
   ConversationId,
   DeliverableId,
   TaskId,
   UUID,
 } from '../core/contracts';
-import type { TaskState } from '../core/agent-types';
+import type { A2AMessage, TaskState } from '../core/agent-types';
 import type { AgentRegistry } from '../core/orchestrator/agent-registry';
 import type { IAgentLifecycleNotifier } from '../core/orchestrator/agent-lifecycle-notifier';
+import type { TaskSettlementContext } from '../core/orchestrator/runtime-config';
 import type { DeliverableInsert, DeliverableRow } from '../repos/models';
 import type { SystemRepos, Tenant } from '../repos';
+import type { AiTurnsRepo } from '../repos/ai-turns';
+import type { StoreArtifactImages } from '../services/storage/artifact-store';
 
 export interface DeliverablesRepoLike {
   insert(input: DeliverableInsert): Promise<Pick<DeliverableRow, 'id'>>;
@@ -46,6 +50,11 @@ export interface WorkerContext {
     conversationId: ConversationId,
   ) => Promise<UUID | null>;
   /**
+   * D43: live status of the conversation owner. A still-pending task of an inactive owner is
+   * canceled at pickup and never started. Optional: when omitted (unit tests) no check runs.
+   */
+  readonly isUserActive?: (tenantId: string, userId: string) => Promise<boolean>;
+  /**
    * Build a user-scoped deliverables repo. Called after resolveConversationOwner
    * so the worker can persist artifacts under the correct (tenant, user) RLS
    * context. Optional: when omitted (unit tests), persistence is skipped and
@@ -56,6 +65,19 @@ export interface WorkerContext {
     userId: UUID,
   ) => DeliverablesRepoLike;
   /**
+   * The frozen prompt of the conversation's pinned version for an agent (D22). Optional: when
+   * omitted or failing, the handler uses the active frozen version.
+   */
+  readonly pinnedPromptFor?: (tenantId: UUID, conversationId: ConversationId, agentId: AgentId) => Promise<A2AMessage['prompt']>;
+  /**
+   * Copy generated images into private object storage before settlement
+   * (KAN-52). Defaults to `storeArtifactImages` over the configured bucket
+   * service; tests inject a fake. Throws a typed task error on failure.
+   */
+  readonly storeArtifacts?: StoreArtifactImages;
+  /** Atomic terminal task, deliverables, core-state and outbox commit. */
+  readonly settleTaskFor?: (tenantId: UUID, userId: UUID) => Pick<AiTurnsRepo, 'settleTaskAndEnqueue'>;
+  /**
    * Wired to OrchestratorCoreImpl.onTaskSettled at runtime boot. The
    * `deliverableIds` parameter carries the ids of the deliverables rows the
    * worker has just persisted.
@@ -64,7 +86,8 @@ export interface WorkerContext {
     taskId: TaskId,
     state: TaskState,
     deliverableIds: ReadonlyArray<DeliverableId>,
-  ) => void;
+    context?: TaskSettlementContext,
+  ) => Promise<void> | void;
   /**
    * Used to publish "task processing" lifecycle events as soon as the worker
    * has claimed a row. The SSE route subscribes here so the UI can render a

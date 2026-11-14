@@ -37,18 +37,29 @@ import type {
   IAgentTransport,
   TaskState,
 } from '../core/agent-types';
+import {
+  notification,
+  redisChannelFor,
+  redisChannelName,
+  serializeNotification,
+  type NotificationPayload,
+} from '../core/contracts/notifications';
 import { loggerFor } from '../services/logger';
 
 const log = loggerFor('transport.redis-queue');
 
-export const channelForAgent = (agentId: AgentId): string =>
-  `mypes:agent_task:dispatch:${agentId}`;
+export const channelForAgent = (agentId: AgentId): string => redisChannelName('task_dispatch', agentId);
 
-/** Payload published on the wake-up channel. Trigger only — never trusted. */
-export interface DispatchNotification {
-  readonly taskId: TaskId;
-  readonly tenantId: string;
-  readonly agentId: AgentId;
+/**
+ * Payload published on the wake-up channel (the `task_dispatch` kind of the
+ * notification contract). Trigger only — never trusted.
+ */
+export type DispatchNotification = NotificationPayload<'task_dispatch'>;
+
+/** The wire message for a dispatch wake-up. Every publisher goes through this. */
+export function dispatchWakeUp(payload: DispatchNotification): { readonly channel: string; readonly message: string } {
+  const n = notification('task_dispatch', payload);
+  return { channel: redisChannelFor(n), message: serializeNotification(n) };
 }
 
 export interface RedisQueueAdapterDeps {
@@ -72,17 +83,13 @@ export class RedisQueueAdapter implements IAgentTransport {
       return this.deps.fallback.dispatch(message);
     }
 
-    const channel = channelForAgent(message.agentId);
-    const payload: DispatchNotification = {
+    const { channel, message: body } = dispatchWakeUp({
       taskId: message.taskId,
       tenantId: message.tenantId,
       agentId: message.agentId,
-    };
+    });
 
-    const subscribers = await this.deps.publisher.publish(
-      channel,
-      JSON.stringify(payload),
-    );
+    const subscribers = await this.deps.publisher.publish(channel, body);
 
     log.info(
       {

@@ -1,9 +1,10 @@
 {
   "name": "logo-agent",
   "description": "Genera el logotipo de la marca.",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "skills": [],
   "mypes:requirements": {
+    "askBatchSize": 6,
     "required": [
       {
         "name": "business_name",
@@ -11,16 +12,139 @@
         "promptHint": "¿Qué nombre debe llevar el logo?"
       },
       {
-        "name": "style_keywords",
+        "name": "business_category",
+        "type": "enum",
+        "vocabulary": "business_category",
+        "promptHint": "¿Qué productos o servicios ofreces hoy y cuáles podrías ofrecer más adelante?"
+      },
+      {
+        "name": "market_proposition",
         "type": "string",
-        "promptHint": "Describe el estilo del logo (por ejemplo: minimalista, colorido, tradicional)."
+        "promptHint": "¿Cuál es tu propuesta de mercado? (qué ofreces y por qué te eligen)"
+      },
+      {
+        "name": "target_audience",
+        "type": "enum",
+        "vocabulary": "target_audience",
+        "promptHint": "¿Quién es tu público y en qué situaciones te conoce o te compra?"
+      },
+      {
+        "name": "differentiator",
+        "type": "string",
+        "promptHint": "¿Qué te hace distinto de los demás?"
+      },
+      {
+        "name": "personality",
+        "type": "string",
+        "promptHint": "¿Cómo quieres que se sienta tu marca? (por ejemplo: cálida, moderna, artesanal)"
+      },
+      {
+        "name": "brand_story",
+        "type": "string",
+        "promptHint": "¿Qué historia o inspiración hay detrás del negocio?"
+      },
+      {
+        "name": "language_references",
+        "type": "string",
+        "promptHint": "¿Qué raíces culturales, lugares o tradiciones deberían verse en el logo?"
+      },
+      {
+        "name": "color_palette",
+        "type": "string",
+        "promptHint": "¿Qué colores quieres usar, permitir o evitar en el logo?",
+        "delegable": true
+      },
+      {
+        "name": "logo_goal",
+        "type": "string",
+        "promptHint": "¿Qué debe lograr tu logo? ¿Dónde lo verá la gente?"
+      },
+      {
+        "name": "logo_avoid",
+        "type": "string",
+        "promptHint": "¿Qué asociaciones o interpretaciones debe evitar el logo?",
+        "delegable": true
+      },
+      {
+        "name": "competitors",
+        "type": "string",
+        "promptHint": "¿Quiénes son tus competidores y qué motivos visuales usan que no quieres repetir?",
+        "delegable": true
+      },
+      {
+        "name": "visual_references",
+        "type": "string",
+        "promptHint": "¿Qué marcas o imágenes te gustan como referencia, y qué te gusta o no de cada una?",
+        "delegable": true
+      },
+      {
+        "name": "logo_composition",
+        "type": "string",
+        "promptHint": "¿Qué composición prefieres? (solo nombre, nombre y símbolo, monograma, o que el diseñador recomiende)",
+        "delegable": true
+      },
+      {
+        "name": "logo_shapes",
+        "type": "string",
+        "promptHint": "¿Cómo imaginas las formas del logo? (geometría, curvas o ángulos, grosor y nivel de detalle)",
+        "delegable": true
+      },
+      {
+        "name": "logo_typography",
+        "type": "string",
+        "promptHint": "¿Cómo quieres la tipografía? (mayúsculas o minúsculas, espaciado, carácter de las letras)",
+        "delegable": true
+      },
+      {
+        "name": "logo_keep",
+        "type": "string",
+        "promptHint": "¿Hay elementos actuales de tu marca que tus clientes ya reconocen y quieres conservar?",
+        "delegable": true
+      },
+      {
+        "name": "logo_applications",
+        "type": "string",
+        "promptHint": "¿Dónde aparecerá tu logo, ordenado por importancia? (empaque, redes sociales, letrero, etc.)",
+        "delegable": true
+      },
+      {
+        "name": "logo_production_limits",
+        "type": "string",
+        "promptHint": "¿Qué límites de producción hay? (tamaño mínimo, fondos, impresión, bordado, grabado)",
+        "delegable": true
+      },
+      {
+        "name": "logo_restrictions",
+        "type": "string",
+        "promptHint": "¿Hay elementos obligatorios o prohibidos en el logo?",
+        "delegable": true
       }
     ],
     "optional": [
       {
-        "name": "color_palette",
+        "name": "style_keywords",
         "type": "string",
-        "promptHint": "¿Tienes colores preferidos para tu marca?"
+        "promptHint": "Describe el estilo del logo (por ejemplo: minimalista, colorido, tradicional)."
+      },
+      {
+        "name": "visual_behavior",
+        "type": "string",
+        "promptHint": "¿Cómo quieres que se comporte visualmente tu marca?"
+      },
+      {
+        "name": "color_description",
+        "type": "string",
+        "promptHint": "Describe tus colores con palabras (por ejemplo: verde selva y dorado)."
+      },
+      {
+        "name": "location",
+        "type": "string",
+        "promptHint": "¿Dónde está ubicado tu negocio?"
+      },
+      {
+        "name": "existing_tagline",
+        "type": "string",
+        "promptHint": "¿Tienes un lema o eslogan actual?"
       }
     ]
   },
@@ -30,7 +154,18 @@
     "displayOrder": 2,
     "outputPreview": "logo"
   },
+  "mypes:deliverable": {
+    "kind": "logo",
+    "dependsOn": [
+      "business_name"
+    ],
+    "level": "brand",
+    "ownSource": "brand_logo"
+  },
   "supportedInterfaces": [
-    { "protocol": "local", "module": "agents/logo-agent/handler.ts" }
+    {
+      "protocol": "local",
+      "module": "agents/logo-agent/handler.ts"
+    }
   ]
 }

@@ -22,35 +22,73 @@
 
 import type {
   ConversationSnapshot,
+  DeliverableCommandKind,
   FieldSlot,
   PlannerDecision,
+  UploadRequestEntry,
 } from '../core/contracts';
 import type { A2AArtifact } from '../core/agent-types';
 import type { AgentRegistry } from '../core/orchestrator/agent-registry';
 import type { MessageRow } from '../repos/models';
 import { getProvider } from '../services/llm';
+import {
+  assertResolvedModelPurpose,
+  RESPONDER_FRAGMENT_FALLBACKS,
+  RESPONDER_TURN_SLOT,
+  splitTemplateAtSlot,
+  type AdapterExecution,
+} from '../services/ai-config/adapter-behavior';
+import { resolveAdapterBehavior } from '../services/prompts/adapter-behavior';
+import type { PromptVersions } from '../services/prompts';
 import { withLlmLogging, type LlmLoggingContext } from '../services/llm-logger';
 import { loggerFor } from '../services/logger';
+import type { ChatContext } from './chat-welcome';
+import { UNNAMED_BRAND_LABEL, UNNAMED_PRODUCT_LABEL } from '../conversations/label';
 
 const log = loggerFor('adapter.chat-output');
 
-const RESPONDER_PROMPT_VERSION = 'responder.chat-step1.v4';
+/** Longest legit reply is an announce_completion list of ~5 name/tagline options (~1.3k chars); 2000 leaves margin, runaway output is far longer. */
+export const MAX_REPLY_CHARS = 2000;
+export const GENERIC_FALLBACK_REPLY = 'Revisa el panel para ver tus opciones o cuéntame más sobre tu negocio.';
+export type UnusableReplyReason = 'empty' | 'special_tokens' | 'prompt_leak' | 'too_long';
 
-/** How many recent turns to include for tone continuity. */
-const RECENT_MESSAGE_LIMIT = 10;
+export const SPECIAL_TOKENS = /<[｜|][^>]{0,40}[｜|]>/;
+const PROMPT_MARKERS = ['kind=', 'Acción obligatoria', 'Decisión:'];
+
+/** Pure check for model output that must never reach the user (empty, garbage, leaked prompt, runaway). */
+export function unusableReplyReason(content: string): UnusableReplyReason | undefined {
+  if (content.trim().length === 0) return 'empty';
+  if (SPECIAL_TOKENS.test(content)) return 'special_tokens';
+  if (PROMPT_MARKERS.some((m) => content.includes(m))) return 'prompt_leak';
+  if (content.length > MAX_REPLY_CHARS) return 'too_long';
+  return undefined;
+}
+
+function fallbackReply(decisions: ReadonlyArray<PlannerDecision>): string {
+  for (const d of decisions) if (d.kind === 'request_fields' && d.fields.length > 0) return d.fields[0].promptHint;
+  return GENERIC_FALLBACK_REPLY;
+}
 
 export interface RenderInput {
   readonly decisions: ReadonlyArray<PlannerDecision>;
   readonly recentMessages: ReadonlyArray<Pick<MessageRow, 'role' | 'content'>>;
   readonly snapshot: ConversationSnapshot;
   readonly llmContext: LlmLoggingContext;
+  /** Explicit frozen execution for product turns; omitted by legacy/eval callers. */
+  readonly execution?: AdapterExecution;
+  /** The conversation's pinned prompt versions (D22); omitted = the active versions. */
+  readonly promptVersions?: PromptVersions;
+  /** KAN-93: brand/product names of the conversation; null/omitted = legacy conversation or unknown. */
+  readonly context?: ChatContext | null;
 }
 
 export class ChatOutputAdapter {
   constructor(private readonly registry: AgentRegistry) {}
 
-  async render(input: RenderInput): Promise<{ content: string }> {
-    const { decisions, recentMessages, snapshot, llmContext } = input;
+  async render(input: RenderInput): Promise<{ content: string; fallback?: UnusableReplyReason }> {
+    const { decisions, recentMessages, snapshot, llmContext, execution, promptVersions, context } = input;
+    const behavior = resolveAdapterBehavior('responder', promptVersions, [], execution);
+    if (execution) assertResolvedModelPurpose(execution.model, 'responder');
     const child = log.child({
       op: 'render',
       conversationId: snapshot.conversationId,
@@ -58,9 +96,17 @@ export class ChatOutputAdapter {
       decisionKinds: decisions.map((d) => d.kind),
     });
 
-    const systemPrompt = buildResponderSystemPrompt(decisions, snapshot, this.registry);
-    const recent = recentMessages
-      .slice(-RECENT_MESSAGE_LIMIT)
+    const systemParts = buildResponderSystemPrompt(
+      decisions,
+      snapshot,
+      this.registry,
+      behavior.responder.promptTemplate,
+      behavior.responder.promptFragments,
+      context,
+    );
+    const recent = (behavior.responder.historyLimit === 0
+      ? []
+      : recentMessages.slice(-behavior.responder.historyLimit))
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => ({
         role: m.role as 'user' | 'assistant',
@@ -77,24 +123,24 @@ export class ChatOutputAdapter {
       'responder.input',
     );
 
-    const resolved = getProvider().resolve('responder');
+    const resolved = execution?.model ?? getProvider().resolve('responder');
     child.info({ model: resolved.modelId }, 'responder.llm.start');
 
     const completion = await withLlmLogging(
       resolved.client,
       {
         model: resolved.modelId,
-        messages: [{ role: 'system', content: systemPrompt }, ...recent],
-        temperature: 0.7,
-        max_tokens: 1800,
+        messages: [...systemParts.map((content) => ({ role: 'system' as const, content })), ...recent],
+        temperature: behavior.responder.temperature,
+        max_tokens: behavior.responder.maxTokens,
       },
-      { ...llmContext, promptVersion: RESPONDER_PROMPT_VERSION, modelRevision: resolved.modelRevision },
+      { ...llmContext, promptVersion: behavior.responder.promptVersion, modelRevision: resolved.modelRevision, provider: resolved.provider ?? 'openrouter', purpose: 'responder' },
     );
 
-    const content = completion.choices[0]?.message?.content?.trim() ?? '';
-    if (content.length === 0) {
-      child.warn('responder.empty_content');
-    }
+    const raw = completion.choices[0]?.message?.content?.trim() ?? '';
+    const fallback = unusableReplyReason(raw);
+    if (fallback) child.warn({ reason: fallback, contentLength: raw.length }, 'responder.fallback');
+    const content = fallback ? fallbackReply(decisions) : raw;
     child.info(
       {
         contractOut: 'AssistantMessage',
@@ -103,7 +149,7 @@ export class ChatOutputAdapter {
       },
       'responder.output',
     );
-    return { content };
+    return fallback ? { content, fallback } : { content };
   }
 }
 
@@ -111,54 +157,82 @@ function buildResponderSystemPrompt(
   decisions: ReadonlyArray<PlannerDecision>,
   snapshot: ConversationSnapshot,
   registry: AgentRegistry,
-): string {
-  const persona = [
-    `Eres "CreaMype", una estratega de marca peruana que conversa en español rioplatense neutro,`,
-    `cálido y profesional. Hablas con micro y pequeñas empresarias peruanas (MYPEs) que están`,
-    `creando su marca paso a paso.`,
-  ].join(' ');
-
+  template: string,
+  frozenFragments: Readonly<Record<string, string>>,
+  context?: ChatContext | null,
+): string[] {
+  // Releases frozen before responder v6 lack the KAN-28 command fragments.
+  const fragments = { ...RESPONDER_FRAGMENT_FALLBACKS, ...frozenFragments };
   const statusSummary = describeFieldStatus(snapshot);
-  const decisionsBlock = describeDecisions(decisions, registry);
-  const guardrails = buildGuardrails(decisions);
+  const decisionsBlock = [contextLine(context, fragments), describeDecisions(decisions, registry, fragments, snapshot)].filter(Boolean).join('\n\n');
+  // Templates from v15 place the per-turn dispatch guardrail after the state (`{{dispatchGuardrail}}`),
+  // keeping `{{guardrails}}` static; older frozen templates keep it inside the guardrails.
+  const lateDispatch = template.includes('{{dispatchGuardrail}}');
+  const guardrails = buildGuardrails(decisions, fragments, !lateDispatch);
+  const dispatchGuardrail = lateDispatch && needsDispatchGuardrail(decisions)
+    ? `\n${fragments.dispatchRequestGuardrail}`
+    : '';
 
-  return [
-    persona,
-    ``,
-    `Estado actual del orquestador (autoritativo, no lo cuestiones):`,
-    decisionsBlock,
-    statusSummary ? `\nProgreso de campos (solo estados, sin valores):\n${statusSummary}` : '',
-    ``,
-    guardrails,
-  ]
-    .filter((line) => line !== '')
-    .join('\n');
+  // [static prefix, per-turn tail]; the parts concatenate to the full prompt.
+  return splitTemplateAtSlot(template, RESPONDER_TURN_SLOT).map((part) => part
+    .replaceAll('{{persona}}', fragments.personaContextual)
+    .replaceAll('{{stateHeading}}', fragments.systemHeading)
+    .replaceAll('{{decisionsBlock}}', decisionsBlock)
+    .replaceAll(
+      '{{progressBlock}}',
+      statusSummary ? `\n${fragments.progressHeading}\n${statusSummary}` : '',
+    )
+    .replaceAll('{{guardrails}}', guardrails)
+    .replaceAll('{{dispatchGuardrail}}', dispatchGuardrail));
+}
+
+/** KAN-93: «chat de la marca X» / «chat del producto Y de la marca X»; none for a legacy conversation. */
+function contextLine(context: ChatContext | null | undefined, fragments: Readonly<Record<string, string>>): string {
+  if (!context?.brandId) return '';
+  const brandName = context.brandName?.trim() || UNNAMED_BRAND_LABEL;
+  if (!context.productId) return applyPromptTemplate(fragments.brandChatContext, { brandName });
+  return applyPromptTemplate(fragments.productChatContext, { brandName, productName: context.productName?.trim() || UNNAMED_PRODUCT_LABEL });
 }
 
 function describeDecisions(
   decisions: ReadonlyArray<PlannerDecision>,
   registry: AgentRegistry,
+  fragments: Readonly<Record<string, string>>,
+  snapshot: ConversationSnapshot,
 ): string {
   if (decisions.length === 0) {
     // Should not happen — the planner always returns at least one decision —
     // but degrade gracefully rather than send an empty prompt.
-    return [
-      `kind=noop`,
-      `Decisión: no hay nada nuevo que comunicar.`,
-      `Acción obligatoria: en UNA sola frase corta, invita al usuario con una pregunta abierta a contarte sobre su negocio.`,
-    ].join('\n');
+    return fragments.noopDecision;
   }
 
   if (decisions.length === 1) {
-    return describeDecision(decisions[0], registry);
+    return describeDecision(decisions[0], registry, fragments, snapshot);
   }
 
   return decisions
-    .map((d, i) => `Decisión ${i + 1}:\n${describeDecision(d, registry)}`)
+    .map((d, i) => `Decisión ${i + 1}:\n${describeDecision(d, registry, fragments, snapshot)}`)
     .join('\n\n');
 }
 
-function describeDecision(decision: PlannerDecision, registry: AgentRegistry): string {
+function describeUpload(
+  kindTag: string,
+  u: UploadRequestEntry,
+  registry: AgentRegistry,
+  fragments: Readonly<Record<string, string>>,
+): string {
+  return applyPromptTemplate(fragments.requestUploadDecision, {
+    kind: kindTag, agentId: u.agentId, deliverableLabel: deliverableLabelFor(u.agentId, u.deliverableKind, registry),
+    uploadKind: u.uploadKind, promptHint: u.promptHint,
+  });
+}
+
+function describeDecision(
+  decision: PlannerDecision,
+  registry: AgentRegistry,
+  fragments: Readonly<Record<string, string>>,
+  snapshot: ConversationSnapshot,
+): string {
   // Each block leads with `kind=...` as a machine-readable tag so the
   // responder can ground on the literal decision name from PlannerDecision,
   // and so log audits / tests can match on the kind verbatim.
@@ -171,50 +245,69 @@ function describeDecision(decision: PlannerDecision, registry: AgentRegistry): s
       );
       const single = decision.fields.length === 1;
       void registry;
-      return [
-        kindTag,
-        `Decisión: pedir ${single ? 'UN campo' : `${decision.fields.length} campos`} faltantes al usuario.`,
-        `Agente: ${decision.agentId}`,
-        `Campos a preguntar:`,
-        ...lines,
-        single
-          ? `Acción obligatoria: pídele al usuario ÚNICAMENTE este campo. UNA sola pregunta natural en español.`
-          : `Acción obligatoria: pídele al usuario AMBOS campos en UNA sola oración natural en español (por ejemplo "¿cómo se llama tu negocio y qué estilo querés para el logo?"). NO los enumeres como una lista.`,
-        `PROHIBIDO mencionar otros agentes o saltar al siguiente paso.`,
-      ].join('\n');
+      const uploadBlocks = (decision.uploads ?? []).map((u) => describeUpload(kindTag, u, registry, fragments));
+      const fieldsBlock = applyPromptTemplate(fragments.requestFieldsDecision, {
+        kind: kindTag,
+        fieldCountDescription: single ? 'UN campo' : `${decision.fields.length} campos`,
+        agentId: decision.agentId,
+        fieldLines: lines.join('\n'),
+        actionLine: single
+          ? fragments.requestFieldsSingleAction
+          : decision.fields.length > 2 ? fragments.requestFieldsListAction : fragments.requestFieldsMultiAction,
+      });
+      // KAN-110: the upload ask is composed from the existing fragment so both go in one reply.
+      return [fieldsBlock, ...uploadBlocks.map((b) => `Además, en el mismo mensaje:\n${b}`)].join('\n\n');
     }
-    case 'confirm_field':
-      return [
-        kindTag,
-        `Decisión: confirmar un valor de baja confianza con el usuario.`,
-        `Agente: ${decision.agentId}`,
-        `Campo: ${decision.fieldName}`,
-        `Valor pendiente: "${String(decision.pendingValue)}"`,
-        `Razón: ${decision.reason}`,
-        `Acción obligatoria: parafrasea el valor pendiente y haz UNA sola pregunta cerrada (sí/no) tipo "¿Es correcto?" o "¿Confirmas?".`,
-      ].join('\n');
+    case 'confirm_fields':
+      return applyPromptTemplate(fragments.confirmFieldsDecision, {
+        kind: kindTag,
+        entryLines: decision.entries.map((e) => `  - ${e.fieldName}: "${String(e.pendingValue)}"`).join('\n'),
+        reason: decision.reason,
+      });
     case 'request_selection':
-      return [
-        kindTag,
-        `Decisión: pedir al usuario que elija una alternativa.`,
-        `Agente: ${decision.agentId}`,
-        `Cantidad de candidatos: ${decision.candidateDeliverableIds.length}`,
-        `Acción obligatoria: invita al usuario a elegir una opción del panel lateral. NO listes los IDs ni inventes nombres.`,
-      ].join('\n');
+      return applyPromptTemplate(fragments.requestSelectionDecision, {
+        kind: kindTag, agentId: decision.agentId, count: String(decision.candidateDeliverableIds.length),
+      });
+    case 'offer_generation':
+      return applyPromptTemplate(fragments.offerGenerationDecision, {
+        kind: kindTag,
+        agentId: decision.agentId,
+        deliverableLabel: deliverableLabelFor(decision.agentId, decision.deliverableKind, registry),
+      });
+    case 'request_upload':
+      return describeUpload(kindTag, decision, registry, fragments);
     case 'announce_dispatch':
-      return [
-        kindTag,
-        `Decisión: confirmar que el agente "${decision.agentId}" empezó su trabajo.`,
-        `Acción obligatoria: confirma en UNA cláusula breve que el agente empezó (por ejemplo "ya estoy generando tu logo,"). PROHIBIDO usar "estoy trabajando", "estamos trabajando", "dame un momento", "dame un momentito", "ya casi", "un segundo", "en breve", "enseguida". PROHIBIDO usar saludos.`,
-      ].join('\n');
+      return applyPromptTemplate(fragments.announceDispatchDecision, {
+        kind: kindTag, agentId: decision.agentId,
+      });
     case 'announce_completion':
-      return describeAnnounceCompletion(kindTag, decision.agentId, decision.artifacts);
+      return describeAnnounceCompletion(kindTag, decision.agentId, decision.artifacts, fragments);
+    case 'report_deliverable_status': {
+      const template = {
+        in_review: fragments.reportStatusInReviewDecision,
+        failed: fragments.reportStatusFailedDecision,
+        generating: fragments.reportStatusGeneratingDecision,
+      }[decision.state];
+      return applyPromptTemplate(template, {
+        kind: kindTag,
+        agentId: decision.agentId,
+        deliverableLabel: deliverableLabelFor(decision.agentId, decision.deliverableKind, registry),
+        commandsLine: decision.allowedCommands.map((c) => COMMAND_BUTTON_LABELS[c]).join(', ') || 'ninguno',
+      });
+    }
+    case 'exhausted':
+      return applyPromptTemplate(fragments.exhaustedDecision, {
+        kind: kindTag,
+        scope: decision.scope,
+        limit: String(decision.limit),
+        used: String(decision.used),
+        deliverableLabel: decision.agentId ? deliverableLabelFor(decision.agentId, decision.deliverableKind ?? decision.agentId, registry) : '',
+      });
     case 'announce_all_complete':
-      return [
-        kindTag,
-        `Decisión: el flujo de este paso está completo.`,
-        `Acción obligatoria: en UNA sola frase, indica que terminó este paso e invita al siguiente. NO recapitules valores.`,
-      ].join('\n');
+      return applyPromptTemplate(
+        snapshot.links?.hasProduct === true ? fragments.announceAllCompleteProductDecision : fragments.announceAllCompleteBrandDecision,
+        { kind: kindTag },
+      );
   }
 }
 
@@ -224,27 +317,41 @@ function describeDecision(decision: PlannerDecision, registry: AgentRegistry): s
  * Responder writes a single bridged sentence ("ya empezó X — para Y, …")
  * instead of two separate replies.
  */
-function buildGuardrails(decisions: ReadonlyArray<PlannerDecision>): string {
-  const base = [
-    `Reglas para tu respuesta (estrictas, sin excepciones):`,
-    `- Responde SIEMPRE en español, en máximo 2 oraciones.`,
-    `- Tu respuesta DEBE corresponder exactamente a las decisiones indicadas arriba, en el orden listado. NO improvises temas adicionales.`,
-    `- NO uses saludos. NUNCA escribas "Hola", "¡Hola!", "Buenas", "Qué tal", "Hey", ni similares. La conversación ya empezó.`,
-    `- NO uses muletillas de espera. NUNCA escribas "estoy trabajando", "estamos trabajando", "dame un momentito", "dame un momento", "ya casi", "un segundo", "en breve", "enseguida".`,
-    `- NO emitas llamadas a funciones, JSON, ni código.`,
-    `- NO inventes información que no esté en el bloque "Decisión" o el "Progreso de campos".`,
-    `- NO menciones nombres, productos, ni valores específicos del usuario salvo que la decisión actual los incluya explícitamente (por ejemplo "Valor pendiente" en confirm_field, u "Opciones a presentar" en announce_completion).`,
-    `- Mantén un tono cálido pero directo.`,
-  ];
+function buildGuardrails(
+  decisions: ReadonlyArray<PlannerDecision>,
+  fragments: Readonly<Record<string, string>>,
+  includeDispatch: boolean,
+): string {
+  const lines = [fragments.guardrails];
+  if (includeDispatch && needsDispatchGuardrail(decisions)) lines.push(fragments.dispatchRequestGuardrail);
+  // KAN-28: chat never starts, changes or approves a deliverable.
+  lines.push(fragments.commandGuidanceGuardrail);
+  // KAN-91: never end on a question the system cannot act on.
+  lines.push(fragments.noDeadEndGuardrail);
+  return lines.join('\n');
+}
 
-  const hasDispatch = decisions.some((d) => d.kind === 'announce_dispatch');
-  const hasRequestFields = decisions.some((d) => d.kind === 'request_fields');
-  if (hasDispatch && hasRequestFields) {
-    base.push(
-      `- Cuando combines un anuncio de despacho con una pregunta, escribe UNA sola respuesta de hasta 2 oraciones que primero confirme el despacho en una cláusula breve y luego pivotee a la pregunta del siguiente agente. Ejemplo de pivote: "Ya estoy generando tu logo. Para el slogan, ¿cómo describirías el tono que buscás?".`,
-    );
+function needsDispatchGuardrail(decisions: ReadonlyArray<PlannerDecision>): boolean {
+  return decisions.some((d) => d.kind === 'announce_dispatch') && decisions.some((d) => d.kind === 'request_fields');
+}
+
+/** Spanish panel button names (see components/crea-mype/DeliverableCommands.tsx). */
+export const COMMAND_BUTTON_LABELS: Readonly<Record<DeliverableCommandKind, string>> = {
+  generate: 'Generar',
+  iterate: 'Iterar',
+  approve: 'Aprobar',
+  retry: 'Reintentar',
+  cancel: 'Cancelar',
+  use_own: 'Usar mi …',
+};
+
+/** Human label for a deliverable: the Agent Card's tab label, else its kind. */
+export function deliverableLabelFor(agentId: string, deliverableKind: string, registry: AgentRegistry): string {
+  try {
+    return registry.get(agentId).card['mypes:ui']?.tabLabel ?? deliverableKind;
+  } catch {
+    return deliverableKind;
   }
-  return base.join('\n');
 }
 
 /**
@@ -260,6 +367,7 @@ function describeAnnounceCompletion(
   kindTag: string,
   agentId: string,
   artifacts: ReadonlyArray<A2AArtifact>,
+  fragments: Readonly<Record<string, string>>,
 ): string {
   const textOptions = artifacts
     .filter((a) => a.kind === 'text' && typeof a.inline === 'string')
@@ -270,35 +378,30 @@ function describeAnnounceCompletion(
     const numbered = textOptions
       .map((text, i) => `  ${i + 1}. ${text}`)
       .join('\n');
-    return [
-      kindTag,
-      `Decisión: presentar las opciones que produjo el agente "${agentId}".`,
-      `Opciones a presentar (literal, en este orden):`,
-      numbered,
-      `Acción obligatoria: lista estas opciones EXACTAMENTE como aparecen, numeradas de 1 a ${textOptions.length}, y pídele al usuario que elija una. PROHIBIDO inventar opciones adicionales, modificar el texto, o agregar comentarios sobre cada opción.`,
-    ].join('\n');
+    return applyPromptTemplate(fragments.announceCompletionTextDecision, {
+      kind: kindTag, agentId, numberedOptions: numbered, count: String(textOptions.length),
+    });
   }
 
   if (hasVisual) {
-    return [
-      kindTag,
-      `Decisión: anunciar que el agente "${agentId}" terminó. El resultado ya está en el panel lateral.`,
-      `Acción obligatoria: en UNA sola frase, confirma que el resultado está en el panel lateral e invita al siguiente paso. PROHIBIDO describir el contenido visual.`,
-    ].join('\n');
+    return applyPromptTemplate(fragments.announceCompletionVisualDecision, { kind: kindTag, agentId });
   }
 
   // No artifacts at all — degrade to a minimal completion message.
-  return [
-    kindTag,
-    `Decisión: anunciar que el agente "${agentId}" terminó.`,
-    `Acción obligatoria: en UNA sola frase, indica que terminó este paso e invita al siguiente.`,
-  ].join('\n');
+  return applyPromptTemplate(fragments.announceCompletionEmptyNoNextDecision, { kind: kindTag, agentId });
+}
+
+function applyPromptTemplate(template: string, values: Readonly<Record<string, string>>): string {
+  return Object.entries(values).reduce(
+    (rendered, [key, value]) => rendered.replaceAll(`{{${key}}}`, value),
+    template,
+  );
 }
 
 /**
  * Status-only summary: filled / pending / empty per field, never the value.
- * Values reach the responder only through the decision block (confirm_field's
- * `pendingValue`), which is the one place value paraphrase is expected.
+ * Values reach the responder only through the decision block (confirm_fields'
+ * `pendingValue`s), which is the one place value paraphrase is expected.
  */
 function describeFieldStatus(snapshot: ConversationSnapshot): string {
   const lines: string[] = [];

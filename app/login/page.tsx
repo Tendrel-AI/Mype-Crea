@@ -1,10 +1,23 @@
-import { getSignInUrl, getSignUpUrl, withAuth } from '@workos-inc/authkit-nextjs';
+import { withAuth } from '@workos-inc/authkit-nextjs';
+import { redirect } from 'next/navigation';
 import { Sparkles } from 'lucide-react';
+import { requireGlobalAdmin, requireGlobalMfa } from '../../src/auth/resolve-identity';
 
 export default async function LoginPage() {
   const { user } = await withAuth();
-  const signInUrl = await getSignInUrl();
-  const signUpUrl = await getSignUpUrl();
+  if (user) {
+    let global = false;
+    try { await requireGlobalAdmin(); global = true; } catch { /* Continue to tenant app for non-global users. */ }
+    if (global) {
+      let verified = false;
+      try { await requireGlobalMfa(); verified = true; } catch { /* Step-up proof is required for the console. */ }
+      redirect(verified ? '/platform' : '/platform/mfa');
+    }
+    redirect('/');
+  }
+  // The AuthKit URL sets a PKCE cookie, so it is built in the /sign-in route handler
+  // rather than during this render. No self sign-up in the pilot (D52).
+  const signInUrl = '/sign-in';
 
   return (
     <div className="flex h-screen items-center justify-center bg-neutral-50 text-neutral-900 font-sans">
@@ -15,24 +28,15 @@ export default async function LoginPage() {
         <h1 className="text-3xl font-bold tracking-tight">CreaMype</h1>
         <p className="text-neutral-600 text-sm leading-relaxed">
           Inicia sesión para crear tu marca, generar logos, etiquetas y páginas web con Inteligencia Artificial.
+          <br />
+          Inicia sesión con el correo que registró tu organización. El acceso lo otorga su administrador.
         </p>
         <div className="flex flex-col gap-3">
-          {user ? (
-            <>
-              <p>holas</p>
-            </>
-          ) : (<></>)};
           <a
             href={signInUrl}
             className="w-full px-6 py-4 bg-orange-600 hover:bg-orange-500 text-white rounded-xl font-medium transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-orange-500/25"
           >
             Iniciar sesión
-          </a>
-          <a
-            href={signUpUrl}
-            className="w-full px-6 py-4 bg-white hover:bg-neutral-50 text-neutral-900 border border-neutral-200 rounded-xl font-medium transition-colors"
-          >
-            Crear cuenta
           </a>
         </div>
       </div>

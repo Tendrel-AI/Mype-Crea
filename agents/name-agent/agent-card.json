@@ -1,0 +1,43 @@
+{
+  "name": "name-agent",
+  "description": "Propone nombres comerciales para tu negocio.",
+  "version": "0.1.0",
+  "skills": [],
+  "mypes:requirements": {
+    "required": [
+      {
+        "name": "business_category",
+        "type": "enum",
+        "vocabulary": "business_category",
+        "promptHint": "¿A qué rubro pertenece tu negocio? (por ejemplo: alimentos, cosmética, artesanía)"
+      },
+      {
+        "name": "style_keywords",
+        "type": "string",
+        "promptHint": "¿Qué estilo quieres para tu marca? (por ejemplo: moderno, tradicional, divertido)"
+      }
+    ],
+    "optional": [
+      {
+        "name": "product_name",
+        "type": "string",
+        "promptHint": "¿Qué producto vas a lanzar?"
+      }
+    ]
+  },
+  "mypes:ui": {
+    "tabLabel": "Nombre",
+    "tabIcon": "sparkles",
+    "displayOrder": 1,
+    "outputPreview": "business_name"
+  },
+  "mypes:deliverable": {
+    "kind": "business_name",
+    "dependsOn": [],
+    "level": "brand",
+    "ownSource": "text"
+  },
+  "supportedInterfaces": [
+    { "protocol": "local", "module": "agents/name-agent/handler.ts" }
+  ]
+}

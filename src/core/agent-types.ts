@@ -15,10 +15,11 @@
  *
  * See also:
  *   - contracts.ts   (FieldDelta, PlannerDecision — the OTHER side of the core)
- *   - .claude/skills/mypes-architecture/SKILL.md  (agent rules 6–8)
+ *   - docs/agents/architecture.md  (agent rules 6–8)
  */
 
 import type { AgentId, TaskId, UUID, ISOTimestamp } from './contracts';
+import type { PreviousVersion, UpstreamInput } from './deliverable-inputs';
 
 // ---------------------------------------------------------------------------
 // A2A Message (what the core sends to an agent)
@@ -37,13 +38,40 @@ export interface A2AMessage {
   readonly requirements: Readonly<Record<string, unknown>>;
 
   /**
+   * Approved upstream deliverables the task was created under (KAN-32), by
+   * `mypes:deliverable.dependsOn` kind, for upstreams with an inline text
+   * value (e.g. the approved `business_name`). Absent when there is none.
+   */
+  readonly upstream?: Readonly<Record<string, UpstreamInput>>;
+
+  /**
    * Set only when this is an iteration of a previous task. The agent handler
    * may use this to skip work it already did or to apply parameter deltas.
    */
   readonly iteration?: {
     readonly parentTaskId: TaskId;
     readonly parameterChanges?: Readonly<Record<string, unknown>>;
+    /**
+     * Anchored observations from an «Iterar» command (KAN-65 R2; KAN-34
+     * caps: ≤5 × ≤500 code points). Untrusted user text: handlers may add
+     * them to their generation prompt as a quoted note, never parse them
+     * into facts or instructions.
+     */
+    readonly observations?: ReadonlyArray<string>;
+    /** Candidate the observations are anchored to. */
+    readonly anchorDeliverableId?: string | null;
+    /**
+     * D61: the version the observations are anchored to (its stored image and recorded metadata), read by
+     * the server at command time. Set on a user «Iterar» of a candidate; absent on retries and failed-task changes.
+     */
+    readonly previous?: PreviousVersion;
   };
+
+  /**
+   * The frozen prompt of the conversation's pinned version for this agent (D22), filled by the
+   * worker. Absent: the handler uses the active frozen version.
+   */
+  readonly prompt?: { readonly version: string; readonly text: string; readonly schema?: unknown };
 
   readonly createdAt: ISOTimestamp;
 }

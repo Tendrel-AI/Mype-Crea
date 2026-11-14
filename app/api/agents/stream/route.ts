@@ -1,170 +1,172 @@
-/**
- * Server-Sent Events stream of agent artifacts for a single conversation.
- *
- *   GET /api/agents/stream?conversationId=<uuid>
- *
- * Subscribes the caller to the in-process artifact notifier (singleton in
- * src/core/orchestrator/notifiers.ts) for the requested conversation. Every
- * artifact published by the orchestrator after a task settles is forwarded
- * as an `event: artifact` SSE frame whose `data` is the serialized
- * ArtifactPublishedEvent.
- *
- * Auth + tenant scoping: resolveIdentity() runs WorkOS, repos(...).conversations.get()
- * returns the row (or undefined under RLS if the conversation belongs to a
- * different tenant). 404 in either case.
- *
- * Lifetime: a 15-second comment heartbeat keeps the connection alive across
- * proxies. When the client disconnects, ReadableStream.cancel() fires and we
- * drop the subscription + clear the heartbeat.
- *
- * Process locality: this only works while the SSE handler and the
- * orchestrator dispatch live in the same Node process. When that breaks
- * (multi-instance prod), swap InProcessArtifactNotifier for a Postgres
- * LISTEN/NOTIFY or Redis pub/sub-backed implementation; nothing else here
- * changes.
- */
+/** Durable, owner-scoped event stream for an already-created conversation. */
 import type { NextRequest } from 'next/server';
-import { resolveIdentity } from '../../../../src/auth/resolve-identity';
+import { resolveIdentity, verifyActiveMembership } from '../../../../src/auth/resolve-identity';
 import { repos } from '../../../../src/repos';
-import {
-  defaultArtifactNotifier,
-  defaultLifecycleNotifier,
-} from '../../../../src/core/orchestrator/notifiers';
+import { buildDefaultRegistry } from '../../../../src/core/orchestrator/bootstrap-registry';
+import { defaultLifecycleNotifier } from '../../../../src/core/orchestrator/notifiers';
 import { loggerFor } from '../../../../src/services/logger';
+import { exposesTaskFailureDetail } from '../../../../src/services/failure-disclosure';
 import type { ConversationId } from '../../../../src/core/contracts';
-import type { ArtifactPublishedEvent } from '../../../../src/core/orchestrator/artifact-notifier';
+import {
+  DURABLE_NOTIFICATION_KINDS,
+  notification,
+  parseNotification,
+  serializeNotification,
+  toClientNotification,
+  type ClientNotification,
+  type ClientNotificationPolicy,
+} from '../../../../src/core/contracts/notifications';
 import type { AgentTaskProcessingEvent } from '../../../../src/core/orchestrator/agent-lifecycle-notifier';
 
 const log = loggerFor('controller.agents-stream');
 const HEARTBEAT_MS = 15_000;
+const POLL_MS = 1_000;
+const MEMBERSHIP_RECHECK_MS = 10_000;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function GET(request: NextRequest): Promise<Response> {
-  const conversationId = request.nextUrl.searchParams.get('conversationId') as
-    | ConversationId
-    | null;
-  log.info(
-    { conversationId, hasConversationId: Boolean(conversationId) },
-    'agents.stream.request_received',
-  );
-  if (!conversationId) {
-    return new Response('Missing conversationId', { status: 400 });
+  const rawConversationId = request.nextUrl.searchParams.get('conversationId');
+  if (!rawConversationId || !UUID_PATTERN.test(rawConversationId)) {
+    return new Response('Invalid conversationId', { status: 400 });
   }
+  const conversationId = rawConversationId as ConversationId;
 
-  let tenant;
-  let user;
+  let identity;
   try {
-    ({ tenant, user } = await resolveIdentity());
-  } catch (err) {
-    log.error({ err, conversationId }, 'agents.stream.resolve_identity_failed');
+    identity = await resolveIdentity();
+  } catch {
     return new Response('Unauthorized', { status: 401 });
   }
-  log.info(
-    { tenantId: tenant.id, userId: user.id, conversationId },
-    'agents.stream.identity_resolved',
-  );
 
-  // The browser's EventSource opens at page mount, before chatAction has had
-  // a chance to create the conversation row. If we 404 here, the EventSource
-  // closes permanently (the WHATWG spec only auto-reconnects on network
-  // errors, never on HTTP error responses) and any artifact published later
-  // lands on a Redis channel with zero subscribers. Use getOrCreate so the
-  // SSE handler is self-sufficient: row is created in the current tenant if
-  // missing; if an id collision exists in a different tenant, RLS hides the
-  // row and getOrCreate throws, preserving the cross-tenant auth check.
+  const repository = repos(identity.tenant, identity.user);
   try {
-    await repos(tenant, user).conversations.getOrCreate(conversationId, []);
-  } catch (err) {
-    log.warn(
-      { tenantId: tenant.id, userId: user.id, conversationId, err },
-      'agents.stream.conversation_unavailable',
+    const pin = await repository.conversations.readPinnedConversation(
+      conversationId,
+      buildDefaultRegistry().getFieldSchemas(),
     );
+    // SSE is read-only. It must never create a conversation or retroactively pin a legacy row.
+    if (!pin) return new Response('Not found', { status: 404 });
+    if (pin.state !== 'pinned') return new Response('Conversation configuration unavailable', { status: 409 });
+  } catch {
     return new Response('Not found', { status: 404 });
   }
-  log.info(
-    { tenantId: tenant.id, userId: user.id, conversationId },
-    'agents.stream.conversation_ready',
-  );
 
   const child = log.child({
-    tenantId: tenant.id,
-    userId: user.id,
+    tenantId: identity.tenant.id,
+    userId: identity.user.id,
     conversationId,
   });
-
+  // The single failure-disclosure gate, read once per connection at the edge.
+  const policy: ClientNotificationPolicy = { exposeFailureDetail: exposesTaskFailureDetail() };
   const encoder = new TextEncoder();
-
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
+      let closed = false;
+      let polling = false;
+      let authorized = true;
+      let authCheck: Promise<boolean> | undefined;
+      let pollTimer: ReturnType<typeof setInterval> | undefined;
       let heartbeat: ReturnType<typeof setInterval> | undefined;
-
-      const onArtifact = (event: ArtifactPublishedEvent): void => {
-        const payload = JSON.stringify(event);
-        child.info(
-          {
-            agentId: event.agentId,
-            taskId: event.taskId,
-            artifactCount: event.artifacts.length,
-          },
-          'agents.stream.artifact_received',
-        );
+      let membershipTimer: ReturnType<typeof setInterval> | undefined;
+      const close = (): void => {
+        if (closed) return;
+        closed = true;
+        if (pollTimer) clearInterval(pollTimer);
+        if (heartbeat) clearInterval(heartbeat);
+        if (membershipTimer) clearInterval(membershipTimer);
+        lifecycleSubscription.dispose();
+        try { controller.close(); } catch { /* already closed by consumer */ }
+      };
+      const checkMembership = async (): Promise<boolean> => {
+        if (closed || !authorized) return false;
+        if (!authCheck) {
+          authCheck = verifyActiveMembership({
+            organizationId: identity.organizationId,
+            workosUserId: identity.workosUserId,
+            tenantId: identity.tenant.id,
+            userId: identity.user.id,
+          }).catch(() => false).then((isActive) => {
+            if (!isActive) {
+              authorized = false;
+              close();
+            }
+            return isActive;
+          }).finally(() => { authCheck = undefined; });
+        }
+        return authCheck;
+      };
+      // Every frame is a contract notification: `event:` is its kind, `data:` the
+      // serialized client view (failure detail only when the policy allows it).
+      const send = (n: ClientNotification): boolean => {
+        if (closed) return false;
+        const data = serializeNotification(toClientNotification(n, policy));
         try {
-          controller.enqueue(encoder.encode(`event: artifact\ndata: ${payload}\n\n`));
-          child.info(
-            { agentId: event.agentId, taskId: event.taskId },
-            'agents.stream.artifact_forwarded',
-          );
-        } catch (err) {
-          child.error({ err }, 'agents.stream.enqueue_failed');
+          controller.enqueue(encoder.encode(`event: ${n.kind}\ndata: ${data}\n\n`));
+          return true;
+        } catch {
+          closed = true;
+          return false;
         }
       };
-      const artifactSubscription = defaultArtifactNotifier.subscribe(
-        conversationId,
-        onArtifact,
-      );
-      child.info(
-        { notifierClass: defaultArtifactNotifier.constructor.name },
-        'agents.stream.artifact_subscribed',
-      );
-
       const onProcessing = (event: AgentTaskProcessingEvent): void => {
-        const payload = JSON.stringify(event);
-        try {
-          controller.enqueue(
-            encoder.encode(`event: task_processing\ndata: ${payload}\n\n`),
-          );
-        } catch (err) {
-          child.error({ err }, 'agents.stream.enqueue_failed');
-        }
+        void checkMembership().then((isActive) => {
+          if (isActive) send(notification('task_processing', event));
+        });
       };
       const lifecycleSubscription = defaultLifecycleNotifier.subscribeProcessing(
         conversationId,
         onProcessing,
       );
-
-      // Initial comment frame so curl/browsers see something immediately.
       controller.enqueue(encoder.encode(`: connected ${new Date().toISOString()}\n\n`));
 
-      heartbeat = setInterval(() => {
+      const poll = async (): Promise<void> => {
+        if (closed || polling) return;
+        polling = true;
         try {
-          controller.enqueue(encoder.encode(`: keep-alive ${Date.now()}\n\n`));
-        } catch {
-          // The stream closed under us; cancel cleanup will run separately.
+          if (!await checkMembership()) return;
+          const events = await repository.aiTurns.peekEvents({ conversationId, limit: 50 });
+          for (const event of events) {
+            if (!await checkMembership()) break;
+            const parsed = parseNotification(event.payload, DURABLE_NOTIFICATION_KINDS);
+            if (!parsed.ok) {
+              // A row that does not match the contract can never be delivered; ack it so it
+              // does not block the outbox, and log it for review. Reload still restores state.
+              child.warn(
+                { eventId: event.eventId, reason: parsed.reason, detail: parsed.detail },
+                'agents.stream.event_rejected',
+              );
+              await repository.aiTurns.ackEvent({ eventId: event.eventId });
+              continue;
+            }
+            // Ack follows enqueue. A disconnect or enqueue failure leaves the event available
+            // for the next authorized connection.
+            if (!send(parsed.notification)) break;
+            await repository.aiTurns.ackEvent({ eventId: event.eventId });
+          }
+        } catch (error) {
+          child.warn({ error }, 'agents.stream.event_poll_failed');
+        } finally {
+          polling = false;
+        }
+      };
+      void poll();
+      pollTimer = setInterval(() => void poll(), POLL_MS);
+      heartbeat = setInterval(() => {
+        if (!closed) {
+          try {
+            controller.enqueue(encoder.encode(`: keep-alive ${Date.now()}\n\n`));
+          } catch {
+            closed = true;
+          }
         }
       }, HEARTBEAT_MS);
-
-      child.info('agents.stream.opened');
-
-      // The cancel handler closes over these so we can dispose cleanly.
-      (this as unknown as { _dispose: () => void })._dispose = () => {
-        artifactSubscription.dispose();
-        lifecycleSubscription.dispose();
-        if (heartbeat) clearInterval(heartbeat);
-        child.info('agents.stream.closed');
+      membershipTimer = setInterval(() => { void checkMembership(); }, MEMBERSHIP_RECHECK_MS);
+      (this as unknown as { dispose: () => void }).dispose = () => {
+        close();
       };
     },
     cancel() {
-      const dispose = (this as unknown as { _dispose?: () => void })._dispose;
-      dispose?.();
+      (this as unknown as { dispose?: () => void }).dispose?.();
     },
   });
 

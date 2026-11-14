@@ -9,10 +9,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ConversationSnapshot } from '../../contracts';
 import { planNextDecision } from '../planner';
+import { deriveDeliverableStates, EMPTY_WORKFLOW_FACTS } from '../deliverable-state';
 import {
   AgentRegistry,
   type AgentCard,
 } from '../agent-registry';
+import { buildDefaultRegistry } from '../bootstrap-registry';
 import { buildFixtureCard, fixtureEchoHandler } from '../../__tests__/_fixtures/registry';
 
 const conversationId = '00000000-0000-0000-0000-000000000003';
@@ -123,7 +125,7 @@ describe('planNextDecision', () => {
     }
   });
 
-  it('emits a solo confirm_field when any required slot is pending_confirmation', () => {
+  it('emits a solo confirm_fields when any required slot is pending_confirmation', () => {
     const registry = makeRegistry([
       buildFixtureCard({
         id: 'agent-a',
@@ -144,12 +146,27 @@ describe('planNextDecision', () => {
     const plan = planNextDecision(snapshot, registry);
     expect(plan).toEqual([
       {
-        kind: 'confirm_field',
-        agentId: 'agent-a',
-        fieldName: 'a_field_1',
-        pendingValue: 'maybe',
+        kind: 'confirm_fields',
+        entries: [{ agentId: 'agent-a', fieldName: 'a_field_1', pendingValue: 'maybe' }],
         reason: 'low_confidence',
       },
+    ]);
+  });
+
+  it('also confirms a pending OPTIONAL slot before asking for anything else (KAN-26)', () => {
+    const registry = makeRegistry([
+      buildFixtureCard({ id: 'agent-a', required: [{ name: 'a_field_1' }], optional: [{ name: 'a_opt' }] }),
+    ]);
+    const snapshot = snapshotWith({
+      'agent-a': {
+        requiredFields: { a_field_1: { status: 'empty' } },
+        optionalFields: { a_opt: { status: 'pending_confirmation', value: 'quizá', confidence: 0.7 } },
+        iterationCount: 0,
+      },
+    });
+
+    expect(planNextDecision(snapshot, registry)).toEqual([
+      { kind: 'confirm_fields', entries: [{ agentId: 'agent-a', fieldName: 'a_opt', pendingValue: 'quizá' }], reason: 'low_confidence' },
     ]);
   });
 
@@ -204,5 +221,333 @@ describe('planNextDecision', () => {
     } else {
       throw new Error(`expected request_fields, got ${plan[0].kind}`);
     }
+  });
+
+  describe('Rule 3 — offer_generation (KAN-64: never dispatches)', () => {
+    const filledA = {
+      'agent-a': {
+        requiredFields: { a_field: { status: 'filled', value: 'x', confidence: 1 } },
+        optionalFields: {},
+        iterationCount: 0,
+      },
+    } as const;
+
+    it('offers «Generar» for a ready, never-generated agent (snapshot fallback)', () => {
+      const registry = makeRegistry([
+        buildFixtureCard({ id: 'agent-a', required: [{ name: 'a_field' }], deliverableKind: 'logo' }),
+      ]);
+      expect(planNextDecision(snapshotWith(filledA), registry)).toEqual([
+        { kind: 'offer_generation', agentId: 'agent-a', deliverableKind: 'logo' },
+      ]);
+    });
+
+    it('uses the derived deliverable states when provided', () => {
+      const registry = makeRegistry([
+        buildFixtureCard({ id: 'agent-a', required: [{ name: 'a_field' }] }),
+      ]);
+      const snapshot = snapshotWith(filledA);
+      expect(
+        planNextDecision(snapshot, registry, {
+          deliverableStates: [{ agentId: 'agent-a', deliverableKind: 'agent-a', state: 'in_review', allowedCommands: [] }],
+        }),
+      ).toEqual([{ kind: 'report_deliverable_status', agentId: 'agent-a', deliverableKind: 'agent-a', state: 'in_review', allowedCommands: [] }]);
+      expect(
+        planNextDecision(snapshot, registry, {
+          deliverableStates: [
+            { agentId: 'agent-z', deliverableKind: 'z', state: 'enabled', allowedCommands: [] },
+            { agentId: 'agent-a', deliverableKind: 'a', state: 'enabled', allowedCommands: [] },
+          ],
+        }),
+      ).toEqual([{ kind: 'offer_generation', agentId: 'agent-a', deliverableKind: 'a' }]);
+    });
+
+    it('D32: never offers «Generar» for a card declared offerable:false (it starts from another user action)', () => {
+      const silentCard = { ...buildFixtureCard({ id: 'agent-a' }), 'mypes:deliverable': { kind: 'a', dependsOn: [], offerable: false } } as AgentCard;
+      const registry = makeRegistry([silentCard, buildFixtureCard({ id: 'agent-z' })]);
+      const states = [
+        { agentId: 'agent-a', deliverableKind: 'a', state: 'enabled', allowedCommands: [] },
+        { agentId: 'agent-z', deliverableKind: 'z', state: 'enabled', allowedCommands: [] },
+      ] as never;
+      expect(planNextDecision(snapshotWith({}), registry, { deliverableStates: states })).toEqual([
+        { kind: 'offer_generation', agentId: 'agent-z', deliverableKind: 'z' },
+      ]);
+      expect(planNextDecision(snapshotWith({}), makeRegistry([silentCard]), { deliverableStates: [states[0]] })).toEqual([
+        { kind: 'announce_all_complete' },
+      ]);
+    });
+
+    describe('report_deliverable_status (KAN-91)', () => {
+      const registry = makeRegistry([buildFixtureCard({ id: 'agent-a', required: [{ name: 'a_field' }] })]);
+      const snap = snapshotWith(filledA);
+      const view = (agentId: string, state: 'failed' | 'in_review' | 'generating' | 'enabled' | 'approved', extra: object = {}) =>
+        ({ agentId, deliverableKind: agentId, state, allowedCommands: ['approve', 'iterate'] as const, ...extra });
+      const plan = (deliverableStates: ReturnType<typeof view>[]) => planNextDecision(snap, registry, { deliverableStates: deliverableStates as never });
+
+      it('reports an in_review deliverable with its allowed commands', () => {
+        expect(plan([view('agent-a', 'in_review')])).toEqual([
+          { kind: 'report_deliverable_status', agentId: 'agent-a', deliverableKind: 'agent-a', state: 'in_review', allowedCommands: ['approve', 'iterate'] },
+        ]);
+      });
+
+      it('priority: failed > in_review > generating, then lex agentId', () => {
+        expect(plan([view('a', 'in_review'), view('b', 'failed')])[0]).toMatchObject({ agentId: 'b', state: 'failed' });
+        expect(plan([view('a', 'generating'), view('b', 'in_review')])[0]).toMatchObject({ agentId: 'b', state: 'in_review' });
+        expect(plan([view('z', 'in_review'), view('m', 'in_review')])[0]).toMatchObject({ agentId: 'm' });
+      });
+
+      it('ignores inheritedFromBrand views and approved ones', () => {
+        expect(plan([view('a', 'in_review', { inheritedFromBrand: true }), view('b', 'approved')])).toEqual([{ kind: 'announce_all_complete' }]);
+      });
+
+      it('offer_generation still wins', () => {
+        expect(plan([view('b', 'failed'), view('c', 'enabled')])[0].kind).toBe('offer_generation');
+      });
+
+      it('is deterministic', () => {
+        const states = [view('a', 'generating'), view('b', 'generating')];
+        expect(plan(states)).toEqual(plan(states));
+      });
+
+      describe('exhausted (D39)', () => {
+        const left = (remaining: number) => ({ limit: 3, used: 3 - remaining, remaining });
+        const limits = (turns: number, alterations: Record<string, number>) => ({
+          turns: { limit: 40, used: 40 - turns, remaining: turns },
+          alterations: Object.fromEntries(Object.entries(alterations).map(([id, n]) => [id, left(n)])),
+        });
+        const withLimits = (l: ReturnType<typeof limits>) =>
+          planNextDecision(snap, registry, { deliverableStates: [view('agent-a', 'in_review')] as never, limits: l });
+
+        it('replaces the in_review report when no alterations are left', () => {
+          expect(withLimits(limits(10, { 'agent-a': 0 }))).toEqual([
+            { kind: 'exhausted', scope: 'alterations', agentId: 'agent-a', deliverableKind: 'agent-a', limit: 3, used: 3 },
+          ]);
+        });
+
+        it('keeps the normal report while alterations remain or limits are unknown', () => {
+          expect(withLimits(limits(10, { 'agent-a': 1 }))[0].kind).toBe('report_deliverable_status');
+          expect(plan([view('agent-a', 'in_review')])[0].kind).toBe('report_deliverable_status');
+        });
+
+        it('appends a turns exhausted decision after the normal plan', () => {
+          const result = withLimits(limits(0, { 'agent-a': 2 }));
+          expect(result.map((d) => d.kind)).toEqual(['report_deliverable_status', 'exhausted']);
+          expect(result[1]).toEqual({ kind: 'exhausted', scope: 'turns', limit: 40, used: 40 });
+        });
+      });
+
+      it('without derived states the old behavior stays', () => {
+        expect(planNextDecision(snap, registry, {})[0].kind).not.toBe('report_deliverable_status');
+      });
+    });
+
+    it('does not offer an agent that is blocked on an upstream approval', () => {
+      const registry = makeRegistry([
+        buildFixtureCard({ id: 'agent-a', required: [{ name: 'a_field' }], dependsOn: ['logo'] }),
+      ]);
+      expect(
+        planNextDecision(snapshotWith(filledA), registry, {
+          deliverableStates: [{ agentId: 'agent-a', deliverableKind: 'agent-a', state: 'blocked', allowedCommands: [] }],
+        }),
+      ).toEqual([{ kind: 'announce_all_complete' }]);
+    });
+
+    it('confirmation and field collection still take precedence over the offer', () => {
+      const registry = makeRegistry([
+        buildFixtureCard({ id: 'agent-a', required: [{ name: 'a_field' }] }),
+        buildFixtureCard({ id: 'agent-b', required: [{ name: 'b_field' }] }),
+      ]);
+      const plan = planNextDecision(
+        snapshotWith({ ...filledA, 'agent-b': { requiredFields: {}, optionalFields: {}, iterationCount: 0 } }),
+        registry,
+        { deliverableStates: [{ agentId: 'agent-a', deliverableKind: 'agent-a', state: 'enabled', allowedCommands: [] }] },
+      );
+      expect(plan[0].kind).toBe('request_fields');
+    });
+
+    it('same snapshot and states produce the same plan', () => {
+      const registry = makeRegistry([
+        buildFixtureCard({ id: 'agent-a', required: [{ name: 'a_field' }] }),
+      ]);
+      const context = { deliverableStates: [{ agentId: 'agent-a', deliverableKind: 'agent-a', state: 'enabled' as const, allowedCommands: [] }] };
+      expect(planNextDecision(snapshotWith(filledA), registry, context)).toEqual(
+        planNextDecision(snapshotWith(filledA), registry, context),
+      );
+    });
+  });
+
+  describe('per-card ask batch size', () => {
+    const names = Array.from({ length: 6 }, (_, i) => ({ name: `f_${i}` }));
+
+    it('asks every missing required field in ONE decision when the card sets askBatchSize', () => {
+      const registry = makeRegistry([buildFixtureCard({ id: 'agent-a', required: names, askBatchSize: 6 })]);
+      const [decision] = planNextDecision(snapshotWith({ 'agent-a': { requiredFields: { f_3: { status: 'filled', value: 'x', confidence: 1 } }, optionalFields: {}, iterationCount: 0 } }), registry);
+      expect(decision.kind === 'request_fields' && decision.fields.map((f) => f.fieldName)).toEqual(['f_0', 'f_1', 'f_2', 'f_4', 'f_5']);
+    });
+
+    it('keeps MAX_FIELD_BATCH_SIZE (2) for a card without askBatchSize', () => {
+      const registry = makeRegistry([buildFixtureCard({ id: 'agent-b', required: names })]);
+      const [decision] = planNextDecision(snapshotWith({ 'agent-b': { requiredFields: {}, optionalFields: {}, iterationCount: 0 } }), registry);
+      expect(decision.kind === 'request_fields' && decision.fields).toHaveLength(2);
+    });
+  });
+
+  describe('a brand-level brief is asked only when the deliverable still needs it (derived states)', () => {
+    const logo = buildFixtureCard({ id: 'logo', required: [{ name: 'a' }, { name: 'b' }, { name: 'c' }], askBatchSize: 3, level: 'brand', ownSource: 'brand_logo' });
+    const registry = makeRegistry([logo]);
+    const empty = { logo: { requiredFields: {}, optionalFields: {}, iterationCount: 0 } };
+    const plan = (snapshot: ConversationSnapshot, facts = EMPTY_WORKFLOW_FACTS) =>
+      planNextDecision(snapshot, registry, { deliverableStates: deriveDeliverableStates(snapshot, registry.getDeliverableSpecs(), facts) });
+
+    it('asks all missing fields in a brand conversation with no logo yet', () => {
+      const [decision] = plan(snapshotWith(empty));
+      expect(decision.kind === 'request_fields' && decision.fields).toHaveLength(3);
+    });
+
+    it('does not ask when the brand already has an approved (or own, user-origin) logo', () => {
+      const facts = { ...EMPTY_WORKFLOW_FACTS, approvals: [{ deliverableKind: 'logo', deliverableId: 'd1' }] };
+      expect(plan(snapshotWith(empty), facts)).toEqual([{ kind: 'announce_all_complete' }]);
+    });
+
+    it('does not ask in a product conversation (brand level is read-only)', () => {
+      const snapshot = { ...snapshotWith(empty), links: { hasBrand: true, hasProduct: true } } as ConversationSnapshot;
+      expect(plan(snapshot)).toEqual([{ kind: 'announce_all_complete' }]);
+    });
+
+    it('does not ask once the logo was generated or iterated (iterationCount > 0)', () => {
+      expect(plan(snapshotWith({ logo: { ...empty.logo, iterationCount: 1 } }))).toEqual([{ kind: 'announce_all_complete' }]);
+    });
+  });
+  describe('D34 — request_upload and level scoping', () => {
+    const label = buildFixtureCard({
+      id: 'label', level: 'product', required: [{ name: 'f' }],
+      uploads: [{ kind: 'lab_report', min: 1, promptHint: 'sube el PDF' }],
+    });
+    const logo = buildFixtureCard({ id: 'logo', level: 'brand', required: [{ name: 'a' }] });
+    const registry = makeRegistry([label, logo]);
+    const empty = { label: { requiredFields: {}, optionalFields: {}, iterationCount: 0 }, logo: { requiredFields: {}, optionalFields: {}, iterationCount: 0 } };
+    const filled = { label: { requiredFields: { f: { status: 'filled', value: 'x' } }, optionalFields: {}, iterationCount: 0 } } as unknown as ConversationSnapshot['agentStates'];
+    const productChat = (agentStates: ConversationSnapshot['agentStates']) =>
+      ({ ...snapshotWith(agentStates), links: { hasBrand: true, hasProduct: true } }) as ConversationSnapshot;
+    const brandChat = (agentStates: ConversationSnapshot['agentStates']) =>
+      ({ ...snapshotWith(agentStates), links: { hasBrand: true, hasProduct: false } }) as ConversationSnapshot;
+    const plan = (snapshot: ConversationSnapshot, uploadCounts?: Record<string, number>) =>
+      planNextDecision(snapshot, registry, { uploadCounts, deliverableStates: deriveDeliverableStates(snapshot, registry.getDeliverableSpecs(), EMPTY_WORKFLOW_FACTS) });
+
+    it('the registry exposes the card uploads; the real label card requires one lab_report', () => {
+      expect(registry.getDeliverableSpecs().find((x) => x.agentId === 'label')?.uploads).toEqual([{ kind: 'lab_report', min: 1, promptHint: 'sube el PDF' }]);
+      const real = buildDefaultRegistry().getDeliverableSpecs().find((x) => x.agentId === 'label-agent');
+      expect(real).toMatchObject({ level: 'product', uploads: [{ kind: 'lab_report', min: 1 }] });
+    });
+
+    it('KAN-110: pending fields and upload merge into one request_fields; either alone is unchanged', () => {
+      const entry = { agentId: 'label', deliverableKind: 'label', uploadKind: 'lab_report', promptHint: 'sube el PDF' };
+      const both = plan(productChat(empty), { lab_report: 0 });
+      expect(both).toHaveLength(1);
+      expect(both[0]).toMatchObject({ kind: 'request_fields', uploads: [entry] });
+      expect(plan(productChat(empty), { lab_report: 1 })[0]).not.toHaveProperty('uploads');
+      expect(plan(productChat(filled), { lab_report: 0 })[0]).toMatchObject({ kind: 'request_upload', ...entry });
+    });
+
+    it('asks the missing fields first, then the upload', () => {
+      expect(plan(productChat(empty), { lab_report: 0 })[0].kind).toBe('request_fields');
+      expect(plan(productChat(filled), { lab_report: 0 })).toEqual([
+        { kind: 'request_upload', agentId: 'label', deliverableKind: 'label', uploadKind: 'lab_report', promptHint: 'sube el PDF' },
+      ]);
+    });
+
+    it('does not ask once the uploads reach min, nor when the count is unknown', () => {
+      expect(plan(productChat(filled), { lab_report: 1 })[0].kind).not.toBe('request_upload');
+      expect(plan(productChat(filled), undefined)[0].kind).not.toBe('request_upload');
+    });
+
+    it('does not ask for an upload when the deliverable is already generating', () => {
+      const snapshot = productChat({ label: { ...filled.label, lastDispatchedTaskId: 't1' } } as unknown as ConversationSnapshot['agentStates']);
+      const facts = { ...EMPTY_WORKFLOW_FACTS, tasks: [{ id: 't1', agentId: 'label', status: 'in_progress', createdAt: '2026-01-01T00:00:00Z', iterationNumber: 1 }] } as never;
+      const states = deriveDeliverableStates(snapshot, registry.getDeliverableSpecs(), facts);
+      expect(planNextDecision(snapshot, registry, { uploadCounts: { lab_report: 0 }, deliverableStates: states })[0].kind).toBe('report_deliverable_status');
+    });
+
+    it('scopes by level: a product chat ignores brand cards, a brand chat ignores product cards', () => {
+      expect(plan(productChat(empty), { lab_report: 0 }).some((d) => d.kind === 'request_fields' && d.agentId === 'logo')).toBe(false);
+      const brandPlan = plan(brandChat(empty), { lab_report: 0 });
+      expect(brandPlan[0]).toMatchObject({ kind: 'request_fields', agentId: 'logo' });
+      expect(plan(brandChat({ logo: { requiredFields: { a: { status: 'filled', value: 'x' } }, optionalFields: {}, iterationCount: 0 } } as unknown as ConversationSnapshot['agentStates']), { lab_report: 0 })[0].kind).toBe('offer_generation');
+    });
+  });
+});
+
+
+describe('planNextDecision — grouped confirmation and delegable fields (D35)', () => {
+  const pending = (value: string) => ({ status: 'pending_confirmation' as const, value, confidence: 0.7 });
+  const filled = (value: string) => ({ status: 'filled' as const, value, confidence: 1 });
+  const registry = () =>
+    makeRegistry([
+      buildFixtureCard({
+        id: 'agent-a',
+        required: [{ name: 'goal' }, { name: 'keep', delegable: true }, { name: 'shapes', delegable: true }],
+        optional: [{ name: 'tone' }],
+        askBatchSize: 5,
+      }),
+      buildFixtureCard({ id: 'agent-b', required: [{ name: 'goal' }] }),
+    ]);
+
+  it('confirms ALL pending slots in one decision, one entry per field name, lex-sorted', () => {
+    const snapshot = snapshotWith({
+      'agent-a': {
+        requiredFields: { goal: pending('verse bien'), keep: pending('café'), shapes: { status: 'empty' } },
+        optionalFields: { tone: pending('cálido') },
+        iterationCount: 0,
+      },
+      'agent-b': { requiredFields: { goal: pending('verse bien') }, optionalFields: {}, iterationCount: 0 },
+    });
+
+    expect(planNextDecision(snapshot, registry())).toEqual([
+      {
+        kind: 'confirm_fields',
+        entries: [
+          { agentId: 'agent-a', fieldName: 'goal', pendingValue: 'verse bien' },
+          { agentId: 'agent-a', fieldName: 'keep', pendingValue: 'café' },
+          { agentId: 'agent-a', fieldName: 'tone', pendingValue: 'cálido' },
+        ],
+        reason: 'low_confidence',
+      },
+    ]);
+  });
+
+  it('D47: asks only the empty non-delegable fields; delegables are never in the batch', () => {
+    const snapshot = snapshotWith({
+      'agent-a': { requiredFields: { goal: { status: 'empty' }, keep: { status: 'empty' }, shapes: { status: 'empty' } }, optionalFields: {}, iterationCount: 0 },
+      'agent-b': { requiredFields: { goal: { status: 'empty' } }, optionalFields: {}, iterationCount: 0 },
+    });
+    const [decision] = planNextDecision(snapshot, registry());
+    expect(decision).toMatchObject({ kind: 'request_fields', agentId: 'agent-a' });
+    expect(decision.kind === 'request_fields' && decision.fields.map((f) => f.fieldName)).toEqual(['goal']);
+  });
+
+  it('with only delegable fields empty it never asks them: the agent is ready (snapshot predicate)', () => {
+    const snapshot = snapshotWith({
+      'agent-a': { requiredFields: { goal: filled('x'), keep: { status: 'empty' }, shapes: { status: 'empty' } }, optionalFields: {}, iterationCount: 0 },
+      'agent-b': { requiredFields: { goal: filled('x') }, optionalFields: {}, iterationCount: 0 },
+    });
+    expect(planNextDecision(snapshot, registry())[0]).toMatchObject({ kind: 'offer_generation', agentId: 'agent-a' });
+  });
+
+  it('a delegable field still waiting for confirmation is not satisfied (Rule 1 comes first)', () => {
+    const snapshot = snapshotWith({
+      'agent-a': { requiredFields: { goal: filled('x'), keep: pending('café'), shapes: { status: 'empty' } }, optionalFields: {}, iterationCount: 0 },
+      'agent-b': { requiredFields: { goal: filled('x') }, optionalFields: {}, iterationCount: 0 },
+    });
+    expect(planNextDecision(snapshot, registry())[0]).toMatchObject({ kind: 'confirm_fields' });
+  });
+
+  it('with derived states, empty delegables leave the deliverable `enabled`, so Generar is offered', () => {
+    const reg = registry();
+    const snapshot = snapshotWith({
+      'agent-a': { requiredFields: { goal: filled('x'), keep: { status: 'empty' }, shapes: { status: 'empty' } }, optionalFields: {}, iterationCount: 0 },
+      'agent-b': { requiredFields: { goal: filled('x') }, optionalFields: {}, iterationCount: 0 },
+    });
+    const states = deriveDeliverableStates(snapshot, reg.getDeliverableSpecs(), EMPTY_WORKFLOW_FACTS);
+    expect(states.find((v) => v.agentId === 'agent-a')).toMatchObject({ state: 'enabled', missingFields: [] });
+    expect(planNextDecision(snapshot, reg, { deliverableStates: states })[0]).toMatchObject({ kind: 'offer_generation', agentId: 'agent-a' });
   });
 });

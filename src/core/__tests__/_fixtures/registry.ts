@@ -34,9 +34,21 @@ export const fixtureEchoHandler: AgentHandler<undefined> = async (
 
 export interface FixtureCardOptions {
   readonly id: string;
-  readonly required?: ReadonlyArray<{ readonly name: string; readonly promptHint?: string }>;
+  /** `delegable` (D35): the field may stay empty and is sent as the delegated value. */
+  readonly required?: ReadonlyArray<{ readonly name: string; readonly promptHint?: string; readonly delegable?: boolean }>;
   readonly optional?: ReadonlyArray<{ readonly name: string; readonly promptHint?: string }>;
   readonly tabLabel?: string;
+  /** `mypes:deliverable.kind`; omitted -> the registry defaults it to the agent id. */
+  readonly deliverableKind?: string;
+  /** `mypes:deliverable.dependsOn` (upstream deliverable kinds). */
+  readonly dependsOn?: ReadonlyArray<string>;
+  /** `mypes:requirements.askBatchSize` (per-card ask cap). */
+  readonly askBatchSize?: number;
+  /** `mypes:deliverable.level` / `ownSource` (KAN-89). */
+  readonly level?: 'brand' | 'product';
+  readonly ownSource?: 'text' | 'brand_logo';
+  /** `mypes:requirements.uploads` (D34). */
+  readonly uploads?: NonNullable<AgentCard['mypes:requirements']['uploads']>;
 }
 
 export function buildFixtureCard(opts: FixtureCardOptions): AgentCard {
@@ -50,12 +62,15 @@ export function buildFixtureCard(opts: FixtureCardOptions): AgentCard {
         name: f.name,
         type: 'string',
         promptHint: f.promptHint ?? `enter ${f.name}`,
+        ...(f.delegable ? { delegable: true } : {}),
       })),
       optional: (opts.optional ?? []).map((f) => ({
         name: f.name,
         type: 'string',
         promptHint: f.promptHint ?? `enter ${f.name}`,
       })),
+      ...(opts.askBatchSize ? { askBatchSize: opts.askBatchSize } : {}),
+      ...(opts.uploads ? { uploads: opts.uploads } : {}),
     },
     'mypes:ui': {
       tabLabel: opts.tabLabel ?? opts.id,
@@ -64,6 +79,16 @@ export function buildFixtureCard(opts: FixtureCardOptions): AgentCard {
       outputPreview: 'inline',
     },
     supportedInterfaces: [{ protocol: 'local', module: `fixture/${opts.id}` }],
+    ...(opts.deliverableKind || opts.dependsOn || opts.level || opts.ownSource
+      ? {
+          'mypes:deliverable': {
+            kind: opts.deliverableKind ?? opts.id,
+            dependsOn: [...(opts.dependsOn ?? [])],
+            ...(opts.level ? { level: opts.level } : {}),
+            ...(opts.ownSource ? { ownSource: opts.ownSource } : {}),
+          },
+        }
+      : {}),
   };
 }
 

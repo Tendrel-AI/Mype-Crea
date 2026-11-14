@@ -1,0 +1,16 @@
+import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { requireGlobalMfa } from '../../../src/auth/resolve-identity';
+import { currentCalendarMonth, getPlatformMonthlyMetrics } from '../../../src/services/platform/metrics/monthly';
+
+export default async function PlatformMetricsPage({ searchParams }: { searchParams: Promise<{ month?: string }> }) {
+  let actorWorkosUserId: string;
+  try { actorWorkosUserId = (await requireGlobalMfa()).workosUserId; } catch { redirect('/platform/mfa'); }
+  const { month: requestedMonth } = await searchParams;
+  const month = requestedMonth && /^\d{4}-(0[1-9]|1[0-2])$/.test(requestedMonth) ? requestedMonth : currentCalendarMonth();
+  const rows = await getPlatformMonthlyMetrics(actorWorkosUserId, month);
+  return <main className="mx-auto max-w-7xl space-y-6 px-5 py-10"><header><Link href="/platform" className="text-sm underline">← Consola</Link><h1 className="mt-3 text-3xl font-semibold">Métricas mensuales</h1><p className="mt-1 text-neutral-600">Agregados del mes calendario. Los usuarios activos se muestran sin umbral mínimo.</p></header>
+    <form className="flex items-end gap-3"><label className="grid gap-1 text-sm">Mes calendario<input type="month" name="month" defaultValue={month} max={currentCalendarMonth()} className="rounded border p-2" /></label><button className="rounded bg-neutral-900 px-4 py-2 text-white dark:bg-neutral-600">Ver mes</button></form>
+    <div className="overflow-x-auto rounded-xl border bg-white"><table className="w-full min-w-[900px] text-left text-sm"><thead><tr className="border-b text-neutral-600">{['Organización', 'Usuarios activos', 'Conversaciones nuevas', 'Uso y costo reportado', 'Costo estimado total', 'Errores', 'Versiones activas'].map((label) => <th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.organizationId ?? 'platform'} className={`border-b last:border-0 ${row.organizationId === null ? 'bg-orange-50 font-medium' : ''}`}><td className="p-3">{row.organizationId === null ? 'Total de plataforma' : row.organizationName ?? row.organizationId}</td><td className="p-3">{row.activeUsers.toLocaleString('es-PE')}</td><td className="p-3">{row.newConversations.toLocaleString('es-PE')}</td><td className="p-3">{row.providerModelUsage.length ? <ul>{row.providerModelUsage.map((item, index) => <li key={`${item.provider}:${item.model}:${index}`} className="mb-2">{item.provider} / {item.model}: {item.calls} llamadas · {item.inputTokens + item.outputTokens} tokens{item.costs.length > 0 && <ul className="ml-3 text-xs text-neutral-600">{item.costs.map((cost, costIndex) => <li key={`${cost.currency}:${cost.source}:${costIndex}`}>{cost.amount.toFixed(4)} {cost.currency ?? ''} · {cost.source ?? 'costo reportado'}</li>)}</ul>}</li>)}</ul> : '—'}</td><td className="p-3">{row.estimatedCost.toFixed(4)} <span className="text-xs text-neutral-500">(estimación)</span></td><td className="p-3">{row.errors.toLocaleString('es-PE')}</td><td className="p-3">{row.activeVersions.map((item) => `${item.moduleId} v${item.version}${item.organizations === undefined ? '' : ` (${item.organizations})`}`).join(', ') || '—'}</td></tr>)}</tbody></table>{rows.length === 0 && <p className="p-4 text-sm text-neutral-600">No hay métricas para este mes.</p>}</div>
+  </main>;
+}

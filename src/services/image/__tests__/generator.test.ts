@@ -10,15 +10,23 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ImageGeneratorService } from '../generator';
 import type { IImageProvider, ImageRequest, ImageResult } from '../types';
+import { TaskError } from '../../../core/task-errors';
+import type { UsageLedger } from '../../usage/gateway';
+import { usageLimitMessage } from '../../usage/policy';
+
+/** What the gate must reserve and settle: the provider's own price per image. */
+const PRICE = 0.05;
 
 function fakeProvider(id: string, urlPrefix: string): IImageProvider {
   return {
     id,
+    priceUsd: PRICE,
     generate: vi.fn(async (req: ImageRequest): Promise<ImageResult> => ({
       url: `${urlPrefix}/${encodeURIComponent(req.prompt)}`,
       providerId: id,
       modelId: `${id}/test-model`,
       latencyMs: 7,
+      safety: { verdict: 'passed', category: null, classifier: 'fake', model: `${id}/test-model`, policyVersion: 'test', checkedAt: '2026-11-03T00:00:00.000Z' },
     })),
   };
 }
@@ -69,11 +77,74 @@ describe('ImageGeneratorService', () => {
   it('propagates provider errors', async () => {
     const failing: IImageProvider = {
       id: 'failing',
+      priceUsd: PRICE,
       generate: vi.fn(async () => {
         throw new Error('provider boom');
       }),
     };
     const svc = new ImageGeneratorService(failing);
     await expect(svc.generate({ prompt: 'x' })).rejects.toThrow(/provider boom/);
+  });
+
+  describe('usage gate (KAN-43)', () => {
+    const scope = { tenantId: 'tenant-a', agentTaskId: 'task-a' };
+    function gate(denied?: 'user_image_daily') {
+      const events: Array<Record<string, unknown>> = [];
+      const ledger: UsageLedger = {
+        reserve: vi.fn(async (request) => {
+          events.push({ op: 'reserve', ...request });
+          return denied
+            ? { allowed: false as const, reason: denied, reservationId: 'denied-1' }
+            : { allowed: true as const, reservationId: 'reservation-1' };
+        }),
+        settle: vi.fn(async (settlement) => {
+          events.push({ op: 'settle', ...settlement });
+          return true;
+        }),
+      };
+      const resolver = vi.fn(async () => ({ ledger, conversationId: 'conversation-a' }));
+      return { events, ledger, resolver };
+    }
+
+    it('allowed: reserves the image price, calls the provider once, settles the real cost', async () => {
+      const def = fakeProvider('fal', 'https://fal');
+      const { events, resolver } = gate();
+      const svc = new ImageGeneratorService(def, resolver);
+      await svc.generate({ prompt: 'logo', purpose: 'logo', usage: scope });
+      expect(resolver).toHaveBeenCalledWith(scope);
+      expect(def.generate).toHaveBeenCalledTimes(1);
+      expect(events).toEqual([
+        { op: 'reserve', kind: 'image', estimatedCostUsd: PRICE, provider: 'fal', conversationId: 'conversation-a', agentTaskId: 'task-a' },
+        { op: 'settle', reservationId: 'reservation-1', actualCostUsd: PRICE, outcome: 'succeeded', costSource: 'flat' },
+      ]);
+    });
+
+    it('denied: the provider is never called and the task fails as usage_limited with Spanish copy', async () => {
+      const def = fakeProvider('fal', 'https://fal');
+      const { ledger, resolver } = gate('user_image_daily');
+      const svc = new ImageGeneratorService(def, resolver);
+      const error = await svc.generate({ prompt: 'logo', usage: scope }).catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(TaskError);
+      expect(error).toMatchObject({ kind: 'usage_limited', message: usageLimitMessage('user_image_daily') });
+      expect(def.generate).not.toHaveBeenCalled();
+      expect(ledger.settle).not.toHaveBeenCalled();
+    });
+
+    it('failure: a typed rejection settles at 0, a timeout keeps the price (may have been billed)', async () => {
+      for (const [kind, cost] of [['provider_rejected', 0], ['timeout', PRICE]] as const) {
+        const failing: IImageProvider = { id: 'fal', priceUsd: PRICE, generate: vi.fn(async () => { throw new TaskError(kind, 'boom'); }) };
+        const { events, resolver } = gate();
+        const svc = new ImageGeneratorService(failing, resolver);
+        await expect(svc.generate({ prompt: 'x', usage: scope })).rejects.toMatchObject({ kind });
+        expect(events[1]).toEqual({ op: 'settle', reservationId: 'reservation-1', actualCostUsd: cost, outcome: 'failed', costSource: 'estimate' });
+      }
+    });
+
+    it('fails closed: a gated generator refuses a request without a usage scope', async () => {
+      const def = fakeProvider('fal', 'https://fal');
+      const svc = new ImageGeneratorService(def, gate().resolver);
+      await expect(svc.generate({ prompt: 'x' })).rejects.toMatchObject({ kind: 'config_missing' });
+      expect(def.generate).not.toHaveBeenCalled();
+    });
   });
 });

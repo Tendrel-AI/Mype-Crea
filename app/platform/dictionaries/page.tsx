@@ -1,0 +1,15 @@
+import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { requireGlobalMfa } from '../../../src/auth/resolve-identity';
+import { getPlatformDictionariesView } from '../../actions/platform-dictionaries';
+import { PromoteOtroForm } from '../../../components/PlatformCatalogForms';
+
+export default async function PlatformDictionariesPage() {
+  try { await requireGlobalMfa(); } catch { redirect('/platform/mfa'); }
+  const { dictionaries, history } = await getPlatformDictionariesView();
+  return <main className="mx-auto max-w-5xl space-y-8 px-5 py-10"><header><Link href="/platform" className="text-sm underline">← Consola</Link><h1 className="mt-3 text-3xl font-semibold">Diccionarios</h1><p className="mt-1 text-neutral-600">Textos más frecuentes que quedaron en «Otro». Elige una categoría que ya exista en el diccionario; las categorías nuevas se agregan en el código con un cambio de versión.</p></header>
+    {dictionaries.map((dictionary) => <section key={dictionary.key} className="space-y-3"><h2 className="text-xl font-semibold">{dictionary.key} <span className="text-sm font-normal text-neutral-500">versión {dictionary.version}</span></h2>
+      <div className="overflow-x-auto rounded-xl border bg-white"><table className="w-full text-left text-sm"><thead><tr className="border-b text-neutral-600"><th className="p-3">Texto</th><th className="p-3">Veces</th><th className="p-3">Última vez</th><th className="p-3">Promover a</th></tr></thead><tbody>{dictionary.texts.map((item) => <tr key={item.text} className="border-b last:border-0"><td className="p-3">{item.text}</td><td className="p-3">{item.count.toLocaleString('es-PE')}</td><td className="p-3">{new Date(item.lastSeen).toLocaleDateString('es-PE')}</td><td className="p-3"><PromoteOtroForm dictionaryKey={dictionary.key} text={item.text} codes={dictionary.codes} /></td></tr>)}</tbody></table>{dictionary.texts.length === 0 && <p className="p-3 text-sm text-neutral-600">Sin textos en «Otro».</p>}</div></section>)}
+    <section className="space-y-3"><h2 className="text-xl font-semibold">Historial de cambios</h2><div className="overflow-x-auto rounded-xl border bg-white"><table className="w-full text-left text-sm"><thead><tr className="border-b text-neutral-600"><th className="p-3">Fecha</th><th className="p-3">Campo</th><th className="p-3">De</th><th className="p-3">A</th><th className="p-3">Filas reasignadas</th><th className="p-3">Versión</th></tr></thead><tbody>{history.map((row) => <tr key={`${row.appliedAt}:${row.category}`} className="border-b last:border-0"><td className="p-3">{new Date(row.appliedAt).toLocaleString('es-PE')}</td><td className="p-3">{row.dictionaryKey}</td><td className="p-3">OTRO</td><td className="p-3">{row.label}</td><td className="p-3">{row.rowsRemapped.toLocaleString('es-PE')}</td><td className="p-3">{row.version}</td></tr>)}</tbody></table>{history.length === 0 && <p className="p-3 text-sm text-neutral-600">Aún no hay cambios.</p>}</div></section>
+  </main>;
+}

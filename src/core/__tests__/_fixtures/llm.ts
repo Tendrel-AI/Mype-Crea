@@ -14,7 +14,7 @@
  * and inspect `provider.create.mock.calls[i]` for fine-grained checks.
  */
 import { vi } from 'vitest';
-import type OpenAI from 'openai';
+import type { IChatClient } from '../../../services/llm/types';
 import type {
   ILLMProvider,
   ModelPurpose,
@@ -23,7 +23,10 @@ import type {
 
 export interface CapturedCall {
   readonly params: unknown;
+  /** All system messages concatenated (what the model reads as the system prompt). */
   readonly systemPrompt: string;
+  /** Each system message as sent: [static prefix, per-turn tail?]. */
+  readonly systemParts: string[];
   readonly messageCount: number;
 }
 
@@ -44,10 +47,12 @@ export class FakeLLMProvider implements ILLMProvider {
 
   constructor(private readonly opts: FakeLLMProviderOptions = {}) {
     this.create = vi.fn(async (params: { messages?: Array<{ role: string; content: string }> }) => {
-      const sys = params.messages?.find((m) => m.role === 'system')?.content ?? '';
+      const systemParts = (params.messages ?? []).filter((m) => m.role === 'system').map((m) => m.content);
+      const sys = systemParts.join('');
       this.captured.push({
         params,
         systemPrompt: sys,
+        systemParts,
         messageCount: params.messages?.length ?? 0,
       });
       return this.buildResponse();
@@ -72,7 +77,7 @@ export class FakeLLMProvider implements ILLMProvider {
       modelId: this.opts.modelId ?? 'fake-model',
       client: {
         chat: { completions: { create: this.create } },
-      } as unknown as OpenAI,
+      } as unknown as IChatClient,
     };
   }
 

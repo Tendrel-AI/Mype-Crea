@@ -18,10 +18,12 @@ const nextConfig: NextConfig = {
   },
   output: 'standalone',
   transpilePackages: ['motion'],
-  turbopack: {},
+  // Pin the root: otherwise Next picks the outermost lockfile it finds (e.g. a stray
+  // ~/package-lock.json) and Turbopack scans the whole home directory, exhausting memory.
+  turbopack: {root: __dirname},
   webpack: (config, {dev}) => {
-    // HMR is disabled in AI Studio via DISABLE_HMR env var.
-    // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
+    // Opt-in for local development: DISABLE_HMR=true turns off webpack file
+    // watching in `next dev` (no hot reload while files are edited in bulk).
     if (dev && process.env.DISABLE_HMR === 'true') {
       config.watchOptions = {
         ignored: /.*/,

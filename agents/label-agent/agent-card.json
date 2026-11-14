@@ -1,26 +1,16 @@
 {
   "name": "label-agent",
-  "description": "Diseña la etiqueta o empaque del producto.",
-  "version": "0.1.0",
+  "description": "Calcula la tabla nutricional y los octógonos de advertencia de tu producto a partir de los análisis de laboratorio que subes en el chat.",
+  "version": "0.2.0",
   "skills": [],
   "mypes:requirements": {
-    "required": [
+    "required": [],
+    "optional": [],
+    "uploads": [
       {
-        "name": "business_name",
-        "type": "string",
-        "promptHint": "¿Qué nombre va en la etiqueta?"
-      },
-      {
-        "name": "product_description",
-        "type": "string",
-        "promptHint": "Describe el producto que va a llevar esta etiqueta (qué es, ingredientes principales o atributos clave)."
-      }
-    ],
-    "optional": [
-      {
-        "name": "regulatory_notes",
-        "type": "string",
-        "promptHint": "¿Tu producto requiere registros sanitarios o información obligatoria en la etiqueta?"
+        "kind": "lab_report",
+        "min": 1,
+        "promptHint": "Para tu etiqueta nutricional, sube el análisis de laboratorio de tu producto (PDF) con el botón «Subir análisis de laboratorio». Con eso calculo la tabla nutricional y los octógonos."
       }
     ]
   },
@@ -29,6 +19,12 @@
     "tabIcon": "package",
     "displayOrder": 4,
     "outputPreview": "label"
+  },
+  "mypes:deliverable": {
+    "kind": "label",
+    "dependsOn": [],
+    "level": "product",
+    "offerable": false
   },
   "supportedInterfaces": [
     { "protocol": "local", "module": "agents/label-agent/handler.ts" }

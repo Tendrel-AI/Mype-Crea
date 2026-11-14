@@ -103,9 +103,14 @@ export function buildWorkerTestContext(
           llmCalls: {} as never,
         })),
     resolveConversationOwner:
-      overrides.resolveConversationOwner ?? vi.fn(async () => null),
+      overrides.resolveConversationOwner ?? vi.fn(async () => '22222222-2222-2222-2222-222222222222' as UUID),
     onTaskSettled: overrides.onTaskSettled ?? vi.fn(),
+    isUserActive: overrides.isUserActive,
+    pinnedPromptFor: overrides.pinnedPromptFor,
     deliverablesFor: overrides.deliverablesFor,
+    settleTaskFor: overrides.settleTaskFor,
+    // Storage disabled by default (artifacts pass through unchanged); KAN-52 tests inject a fake.
+    storeArtifacts: overrides.storeArtifacts ?? (async ({ artifacts }) => artifacts),
     lifecycleNotifier: overrides.lifecycleNotifier,
   };
 }

@@ -10,6 +10,7 @@
  */
 
 import type {
+  AdapterSource,
   AgentId,
   ConversationId,
   DeliverableId,
@@ -25,6 +26,11 @@ export interface ConversationSnapshot {
   readonly agentStates: {
     readonly [agentId: AgentId]: AgentRequirementState;
   };
+  /**
+   * What the conversation belongs to (KAN-89). Absent on legacy conversations and in-memory stores,
+   * which behave as «no brand, no product». A product conversation only reads brand-level deliverables.
+   */
+  readonly links?: { readonly hasBrand: boolean; readonly hasProduct: boolean };
   readonly updatedAt: ISOTimestamp;
 }
 
@@ -40,7 +46,12 @@ export interface AgentRequirementState {
   readonly selectedDeliverableId?: DeliverableId;
 }
 
+/**
+ * `source` is the `FieldDelta.source` that wrote the value (KAN-26 provenance:
+ * chat or brief panel). Audit and display only: merge and planner never
+ * branch on it. Absent on slots written before KAN-26.
+ */
 export type FieldSlot =
   | { readonly status: 'empty' }
-  | { readonly status: 'pending_confirmation'; readonly value: unknown; readonly confidence: number }
-  | { readonly status: 'filled'; readonly value: unknown; readonly confidence: number };
+  | { readonly status: 'pending_confirmation'; readonly value: unknown; readonly confidence: number; readonly source?: AdapterSource; readonly category?: string }
+  | { readonly status: 'filled'; readonly value: unknown; readonly confidence: number; readonly source?: AdapterSource; readonly category?: string };

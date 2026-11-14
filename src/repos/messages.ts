@@ -1,7 +1,7 @@
 /**
  * messages repository.
  *
- * Per claude/skills/database/SKILL.md:
+ * Per docs/agents/database.md:
  *   - messages RLS is tenant + (admin OR own user). Both GUCs must be set.
  *   - All queries inside an explicit transaction; no raw pool access.
  *   - Index (tenant_id, conversation_id, created_at DESC) supports list reads.
@@ -106,6 +106,51 @@ export function messagesRepo(tenant: Tenant, user: User) {
         );
         child.debug({ rowsAffected: res.rowCount }, 'messages listed');
         return res.rows.map(toDomain);
+      });
+    },
+
+    /**
+     * Persist the conversation's welcome as an assistant row with no ai_turn. Replaces the previous
+     * welcome, and only while the conversation has no turns (afterwards it is history and frozen).
+     * Returns whether the text was stored.
+     */
+    async replaceWelcome(conversationId: ConversationId, content: string): Promise<boolean> {
+      const child = log.child({ op: 'replaceWelcome', tenantId: tenant.id, userId: user.id, conversationId });
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const turns = await tx.query(
+          `SELECT 1 FROM ai_turns WHERE tenant_id = $1 AND conversation_id = $2 LIMIT 1`,
+          [tenant.id, conversationId],
+        );
+        if (turns.rowCount) {
+          child.debug('conversation has turns, welcome left untouched');
+          return false;
+        }
+        await tx.query(
+          `DELETE FROM messages
+            WHERE tenant_id = $1 AND conversation_id = $2 AND role = 'assistant' AND ai_turn_id IS NULL`,
+          [tenant.id, conversationId],
+        );
+        await tx.query(
+          `INSERT INTO messages (tenant_id, conversation_id, user_id, role, content, generation_status)
+           VALUES ($1, $2, $3, 'assistant', $4, 'complete')`,
+          [tenant.id, conversationId, user.id, content],
+        );
+        child.debug({ contentLength: content.length }, 'welcome stored');
+        return true;
+      });
+    },
+
+    /** The stored welcome (latest assistant row without a turn), or null when none was persisted. */
+    async readWelcome(conversationId: ConversationId): Promise<string | null> {
+      return withTenantTransaction(tenant, user, async (tx) => {
+        const res = await tx.query<{ content: string }>(
+          `SELECT content FROM messages
+            WHERE tenant_id = $1 AND conversation_id = $2 AND role = 'assistant' AND ai_turn_id IS NULL
+            ORDER BY created_at DESC
+            LIMIT 1`,
+          [tenant.id, conversationId],
+        );
+        return res.rows[0]?.content ?? null;
       });
     },
 

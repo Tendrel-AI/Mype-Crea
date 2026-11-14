@@ -84,8 +84,18 @@ export interface FieldValueWithConfidence {
    */
   readonly confidence: number;
 
+  /** D41: dictionary code the Extractor mapped an `enum` field's text to (or `OTRO`). Read only by the facts writer. */
+  readonly category?: string;
+
   /** Optional: the raw text/input that produced this value. Debug/audit only. */
   readonly rawInput?: string;
+
+  /**
+   * Optional precondition: apply only while the slot is still
+   * `pending_confirmation` with this value. A «sí» to a confirm_fields sets it,
+   * so a stale confirmation cannot overwrite a value accepted since (KAN-26).
+   */
+  readonly expectedPendingValue?: unknown;
 }
 
 /**
@@ -94,6 +104,12 @@ export interface FieldValueWithConfidence {
  * Facts go in `fields` ("my industry is food"). Commands go here ("select the
  * second logo", "regenerate this with changes"). Keeping these separate
  * prevents the core from disambiguating between disclosure and instruction.
+ *
+ * KAN-28: deliverable side effects (Generar, Iterar, Aprobar, Reintentar,
+ * Cancelar) travel ONLY as typed `DeliverableCommand`s through the core's
+ * command path. `select_deliverable`, `request_iteration` and `cancel_task`
+ * below are legacy placeholders: merge records them as no-ops and nothing
+ * dispatches, approves or cancels because of a `FieldDelta`.
  */
 export type UserIntent =
   | {
@@ -113,6 +129,8 @@ export type UserIntent =
       readonly kind: 'reset_field';
       readonly agentId: AgentId;
       readonly fieldName: FieldName;
+      /** Same precondition as `FieldValueWithConfidence.expectedPendingValue` (a «no» with no correction). */
+      readonly expectedPendingValue?: unknown;
     };
 
 // ---------------------------------------------------------------------------
@@ -122,18 +140,26 @@ export type UserIntent =
 /**
  * How the user wants an existing deliverable iterated.
  *
- * v1 ships with `parameterChanges` populated by structured side-panel controls.
- * `freeTextHint` is reserved for a future natural-language refinement channel
- * and MUST NOT be the primary refinement mechanism in v1.
+ * KAN-65 (R2): Phase 1 refinement uses structured side-panel parameters plus
+ * short observations anchored to one candidate. Both are iteration-local and
+ * never write the brief; they are stored only in the iteration task's
+ * `requirements_snapshot.refinement` (KAN-34 shape and caps, see
+ * `REFINEMENT_LIMITS` in contracts/deliverables.ts). Observations are
+ * untrusted input passed only to the target agent's handler; the Extractor
+ * never sees or produces them. Iterations are requested through the typed
+ * «Iterar» command (`DeliverableCommand`), not through `FieldDelta`.
  */
 export interface RefinementSpec {
   readonly parentTaskId: TaskId;
 
   /** Structured parameter overrides produced by the side-panel refinement UI. */
-  readonly parameterChanges?: Readonly<Record<string, unknown>>;
+  readonly parameterChanges?: Readonly<Record<string, string | number | boolean>>;
 
-  /** Optional free-text description of desired changes. Reserved for v2. */
-  readonly freeTextHint?: string;
+  /** Anchored observations, at most `REFINEMENT_LIMITS.maxObservations` × `maxObservationChars`. */
+  readonly observations?: ReadonlyArray<string>;
+
+  /** Candidate the observations are anchored to. */
+  readonly anchorDeliverableId?: DeliverableId | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +178,7 @@ export const CONFIDENCE_THRESHOLDS = {
   /** At or above this, store the value without prompting for confirmation. */
   AUTO_ACCEPT: 0.9,
 
-  /** At or above this but below AUTO_ACCEPT: store but mark pending for confirm_field. */
+  /** At or above this but below AUTO_ACCEPT: store but mark pending for confirm_fields. */
   STORE_AND_CONFIRM: 0.6,
 
   /** Below STORE_AND_CONFIRM: discard the extracted value and re-ask explicitly. */

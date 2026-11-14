@@ -117,6 +117,110 @@ SUITE('agent_tasks repository (integration)', () => {
     expect(winners[0]!.attempts).toBe(1);
   });
 
+  it('lists only due pending dispatches for the requested agent within the limit', async () => {
+    const conversationId = await newConversation();
+    const sys = systemRepos({ id: tenantId });
+    const insert = (agentId: string, scheduledFor?: string) => sys.agentTasks.insertRoot({
+      conversationId,
+      agentId,
+      agentCardVersion: '1.0.0',
+      idempotencyKey: randomUUID(),
+      requirementsSnapshot: {},
+      scheduledFor,
+    });
+
+    await Promise.all([
+      insert('logo-agent'),
+      insert('logo-agent'),
+      insert('other-agent'),
+      insert('logo-agent', new Date(Date.now() + 60_000).toISOString()),
+    ]);
+
+    const rows = await sys.agentTasks.listPendingDispatches({ agentId: 'logo-agent', limit: 2 });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.agentId === 'logo-agent' && row.status === 'pending')).toBe(true);
+    expect(rows.every((row) => Date.parse(row.scheduledFor) <= Date.now())).toBe(true);
+  });
+
+  it('claimById with an agent id leaves a task for another agent pending', async () => {
+    const conversationId = await newConversation();
+    const sys = systemRepos({ id: tenantId });
+    const row = await sys.agentTasks.insertRoot({
+      conversationId,
+      agentId: 'tagline-agent',
+      agentCardVersion: '1.0.0',
+      idempotencyKey: randomUUID(),
+      requirementsSnapshot: {},
+    });
+
+    expect(await sys.agentTasks.claimById(row.id, 'logo-agent')).toBeNull();
+    expect((await sys.agentTasks.findById(row.id))?.status).toBe('pending');
+    const owned = await sys.agentTasks.claimById(row.id, 'tagline-agent');
+    expect(owned?.status).toBe('in_progress');
+  });
+
+  it('durably settles a failed task with its error detail and classified category (KAN-58)', async () => {
+    const conversationId = await newConversation();
+    const sys = systemRepos({ id: tenantId });
+    const row = await sys.agentTasks.insertRoot({
+      conversationId,
+      agentId: 'logo-agent',
+      agentCardVersion: '1.0.0',
+      idempotencyKey: randomUUID(),
+      requirementsSnapshot: {},
+    });
+    await sys.agentTasks.claimById(row.id, 'logo-agent');
+
+    const settled = await repos({ id: tenantId }, { id: userId }).aiTurns.settleTaskAndEnqueue({
+      conversationId,
+      taskId: row.id,
+      state: 'failed',
+      deliverableKind: 'logo',
+      artifacts: [],
+      error: { kind: 'content_policy', message: 'synthetic safety rejection' },
+      errorCategory: 'content_policy',
+    });
+
+    expect(settled.deliverableIds).toEqual([]);
+    const stored = await sys.agentTasks.findById(row.id);
+    expect(stored).toMatchObject({
+      status: 'failed',
+      errorCategory: 'content_policy',
+      error: { kind: 'content_policy', message: 'synthetic safety rejection' },
+    });
+  });
+
+  it('sweep fails an in_progress task older than 10 minutes and leaves a fresh one alone', async () => {
+    const conversationId = await newConversation();
+    const sys = systemRepos({ id: tenantId });
+    const mk = async () => {
+      const row = await sys.agentTasks.insertRoot({
+        conversationId, agentId: 'logo-agent', agentCardVersion: '1.0.0', idempotencyKey: randomUUID(), requirementsSnapshot: {},
+      });
+      await sys.agentTasks.claimById(row.id, 'logo-agent');
+      return row.id;
+    };
+    const fresh = await mk();
+    const stale = await mk();
+    // Age the stale claim by backdating last_attempt_at through the owner connection.
+    const admin = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await admin.connect();
+    try {
+      await admin.query(`UPDATE agent_tasks SET last_attempt_at = now() - interval '11 minutes' WHERE id = $1`, [stale]);
+    } finally {
+      await admin.end();
+    }
+    expect(await sys.aiEvents!.failStaleInProgress()).toBeGreaterThanOrEqual(1);
+    expect(await sys.agentTasks.findById(stale)).toMatchObject({ status: 'failed', errorCategory: 'transient', error: { kind: 'timeout' } });
+    expect((await sys.agentTasks.findById(fresh))?.status).toBe('in_progress');
+    // A late worker result is ignored: the failure stays.
+    const late = await repos({ id: tenantId }, { id: userId }).aiTurns.settleTaskAndEnqueue({
+      conversationId, taskId: stale, state: 'completed', deliverableKind: 'logo', artifacts: [],
+    });
+    expect(late.applied).toBe(false);
+    expect((await sys.agentTasks.findById(stale))?.status).toBe('failed');
+  });
+
   it('rejects JSONB writes that embed a UUID not visible under the current tenant', async () => {
     const conversationId = await newConversation();
     const sys = systemRepos({ id: tenantId });
@@ -131,6 +235,54 @@ SUITE('agent_tasks repository (integration)', () => {
         requirementsSnapshot: { reference: foreignUuid },
       }),
     ).rejects.toThrow(/JSONB tenant safety/);
+  });
+
+  it('accepts lab-report refs (brand_files id, tenant/brand ids in storageKey) and rejects a foreign tenant brand file', async () => {
+    const admin = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await admin.connect();
+    const mk = async (tid: string, uid: string | null) => {
+      const brandId = randomUUID();
+      const fileId = randomUUID();
+      const owner = uid ?? randomUUID();
+      if (!uid) {
+        await admin.query(`INSERT INTO tenants (id, kind, name) VALUES ($1, 'institutional', $2)`, [tid, `jsonb ${tid}`]);
+        await admin.query(
+          `INSERT INTO users (id, tenant_id, workos_user_id, email, role, status) VALUES ($1, $2, $3, $4, 'member', 'active')`,
+          [owner, tid, `w-${owner}`, `${owner}@example.test`],
+        );
+      }
+      await admin.query(`INSERT INTO brands (id, tenant_id, user_id) VALUES ($1, $2, $3)`, [brandId, tid, owner]);
+      await admin.query(
+        `INSERT INTO brand_files (id, tenant_id, user_id, brand_id, kind, storage_key, content_type, byte_size, sha256, original_name)
+         VALUES ($1, $2, $3, $4, 'asset', 'k', 'application/pdf', 1, $5, 'a.pdf')`,
+        [fileId, tid, owner, brandId, 'a'.repeat(64)],
+      );
+      return { brandId, fileId };
+    };
+    const foreignTenant = randomUUID();
+    try {
+      const own = await mk(tenantId, userId);
+      const foreign = await mk(foreignTenant, null);
+      const conversationId = await newConversation();
+      const sys = systemRepos({ id: tenantId });
+      const ref = (t: string, b: string, f: string) => ({
+        lab_reports: [{ fileId: f, storageKey: `tenants/${t}/brands/${b}/files/${f}.pdf`, sha256: 'a'.repeat(64), originalName: 'a.pdf' }],
+      });
+      await expect(sys.agentTasks.insertRoot({
+        conversationId, agentId: 'test-fixture-agent', agentCardVersion: '1.0.0',
+        idempotencyKey: randomUUID(), requirementsSnapshot: ref(tenantId, own.brandId, own.fileId),
+      })).resolves.toBeDefined();
+      await expect(sys.agentTasks.insertRoot({
+        conversationId, agentId: 'test-fixture-agent', agentCardVersion: '1.0.0',
+        idempotencyKey: randomUUID(), requirementsSnapshot: { lab_reports: [{ fileId: foreign.fileId }] },
+      })).rejects.toThrow(/JSONB tenant safety/);
+    } finally {
+      await admin.query(`DELETE FROM brand_files WHERE tenant_id = ANY($1::uuid[])`, [[tenantId, foreignTenant]]);
+      await admin.query(`DELETE FROM brands WHERE tenant_id = ANY($1::uuid[])`, [[tenantId, foreignTenant]]);
+      await admin.query(`DELETE FROM users WHERE tenant_id = $1`, [foreignTenant]);
+      await admin.query(`DELETE FROM tenants WHERE id = $1`, [foreignTenant]);
+      await admin.end();
+    }
   });
 
   it('extractUuids finds embedded UUIDs in nested JSONB', () => {
