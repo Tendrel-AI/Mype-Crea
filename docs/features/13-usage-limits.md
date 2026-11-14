@@ -13,7 +13,7 @@ Every paid call checks the limits before it reaches a provider. This covers each
    - 60 LLM calls per user per hour;
    - 15 images per user per day;
    - 4,000-character inputs.
-   The same file holds the prices (`PRICING_VERSION`, `IMAGE_PRICE_USD`) and the user messages (`usageLimitMessage`).
+   The same file holds the prices (`PRICING_VERSION`, `IMAGE_PRICES_USD` per image model) and the user messages (`usageLimitMessage`).
 2. **Reserve, call, settle.** `src/services/usage/gateway.ts:runWithUsage` calls `usage.reserve`, which inserts an estimated row into `usage_reservations` under a per-tenant advisory transaction lock. Concurrent calls therefore cannot overspend. On denial it throws `UsageLimitError` and no provider is called. Otherwise it calls the provider and then `settle`s the row with the actual cost (or the failure cost).
 3. **Hook points.**
    - `captureAttempt` in `src/services/ai-config/execution.ts`: the new category `usage_limited` is never eligible for fallback.

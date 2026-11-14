@@ -1,36 +1,65 @@
 /**
  * fal.ai-backed IImageProvider.
  *
- * The only place in the codebase that imports `@fal-ai/client`. Picks
- * FLUX.3 Klein `klein/edit-image` when reference images are provided, `klein/text-to-image`
- * otherwise (D59; was FLUX.2 [dev]), always square 1024x1024 (logos). Logs request lifecycle under scope `service.image.fal`.
+ * The only place in the codebase that imports `@fal-ai/client`. The model comes from `IMAGE_MODEL` (D63):
+ * `nano-banana-2` (default, Gemini 3.1 Flash Image) or `klein` (FLUX.3 Klein, D59). Each has a base endpoint and
+ * an edit endpoint used when reference images are provided; always square 1K. Logs request lifecycle under scope `service.image.fal`.
  *
  * Failures are rethrown as `TaskError` with a typed kind whenever the fal
  * error carries a usable signal (HTTP status, content-policy detail, timeout,
  * network failure), so the task's `error_category` is classified correctly
  * (architecture §2.5). Errors without such a signal are rethrown unchanged.
  *
- * Safety (KAN-33): the provider's own safety checker is requested explicitly
- * and its `has_nsfw_concepts[0]` becomes the image's `SafetyRecord`
- * (`falSafety`): false → passed, true → rejected (`sexual_content`), anything
- * else → indeterminate.
+ * Safety (KAN-33): Klein runs fal's safety checker and its `has_nsfw_concepts[0]` becomes the image's
+ * `SafetyRecord` (`falSafety`): false → passed, true → rejected (`sexual_content`), anything else → indeterminate.
+ * Gemini returns no flag: Google's filter (at `safety_tolerance` 2, strict) refuses unsafe requests before any image
+ * exists, so a returned image is recorded as passed by that filter (`providerFilterSafety`).
  */
 import { fal } from '@fal-ai/client';
 import { SAFETY_POLICY_VERSION, type SafetyRecord } from '../../core/deliverable-safety';
 import { TaskError } from '../../core/task-errors';
 import { loggerFor } from '../logger';
+import { IMAGE_PRICES_USD, type ImageModelKey } from '../usage/policy';
 import type { IImageProvider, ImageRequest, ImageResult } from './types';
 
 const log = loggerFor('service.image.fal');
 const PROVIDER_ID = 'fal';
-const BASE_MODEL = 'blackforestlabs/flux-3/klein/text-to-image';
-const EDIT_MODEL = 'blackforestlabs/flux-3/klein/edit-image';
 const SAFETY_CLASSIFIER = 'fal-safety-checker';
+const GEMINI_SAFETY_CLASSIFIER = 'google-gemini-safety-filter';
+
+/** fal endpoints and fixed input of each selectable model. */
+const IMAGE_MODELS: Readonly<Record<ImageModelKey, { base: string; edit: string; input: Readonly<Record<string, unknown>>; flagsNsfw: boolean }>> = {
+  'nano-banana-2': {
+    base: 'fal-ai/nano-banana-2',
+    edit: 'fal-ai/nano-banana-2/edit',
+    input: { aspect_ratio: '1:1', resolution: '1K', output_format: 'png', safety_tolerance: '2' },
+    flagsNsfw: false,
+  },
+  klein: {
+    base: 'blackforestlabs/flux-3/klein/text-to-image',
+    edit: 'blackforestlabs/flux-3/klein/edit-image',
+    // The art director's prompt is final (exact brand-name spelling, D46): Klein's prompt expansion would rewrite it.
+    input: { image_size: 'square_hd', enable_safety_checker: true, enable_prompt_expansion: false },
+    flagsNsfw: true,
+  },
+};
+export const DEFAULT_IMAGE_MODEL: ImageModelKey = 'nano-banana-2';
+
+/** `IMAGE_MODEL` (unset → default). An unknown value fails loudly instead of silently billing another model. */
+export function readImageModel(env: Readonly<Record<string, string | undefined>> = process.env): ImageModelKey {
+  const value = env.IMAGE_MODEL?.trim() || DEFAULT_IMAGE_MODEL;
+  if (!(value in IMAGE_MODELS)) {
+    throw new TaskError('config_missing', `IMAGE_MODEL "${value}" is not one of: ${Object.keys(IMAGE_MODELS).join(', ')}.`);
+  }
+  return value as ImageModelKey;
+}
 
 export class FalImageProvider implements IImageProvider {
   readonly id = PROVIDER_ID;
+  readonly priceUsd: number;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, private readonly model: ImageModelKey = readImageModel()) {
+    this.priceUsd = IMAGE_PRICES_USD[model];
     if (!apiKey) {
       throw new TaskError(
         'config_missing',
@@ -42,14 +71,12 @@ export class FalImageProvider implements IImageProvider {
 
   async generate(req: ImageRequest): Promise<ImageResult> {
     const isEdit = Boolean(req.referenceUrls && req.referenceUrls.length > 0);
-    const modelId = isEdit ? EDIT_MODEL : BASE_MODEL;
+    const spec = IMAGE_MODELS[this.model];
+    const modelId = isEdit ? spec.edit : spec.base;
 
     const input = {
       prompt: req.prompt,
-      image_size: 'square_hd' as const,
-      enable_safety_checker: true,
-      // The art director's prompt is final (exact brand-name spelling, D46): Klein's prompt expansion would rewrite it.
-      enable_prompt_expansion: false,
+      ...spec.input,
       ...(isEdit ? { image_urls: await Promise.all(req.referenceUrls!.map(toFalUrl)) } : {}),
     };
 
@@ -73,7 +100,7 @@ export class FalImageProvider implements IImageProvider {
       child.error({ latencyMs }, 'image.request.no_url');
       throw new TaskError('invalid_output', 'fal returned no image URL');
     }
-    const safety = falSafety(result.data, modelId);
+    const safety = spec.flagsNsfw ? falSafety(result.data, modelId) : providerFilterSafety(modelId);
     child.info({ latencyMs, safetyVerdict: safety.verdict }, 'image.request.complete');
     return { url, providerId: this.id, modelId, latencyMs, safety };
   }
@@ -95,6 +122,18 @@ export function falSafety(data: unknown, model: string): SafetyRecord {
     verdict,
     category: verdict === 'rejected' ? 'sexual_content' : null,
     classifier: SAFETY_CLASSIFIER,
+    model,
+    policyVersion: SAFETY_POLICY_VERSION,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+/** Gemini (D63): a returned image already passed Google's filter, which refuses unsafe requests with no image. */
+export function providerFilterSafety(model: string): SafetyRecord {
+  return {
+    verdict: 'passed',
+    category: null,
+    classifier: GEMINI_SAFETY_CLASSIFIER,
     model,
     policyVersion: SAFETY_POLICY_VERSION,
     checkedAt: new Date().toISOString(),

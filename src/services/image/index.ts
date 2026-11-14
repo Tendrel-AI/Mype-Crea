@@ -21,7 +21,7 @@ export type {
   ImageResult,
 } from './types';
 export { ImageGeneratorService } from './generator';
-export { FalImageProvider, classifyFalError } from './fal-provider';
+export { FalImageProvider, classifyFalError, readImageModel } from './fal-provider';
 
 let generator: IImageGenerator | undefined;
 

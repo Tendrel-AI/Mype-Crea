@@ -1,4 +1,5 @@
-import { IMAGE_PRICE_USD, llmCostUsd } from '../../src/services/usage/policy';
+import { IMAGE_PRICES_USD, llmCostUsd } from '../../src/services/usage/policy';
+import { readImageModel } from '../../src/services/image/fal-provider';
 import type { RunResult } from './simulate';
 
 /** Production per-call tokens of one agent generation (one naming call each; the logo also makes one image). */
@@ -17,7 +18,7 @@ export function runCostUsd(run: RunResult, namingModel: string): number {
   const agents = sum(run.dispatches.map((d) => {
     const t = AGENT_CALL_TOKENS[d.agentId];
     const naming = t ? llmCostUsd(namingModel, { prompt_tokens: t.in, completion_tokens: t.out }) ?? 0 : 0;
-    return naming + (d.agentId === 'logo-agent' ? IMAGE_PRICE_USD : 0);
+    return naming + (d.agentId === 'logo-agent' ? IMAGE_PRICES_USD[readImageModel()] : 0);
   }));
   return llm + agents;
 }
