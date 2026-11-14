@@ -2,7 +2,7 @@
  * Unit tests for the Responder scorers and text helpers. Pure, no LLM.
  */
 import { describe, expect, it } from 'vitest';
-import { findVoseo, scoreReply } from '../responder';
+import { findReasoningLeak, findVoseo, scoreReply } from '../responder';
 import { countSentences, normalizeText } from '../text';
 
 const keyScore = (reply: string, e?: Parameters<typeof scoreReply>[1]) =>
@@ -52,5 +52,17 @@ describe('scoreReply', () => {
     const reply = 'Entiendo que tu negocio se llama Dulce Hogar, ¿es correcto?';
     expect(keyScore(reply, { mustMention: ['dulce hogar'] })['responder.mentions_required']).toBe(1);
     expect(keyScore(reply, { mustNotMention: ['DULCE HOGAR'] })['responder.no_leaked_values']).toBe(0);
+  });
+});
+
+describe('responder.no_reasoning_leak', () => {
+  it.each(['Analicemos la decisión.', 'La regla dice que no.', 'Debo preguntar algo.', 'hola <｜begin▁of▁file｜>', 'kind=noop'])('flags %s', (t) => {
+    expect(findReasoningLeak(t)).toBeDefined();
+    const f = scoreReply(t).feedback.find((x) => x.key === 'responder.no_reasoning_leak');
+    expect(f?.score).toBe(0);
+    expect(scoreReply(t).pass).toBe(false);
+  });
+  it('passes a normal reply', () => {
+    expect(findReasoningLeak('¿Cómo se llama tu negocio?')).toBeUndefined();
   });
 });

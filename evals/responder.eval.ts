@@ -40,13 +40,19 @@ ls.describe(
           const feedback: Feedback[] = [];
           let error: unknown;
           try {
-            const { content } = await adapter.render({
+            const { content, fallback } = await adapter.render({
               decisions: inputs.decisions,
               recentMessages: inputs.recentMessages,
               snapshot: buildSnapshot({ agentStates: { 'logo-agent': inputs.logoState } }),
               llmContext: evalLlmContext,
             });
-            ls.logOutputs({ reply: content });
+            ls.logOutputs({ reply: content, fallback });
+
+            // A fallback means the user would not have seen the model's text: the model is unusable for this case.
+            const usable: Feedback = { key: 'responder.model_output_usable', score: fallback ? 0 : 1, comment: fallback };
+            feedback.push(usable);
+            ls.logFeedback(usable);
+            expect(fallback, `model output unusable (${fallback}); the user would see the fallback`).toBeUndefined();
 
             const scored = scoreReply(content, c.expected);
             feedback.push(...scored.feedback);

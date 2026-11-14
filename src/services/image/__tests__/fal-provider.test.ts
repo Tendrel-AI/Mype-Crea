@@ -59,8 +59,8 @@ describe('FalImageProvider', () => {
     expect(settleSpy).toHaveBeenCalledWith(expect.objectContaining({ reservationId: 'reservation-1', outcome: 'succeeded' }));
 
     expect(configSpy).toHaveBeenCalledWith({ credentials: 'test-fal-key' });
-    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/flux-2', {
-      input: { prompt: 'un logo', image_size: 'square_hd', enable_safety_checker: true },
+    expect(subscribeSpy).toHaveBeenCalledWith('blackforestlabs/flux-3/klein/text-to-image', {
+      input: { prompt: 'un logo', image_size: 'square_hd', enable_safety_checker: true, enable_prompt_expansion: false },
     });
     expect(result.providerId).toBe('fal');
     expect(result.url).toBe('https://fal.cdn/independent.png');
@@ -88,12 +88,12 @@ describe('FalImageProvider', () => {
     const result = await provider.generate({ prompt: 'una marca minimalista' });
 
     expect(subscribeSpy).toHaveBeenCalledTimes(1);
-    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/flux-2', {
-      input: { prompt: 'una marca minimalista', image_size: 'square_hd', enable_safety_checker: true },
+    expect(subscribeSpy).toHaveBeenCalledWith('blackforestlabs/flux-3/klein/text-to-image', {
+      input: { prompt: 'una marca minimalista', image_size: 'square_hd', enable_safety_checker: true, enable_prompt_expansion: false },
     });
     expect(result.url).toBe('https://fal.cdn/img.png');
     expect(result.providerId).toBe('fal');
-    expect(result.modelId).toBe('fal-ai/flux-2');
+    expect(result.modelId).toBe('blackforestlabs/flux-3/klein/text-to-image');
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
@@ -106,15 +106,16 @@ describe('FalImageProvider', () => {
       referenceUrls: ['https://example.test/logo.png'],
     });
 
-    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/flux-2/edit', {
+    expect(subscribeSpy).toHaveBeenCalledWith('blackforestlabs/flux-3/klein/edit-image', {
       input: {
         prompt: 'refine the logo',
         image_size: 'square_hd',
         enable_safety_checker: true,
+        enable_prompt_expansion: false,
         image_urls: ['https://example.test/logo.png'],
       },
     });
-    expect(result.modelId).toBe('fal-ai/flux-2/edit');
+    expect(result.modelId).toBe('blackforestlabs/flux-3/klein/edit-image');
     expect(result.url).toBe('https://fal.cdn/edited.png');
   });
 
@@ -134,7 +135,7 @@ describe('FalImageProvider', () => {
       verdict,
       category,
       classifier: 'fal-safety-checker',
-      model: 'fal-ai/flux-2/edit',
+      model: 'blackforestlabs/flux-3/klein/edit-image',
       policyVersion: 'logo-safety.v1',
       checkedAt: expect.any(String),
     });
@@ -142,7 +143,7 @@ describe('FalImageProvider', () => {
   });
 
   it('treats a response without data as indeterminate', () => {
-    expect(falSafety(undefined, 'fal-ai/flux-2').verdict).toBe('indeterminate');
+    expect(falSafety(undefined, 'blackforestlabs/flux-3/klein/text-to-image').verdict).toBe('indeterminate');
   });
 
   it('throws when fal returns no image URL', async () => {
@@ -206,7 +207,7 @@ describe('FalImageProvider data: references', () => {
     const blob = uploadSpy.mock.calls[0][0] as Blob;
     expect(blob.type).toBe('image/png');
     expect(blob.size).toBe(3);
-    expect(subscribeSpy).toHaveBeenCalledWith('fal-ai/flux-2/edit', {
+    expect(subscribeSpy).toHaveBeenCalledWith('blackforestlabs/flux-3/klein/edit-image', {
       input: expect.objectContaining({ image_urls: ['https://fal.media/files/photo.png', 'https://example.test/a.png'] }),
     });
   });

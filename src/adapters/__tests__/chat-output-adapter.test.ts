@@ -13,7 +13,7 @@ vi.mock('../../repos', () => ({
   systemRepos: () => ({ llmCalls: { record: recordSpy } }),
 }));
 
-import { ChatOutputAdapter } from '../chat-output-adapter';
+import { ChatOutputAdapter, GENERIC_FALLBACK_REPLY, MAX_REPLY_CHARS, unusableReplyReason } from '../chat-output-adapter';
 import {
   buildAgentRequirementState,
   buildSingleAgentFixtureRegistry,
@@ -501,7 +501,7 @@ describe('ChatOutputAdapter', () => {
   });
 
   it('bumps the responder prompt version for the command guidance', () => {
-    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v13');
+    expect(createCurrentAdapterBehaviorSnapshot().responder.promptVersion).toBe('responder.chat-step1.v14');
   });
 
   it('a release frozen before v6 still renders offer_generation through the fragment fallbacks', async () => {
@@ -536,7 +536,7 @@ describe('ChatOutputAdapter', () => {
 
     await adapter.render(base);
     await adapter.render({ ...base, promptVersions: { responder: 'responder.chat-step1.v6' } });
-    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v13', 'responder.chat-step1.v6']);
+    expect(recordSpy.mock.calls.map((call) => (call as any[])[0].promptVersion)).toEqual(['responder.chat-step1.v14', 'responder.chat-step1.v6']);
   });
 
   it('falls back to the active version when the pinned one no longer exists', async () => {
@@ -548,7 +548,7 @@ describe('ChatOutputAdapter', () => {
       decisions: [{ kind: 'announce_all_complete' }], recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
       promptVersions: { responder: 'responder.chat-step1.v0' },
     });
-    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v13');
+    expect((recordSpy.mock.calls[0] as any[])[0].promptVersion).toBe('responder.chat-step1.v14');
   });
 
   describe('KAN-93 conversation context', () => {
@@ -665,6 +665,45 @@ describe('ChatOutputAdapter', () => {
       const prompt = provider.captured[0].systemPrompt as string;
       expect(prompt).toContain('Aprobar, Iterar');
       expect(prompt).toContain('NUNCA preguntes "¿seguimos?"');
+    });
+  });
+
+  describe('output guard', () => {
+    const askName: PlannerDecision = {
+      kind: 'request_fields',
+      agentId: 'test-fixture-agent',
+      fields: [{ fieldName: 'business_name', promptHint: '¿Cómo se llama tu negocio?' }],
+    };
+    const renderWith = (reply: string, decisions: ReadonlyArray<PlannerDecision>) => {
+      setProvider(makeResponderProvider(reply));
+      return new ChatOutputAdapter(buildSingleAgentFixtureRegistry().registry).render({
+        decisions, recentMessages: [], snapshot: emptySnapshot, llmContext: ctx,
+      });
+    };
+
+    it.each([
+      ['empty', '   '],
+      ['special_tokens', 'hola <｜begin▁of▁file｜> x'],
+      ['prompt_leak', 'Según kind=noop debo invitarte'],
+      ['prompt_leak', 'Acción obligatoria: pregunta'],
+      ['too_long', 'a'.repeat(MAX_REPLY_CHARS + 1)],
+    ])('flags %s', (reason, text) => {
+      expect(unusableReplyReason(text)).toBe(reason);
+    });
+
+    it('falls back to the first request_fields promptHint', async () => {
+      const out = await renderWith('', [askName]);
+      expect(out).toEqual({ content: '¿Cómo se llama tu negocio?', fallback: 'empty' });
+    });
+
+    it('falls back to the generic message without request_fields', async () => {
+      const out = await renderWith('x <|im_end|>', []);
+      expect(out).toEqual({ content: GENERIC_FALLBACK_REPLY, fallback: 'special_tokens' });
+    });
+
+    it('passes a normal reply untouched', async () => {
+      const out = await renderWith('¿Cómo se llama tu negocio?', [askName]);
+      expect(out).toEqual({ content: '¿Cómo se llama tu negocio?' });
     });
   });
 });

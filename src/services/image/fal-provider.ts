@@ -2,8 +2,8 @@
  * fal.ai-backed IImageProvider.
  *
  * The only place in the codebase that imports `@fal-ai/client`. Picks
- * FLUX.2 [dev] `flux-2/edit` when reference images are provided, `flux-2`
- * otherwise, always square 1024x1024 (logos). Logs request lifecycle under scope `service.image.fal`.
+ * FLUX.3 Klein `klein/edit-image` when reference images are provided, `klein/text-to-image`
+ * otherwise (D59; was FLUX.2 [dev]), always square 1024x1024 (logos). Logs request lifecycle under scope `service.image.fal`.
  *
  * Failures are rethrown as `TaskError` with a typed kind whenever the fal
  * error carries a usable signal (HTTP status, content-policy detail, timeout,
@@ -23,8 +23,8 @@ import type { IImageProvider, ImageRequest, ImageResult } from './types';
 
 const log = loggerFor('service.image.fal');
 const PROVIDER_ID = 'fal';
-const BASE_MODEL = 'fal-ai/flux-2';
-const EDIT_MODEL = 'fal-ai/flux-2/edit';
+const BASE_MODEL = 'blackforestlabs/flux-3/klein/text-to-image';
+const EDIT_MODEL = 'blackforestlabs/flux-3/klein/edit-image';
 const SAFETY_CLASSIFIER = 'fal-safety-checker';
 
 export class FalImageProvider implements IImageProvider {
@@ -48,6 +48,8 @@ export class FalImageProvider implements IImageProvider {
       prompt: req.prompt,
       image_size: 'square_hd' as const,
       enable_safety_checker: true,
+      // The art director's prompt is final (exact brand-name spelling, D46): Klein's prompt expansion would rewrite it.
+      enable_prompt_expansion: false,
       ...(isEdit ? { image_urls: await Promise.all(req.referenceUrls!.map(toFalUrl)) } : {}),
     };
 

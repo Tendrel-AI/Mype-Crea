@@ -2,7 +2,8 @@
  * Eval -> prompt ledger hook. setup.ts mocks `llmCalls.record` to `captureCall`, so every model call
  * made by the adapter under test lands here; `recordEvalCase` turns them into eval Runs + Scores.
  * The LangSmith upload is the `langsmith/vitest` reporter, not a ledger mirror.
- * No Samples on purpose: outputs are already in LangSmith and `Sample.ref` must never hold content.
+ * The only Sample is the case id reference (`eval-case:<id>`) on the adapter run, never content:
+ * outputs are already in LangSmith and `Sample.ref` must never hold content.
  * Judge calls bypass withLlmLogging, so they are never captured (and never get the adapter's scores).
  */
 import { randomUUID } from 'node:crypto';
@@ -79,7 +80,10 @@ export async function recordEvalCase(args: {
     if (args.error !== undefined && !runs.some((r) => r.key === args.key)) {
       runs.push({ ...base, id: randomUUID(), key: args.key, version: args.version, model: 'unknown', startedAt: new Date().toISOString(), outcome: 'failed', errorCategory: 'eval_error' });
     }
-    for (const run of runs) await h.ledger.recordRun(run, run.key === args.key ? scores : []);
+    for (const run of runs) {
+      const isAdapter = run.key === args.key;
+      await h.ledger.recordRun(run, isAdapter ? scores : [], isAdapter ? [{ ref: `eval-case:${args.caseId}`, mediaType: 'application/x-eval-case' }] : []);
+    }
   } catch (err) {
     if (!warned) {
       warned = true;

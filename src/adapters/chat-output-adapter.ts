@@ -45,6 +45,28 @@ import { UNNAMED_BRAND_LABEL, UNNAMED_PRODUCT_LABEL } from '../conversations/lab
 
 const log = loggerFor('adapter.chat-output');
 
+/** Longest legit reply is an announce_completion list of ~5 name/tagline options (~1.3k chars); 2000 leaves margin, runaway output is far longer. */
+export const MAX_REPLY_CHARS = 2000;
+export const GENERIC_FALLBACK_REPLY = 'Revisa el panel para ver tus opciones o cuéntame más sobre tu negocio.';
+export type UnusableReplyReason = 'empty' | 'special_tokens' | 'prompt_leak' | 'too_long';
+
+export const SPECIAL_TOKENS = /<[｜|][^>]{0,40}[｜|]>/;
+const PROMPT_MARKERS = ['kind=', 'Acción obligatoria', 'Decisión:'];
+
+/** Pure check for model output that must never reach the user (empty, garbage, leaked prompt, runaway). */
+export function unusableReplyReason(content: string): UnusableReplyReason | undefined {
+  if (content.trim().length === 0) return 'empty';
+  if (SPECIAL_TOKENS.test(content)) return 'special_tokens';
+  if (PROMPT_MARKERS.some((m) => content.includes(m))) return 'prompt_leak';
+  if (content.length > MAX_REPLY_CHARS) return 'too_long';
+  return undefined;
+}
+
+function fallbackReply(decisions: ReadonlyArray<PlannerDecision>): string {
+  for (const d of decisions) if (d.kind === 'request_fields' && d.fields.length > 0) return d.fields[0].promptHint;
+  return GENERIC_FALLBACK_REPLY;
+}
+
 export interface RenderInput {
   readonly decisions: ReadonlyArray<PlannerDecision>;
   readonly recentMessages: ReadonlyArray<Pick<MessageRow, 'role' | 'content'>>;
@@ -61,7 +83,7 @@ export interface RenderInput {
 export class ChatOutputAdapter {
   constructor(private readonly registry: AgentRegistry) {}
 
-  async render(input: RenderInput): Promise<{ content: string }> {
+  async render(input: RenderInput): Promise<{ content: string; fallback?: UnusableReplyReason }> {
     const { decisions, recentMessages, snapshot, llmContext, execution, promptVersions, context } = input;
     const behavior = resolveAdapterBehavior('responder', promptVersions, [], execution);
     if (execution) assertResolvedModelPurpose(execution.model, 'responder');
@@ -113,10 +135,10 @@ export class ChatOutputAdapter {
       { ...llmContext, promptVersion: behavior.responder.promptVersion, modelRevision: resolved.modelRevision, provider: resolved.provider ?? 'openrouter', purpose: 'responder' },
     );
 
-    const content = completion.choices[0]?.message?.content?.trim() ?? '';
-    if (content.length === 0) {
-      child.warn('responder.empty_content');
-    }
+    const raw = completion.choices[0]?.message?.content?.trim() ?? '';
+    const fallback = unusableReplyReason(raw);
+    if (fallback) child.warn({ reason: fallback, contentLength: raw.length }, 'responder.fallback');
+    const content = fallback ? fallbackReply(decisions) : raw;
     child.info(
       {
         contractOut: 'AssistantMessage',
@@ -125,7 +147,7 @@ export class ChatOutputAdapter {
       },
       'responder.output',
     );
-    return { content };
+    return fallback ? { content, fallback } : { content };
   }
 }
 

@@ -1,6 +1,8 @@
 {
   "extractor": {
     "extractor.v10": "8dd5220fd409bc44afe07d82c555a7ee0297bb1789e324070177e9a37760fa3c",
+    "extractor.v11": "4bae5bb75636db7462d0e35d104c801b7b7903ab63237d3241a40c6db5b916dc",
+    "extractor.v12": "8583d911740cad390adc1a81f75603c9c1d0d772a5d72d285af892da00aa6dfd",
     "extractor.v5": "e9392ddcd446eb4ac4dbcc9f843fbd225f5b17f77ddade9067314c9d2acd7b7c",
     "extractor.v6": "fe475c877fb855903a7d6422227501d3732449849e4897c0443e8e8659023110",
     "extractor.v7": "6d6ceff747b31c04861099fa35f001d7ed25882a8bea5e86823ecb0113453564",
@@ -21,6 +23,7 @@
     "responder.chat-step1.v11": "aed4b526107f5d6eb263d7a67603837b8e7c756f75229c139976f9a67e8a4818",
     "responder.chat-step1.v12": "47ff02ad376a59237e297acbeb93f692c49d50bf4038e5b5138be0a80842860e",
     "responder.chat-step1.v13": "e4130e0d5f2ea6649e77125c7a14fec60566017250dcd543dad031954afea84e",
+    "responder.chat-step1.v14": "6b8ec51478f355b0834073b8c130b1d76b3d6bf6a29be19b4bb4d3bdf517b5b1",
     "responder.chat-step1.v6": "e3f3eeeaaadb026458081a0007c9ecfc4dde0b4e9c207c20fe37fc55e0d050ca",
     "responder.chat-step1.v7": "274c61e4e40a6a34c334ceba47bdf0a3b03df8d18a28fc60d120f92433609864",
     "responder.chat-step1.v8": "703d9bfb029ced19b0310f86ded3d302fb7d325cfa8e3db48cc5fc8d082c0bc5",

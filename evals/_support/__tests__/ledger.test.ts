@@ -31,6 +31,8 @@ describe('recordEvalCase', () => {
     const [adapter, other] = spy.mock.calls;
     expect(adapter[0]).toMatchObject({ key: 'extractor', kind: 'eval', outcome: 'succeeded', version: 'extractor.v5' });
     expect(adapter[1]).toEqual([{ metric: 'f1', value: 0.5 }]);
+    expect(adapter[2]).toEqual([{ ref: 'eval-case:c1', mediaType: 'application/x-eval-case' }]);
+    expect(other[2]).toEqual([]);
     expect(other[0].key).toBe('naming');
     expect(other[1]).toEqual([]);
     expect(adapter[0].experimentId).toBe(other[0].experimentId);

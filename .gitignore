@@ -19,3 +19,4 @@ CLAUDE.local.md
 /.data/
 .env.local.bak
 .env.local
+sim-out/

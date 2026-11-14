@@ -4,6 +4,7 @@
  * (neutral Latin-American Spanish with tuteo, never voseo). Judgement calls
  * (faithfulness, tone) live in `judge.ts`.
  */
+import { SPECIAL_TOKENS } from '../../src/adapters/chat-output-adapter';
 import type { Feedback } from './extractor';
 import { countSentences, includesNormalized, normalizeText } from './text';
 
@@ -49,6 +50,15 @@ const WAIT_FILLERS = [
   'enseguida',
 ];
 
+/** Reasoning / prompt phrases a user-facing reply must never contain. */
+const REASONING_PHRASES = ['analicemos', 'la regla dice', 'la instrucción', 'acción obligatoria', 'kind=', 'decisión actual', 'el usuario quiere', 'debo '];
+
+export function findReasoningLeak(text: string): string | undefined {
+  if (SPECIAL_TOKENS.test(text)) return 'special token';
+  const lower = text.toLowerCase();
+  return REASONING_PHRASES.find((p) => lower.includes(p));
+}
+
 export function findVoseo(text: string): string | undefined {
   return VOSEO_RE.exec(text)?.[2];
 }
@@ -60,6 +70,7 @@ export function scoreReply(reply: string, expected: ResponderExpectation = {}): 
   const sentences = countSentences(reply);
   const maxSentences = expected.maxSentences ?? 2;
   const code = /```|^\s*[[{]/.test(reply);
+  const leak = findReasoningLeak(reply);
   const missing = (expected.mustMention ?? []).filter((m) => !includesNormalized(reply, m));
   const leaked = (expected.mustNotMention ?? []).filter((m) => includesNormalized(reply, m));
 
@@ -70,6 +81,7 @@ export function scoreReply(reply: string, expected: ResponderExpectation = {}): 
     { key: 'responder.no_wait_fillers', score: fillers.length === 0 ? 1 : 0, comment: fillers.join(', ') || undefined },
     { key: 'responder.max_sentences', score: sentences <= maxSentences ? 1 : 0, comment: `${sentences} sentence(s)` },
     { key: 'responder.no_code', score: code ? 0 : 1 },
+    { key: 'responder.no_reasoning_leak', score: leak ? 0 : 1, comment: leak ? `found "${leak}"` : undefined },
     { key: 'responder.mentions_required', score: missing.length === 0 ? 1 : 0, comment: missing.length ? `missing: ${missing.join(', ')}` : undefined },
     { key: 'responder.no_leaked_values', score: leaked.length === 0 ? 1 : 0, comment: leaked.length ? `leaked: ${leaked.join(', ')}` : undefined },
   ];
