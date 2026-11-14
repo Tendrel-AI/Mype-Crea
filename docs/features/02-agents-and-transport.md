@@ -50,7 +50,7 @@ taglines («Lema»), each with a one-line reason, from the approved name plus th
    row of that agent), publishes `task_processing`, and runs the handler. Shared worker types are
    in `src/workers/_kit.ts`.
 5. **Handler.** `agents/logo-agent/handler.ts:handler` builds the prompt
-   (`buildLogoPrompt`, which appends an Iterar observation as a quoted note) and calls
+   (an art director fills the formula slots; from `logo-agent.v5` it also sees the previous version's slots and the owner's reference images on Iterar/Generar, and chooses to adjust the previous image or redo) and calls
    `src/services/image/index.ts:getImageGenerator` → `src/services/image/fal-provider.ts:FalImageProvider`
    (`blackforestlabs/flux-3/klein/text-to-image`, FLUX.3 Klein at 1024x1024, or `klein/edit-image` with reference images). It returns an A2A result
    (`src/core/agent-types.ts:A2ATaskResult`); it never touches the database.

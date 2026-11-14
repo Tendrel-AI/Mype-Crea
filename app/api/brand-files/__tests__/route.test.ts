@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   add: vi.fn(),
   get: vi.fn(),
   removeLabReport: vi.fn(),
+  removeLogoReference: vi.fn(),
 }));
 
 vi.mock('../../../../src/auth/resolve-identity', () => ({ resolveIdentity: mocks.resolveIdentity }));
@@ -24,7 +25,7 @@ vi.mock('../../../../src/repos', () => ({
   repos: () => ({
     brands: { get: mocks.brandGet },
     products: { get: mocks.productGet },
-    brandFiles: { add: mocks.add, get: mocks.get, removeLabReport: mocks.removeLabReport },
+    brandFiles: { add: mocks.add, get: mocks.get, removeLabReport: mocks.removeLabReport, removeLogoReference: mocks.removeLogoReference },
   }),
 }));
 
@@ -113,6 +114,38 @@ describe('POST /api/brand-files', () => {
     const res = await POST((await upload({ brandId: BRAND, kind: 'asset' }, { bytes: PNG })) as never);
     expect(res.status).toBe(409);
     expect(storage.objects.size).toBe(0);
+  });
+
+  describe('D62 logo references', () => {
+    it('stores a PNG reference for the brand with kind logo_reference', async () => {
+      const res = await POST((await upload({ brandId: BRAND, kind: 'logo_reference' }, { bytes: PNG, name: 'ref.png' })) as never);
+      expect(res.status).toBe(201);
+      expect(mocks.add.mock.calls[0][0]).toMatchObject({ kind: 'logo_reference', productId: null, contentType: 'image/png' });
+    });
+
+    it('refuses a product-level reference (400) and an SVG (415); stores nothing', async () => {
+      expect((await POST((await upload({ brandId: BRAND, productId: PRODUCT, kind: 'logo_reference' }, { bytes: PNG })) as never)).status).toBe(400);
+      expect((await POST((await upload({ brandId: BRAND, kind: 'logo_reference' }, { bytes: svg('<rect/>'), name: 'a.svg' })) as never)).status).toBe(415);
+      expect(mocks.add).not.toHaveBeenCalled();
+      expect(storage.objects.size).toBe(0);
+    });
+
+    it('the 4th reference is refused with the Spanish limit message and its object is deleted', async () => {
+      mocks.add.mockResolvedValueOnce({ ok: false, code: 'asset_limit_reached', limit: 3 });
+      const res = await POST((await upload({ brandId: BRAND, kind: 'logo_reference' }, { bytes: PNG })) as never);
+      expect(res.status).toBe(409);
+      expect((await res.json()).message).toContain('3 referencias');
+      expect(storage.objects.size).toBe(0);
+    });
+
+    it('DELETE removes a reference when it is not a lab report', async () => {
+      await storage.putObject('r.png', PNG, 'image/png');
+      mocks.removeLabReport.mockResolvedValue(null);
+      mocks.removeLogoReference.mockResolvedValue('r.png');
+      const res = await DELETE(new Request('http://app.test/x', { method: 'DELETE' }) as never, { params: Promise.resolve({ id: FILE_ID }) });
+      expect(res.status).toBe(204);
+      expect(storage.objects.size).toBe(0);
+    });
   });
 
   describe('D32 lab reports', () => {
@@ -248,6 +281,7 @@ describe('DELETE /api/brand-files/[id] (D32)', () => {
 
   it('a foreign, missing or non lab-report file is 404; a missing object is fine', async () => {
     mocks.removeLabReport.mockResolvedValue(null);
+    mocks.removeLogoReference.mockResolvedValue(null);
     expect((await call(FILE_ID)).status).toBe(404);
     expect((await call('nope')).status).toBe(404);
     mocks.removeLabReport.mockResolvedValue('gone.pdf');

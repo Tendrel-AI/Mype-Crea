@@ -2,7 +2,7 @@
 export async function uploadBrandFile(input: {
   brandId: string;
   productId?: string;
-  kind: 'logo' | 'asset' | 'lab_report';
+  kind: 'logo' | 'asset' | 'lab_report' | 'logo_reference';
   file: File;
 }): Promise<string | null> {
   const body = new FormData();
@@ -56,11 +56,35 @@ export async function uploadLabReports(
 
 /** D32: remove one lab report; returns a Spanish error or null. */
 export async function removeLabReport(fileId: string): Promise<string | null> {
+  return removeBrandFile(fileId, 'el análisis');
+}
+
+/** D62: upload the logo reference images one by one; `uploaded` counts the stored ones, `errors` are Spanish and never thrown. */
+export async function uploadLogoReferences(
+  brandId: string,
+  files: ReadonlyArray<File>,
+): Promise<{ uploaded: number; errors: string[] }> {
+  const errors: string[] = [];
+  let uploaded = 0;
+  for (const file of files) {
+    const error = await uploadBrandFile({ brandId, kind: 'logo_reference', file });
+    if (error) errors.push(error);
+    else uploaded += 1;
+  }
+  return { uploaded, errors };
+}
+
+/** D62: remove one logo reference; returns a Spanish error or null. */
+export async function removeLogoReference(fileId: string): Promise<string | null> {
+  return removeBrandFile(fileId, 'la referencia');
+}
+
+async function removeBrandFile(fileId: string, what: string): Promise<string | null> {
   try {
     const response = await fetch(`/api/brand-files/${fileId}`, { method: 'DELETE' });
-    return response.ok ? null : 'No pudimos quitar el análisis. Inténtalo de nuevo.';
+    return response.ok ? null : `No pudimos quitar ${what}. Inténtalo de nuevo.`;
   } catch {
-    return 'No pudimos quitar el análisis. Revisa tu conexión.';
+    return `No pudimos quitar ${what}. Revisa tu conexión.`;
   }
 }
 

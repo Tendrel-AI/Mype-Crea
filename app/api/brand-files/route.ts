@@ -8,12 +8,13 @@
  * refused or fails the object is deleted (no orphans). Replacing the logo deletes the old object.
  * D32: `kind=lab_report` takes a PDF (magic bytes) of a product (`productId` required), at most 5 per product;
  * the same bytes (sha256) again reuse the existing row and rewrite its object.
+ * D62: `kind=logo_reference` takes a PNG/JPG/WebP (no SVG) of the brand (no `productId`), at most 3 per brand.
  */
 import { randomUUID, createHash } from 'node:crypto';
 import type { NextRequest } from 'next/server';
 import { resolveIdentity } from '../../../src/auth/resolve-identity';
 import { repos } from '../../../src/repos';
-import { MAX_ASSETS, MAX_LAB_REPORTS } from '../../../src/repos/brand-files';
+import { MAX_ASSETS, MAX_LAB_REPORTS, MAX_LOGO_REFERENCES } from '../../../src/repos/brand-files';
 import { brandFileStorage, isPdf, MAX_UPLOAD_BYTES, safeOriginalName, sniffImage } from '../../../src/services/storage/brand-upload';
 import { loggerFor } from '../../../src/services/logger';
 import { isConversationId } from '../../../src/conversations/selection';
@@ -53,8 +54,9 @@ export async function POST(request: NextRequest): Promise<Response> {
   const kind = form.get('kind');
   const file = form.get('file');
   if (!isConversationId(brandId) || (productId !== null && !isConversationId(productId))) return NOT_FOUND();
-  if ((kind !== 'logo' && kind !== 'asset' && kind !== 'lab_report') || !(file instanceof File)) return reply(400, 'Solicitud no válida.');
+  if ((kind !== 'logo' && kind !== 'asset' && kind !== 'lab_report' && kind !== 'logo_reference') || !(file instanceof File)) return reply(400, 'Solicitud no válida.');
   if (kind === 'logo' && productId) return reply(400, 'El logo pertenece a la marca, no a un producto.');
+  if (kind === 'logo_reference' && productId) return reply(400, 'Las referencias del logo pertenecen a la marca, no a un producto.');
   if (kind === 'lab_report' && !productId) return reply(400, 'El análisis de laboratorio pertenece a un producto.');
 
   const child = log.child({ tenantId: identity.tenant.id, userId: identity.user.id, brandId });
@@ -74,6 +76,9 @@ export async function POST(request: NextRequest): Promise<Response> {
       : sniffImage(bytes);
     if (!sniffed) return reply(415, kind === 'lab_report' ? 'Sube el análisis de laboratorio en PDF.' : 'Sube una imagen PNG, JPG, WebP o un SVG sin scripts.');
 
+    // D62: Klein takes raster images only.
+    if (kind === 'logo_reference' && sniffed.contentType === 'image/svg+xml') return reply(415, 'Sube una imagen PNG, JPG o WebP.');
+
     const fileId = randomUUID() as UUID;
     const storageKey = `tenants/${identity.tenant.id}/brands/${brandId}/files/${fileId}.${sniffed.extension}`;
     const storage = brandFileStorage();
@@ -89,7 +94,9 @@ export async function POST(request: NextRequest): Promise<Response> {
         if (added.code === 'not_found') return NOT_FOUND();
         return reply(409, kind === 'lab_report'
           ? `Este producto ya tiene ${MAX_LAB_REPORTS} análisis. Quita uno para subir otro.`
-          : `Cada marca o producto admite hasta ${MAX_ASSETS} archivos.`);
+          : kind === 'logo_reference'
+            ? `Tu marca ya tiene ${MAX_LOGO_REFERENCES} referencias. Quita una para subir otra.`
+            : `Cada marca o producto admite hasta ${MAX_ASSETS} archivos.`);
       }
       if (added.reused) {
         // D32: same file again: rewrite the bytes at the existing row's key (they may have been lost) and drop the new object.

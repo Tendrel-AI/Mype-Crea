@@ -19,7 +19,7 @@ import { fal } from '@fal-ai/client';
 import { SAFETY_POLICY_VERSION, type SafetyRecord } from '../../core/deliverable-safety';
 import { TaskError } from '../../core/task-errors';
 import { loggerFor } from '../logger';
-import type { IImageProvider, ImageRequest, ImageResult } from './types';
+import { MAX_REFERENCE_IMAGES, type IImageProvider, type ImageRequest, type ImageResult } from './types';
 
 const log = loggerFor('service.image.fal');
 const PROVIDER_ID = 'fal';
@@ -50,7 +50,7 @@ export class FalImageProvider implements IImageProvider {
       enable_safety_checker: true,
       // The art director's prompt is final (exact brand-name spelling, D46): Klein's prompt expansion would rewrite it.
       enable_prompt_expansion: false,
-      ...(isEdit ? { image_urls: await Promise.all(req.referenceUrls!.map(toFalUrl)) } : {}),
+      ...(isEdit ? { image_urls: await Promise.all(req.referenceUrls!.slice(0, MAX_REFERENCE_IMAGES).map(toFalUrl)) } : {}),
     };
 
     const child = log.child({ modelId, isEdit });

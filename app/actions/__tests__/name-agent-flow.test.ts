@@ -234,7 +234,7 @@ describe('name-agent flow (KAN-31)', () => {
     expect(logo.candidates[0]).toMatchObject({
       iteration: 1,
       provenance: {
-        promptVersion: 'logo-agent.v4',
+        promptVersion: 'logo-agent.v5',
         agentCardVersion: expect.any(String),
         provider: 'fake',
         model: 'fake/img',

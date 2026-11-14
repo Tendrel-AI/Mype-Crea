@@ -212,7 +212,7 @@ export async function startAgentWorker(
     // KAN-28: an «Iterar» task carries its refinement under the reserved
     // `refinement` key; it goes to `iteration`, never into `requirements`.
     // KAN-32: approved upstream values (e.g. the approved name) go to `upstream`.
-    const { requirements, refinement, upstream } = splitRequirementsSnapshot(claimed.requirementsSnapshot);
+    const { requirements, refinement, upstream, previous } = splitRequirementsSnapshot(claimed.requirementsSnapshot);
     let prompt: A2AMessage['prompt'];
     try {
       prompt = await deps.pinnedPromptFor?.(tenantId as UUID, claimed.conversationId, AGENT_ID);
@@ -236,6 +236,7 @@ export async function startAgentWorker(
                 : {}),
               ...(refinement && refinement.observations.length > 0 ? { observations: refinement.observations } : {}),
               ...(refinement ? { anchorDeliverableId: refinement.anchorDeliverableId } : {}),
+              ...(previous ? { previous } : {}),
             },
           }
         : {}),

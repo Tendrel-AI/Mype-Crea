@@ -32,6 +32,7 @@ vi.mock('@fal-ai/client', () => ({
 
 import { classifyFalError, FalImageProvider, falSafety } from '../fal-provider';
 import { TaskError } from '../../../core/task-errors';
+import { MAX_REFERENCE_IMAGES } from '../types';
 import { getImageGenerator, resetImageGenerator } from '../index';
 
 describe('FalImageProvider', () => {
@@ -210,5 +211,13 @@ describe('FalImageProvider data: references', () => {
     expect(subscribeSpy).toHaveBeenCalledWith('blackforestlabs/flux-3/klein/edit-image', {
       input: expect.objectContaining({ image_urls: ['https://fal.media/files/photo.png', 'https://example.test/a.png'] }),
     });
+  });
+
+  it('sends at most MAX_REFERENCE_IMAGES references', async () => {
+    subscribeSpy.mockResolvedValue({ data: { images: [{ url: 'https://fal.cdn/x.png' }], has_nsfw_concepts: [false] } });
+    const refs = Array.from({ length: MAX_REFERENCE_IMAGES + 2 }, (_, i) => `https://example.test/${i}.png`);
+    await new FalImageProvider('k').generate({ prompt: 'p', referenceUrls: refs });
+    const input = subscribeSpy.mock.calls.at(-1)![1].input as { image_urls: string[] };
+    expect(input.image_urls).toEqual(refs.slice(0, MAX_REFERENCE_IMAGES));
   });
 });

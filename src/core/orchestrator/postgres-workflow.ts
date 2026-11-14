@@ -68,6 +68,7 @@ function toCandidate(row: DeliverableRow): WorkflowCandidate {
     inputVersions: recordedFieldVersions(metadata),
     approvable: isPresentable(metadata),
     metadata,
+    storageKey: row.storageKey ?? null,
   };
 }
 

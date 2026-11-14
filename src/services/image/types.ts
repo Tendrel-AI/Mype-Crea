@@ -19,6 +19,9 @@
 
 import type { SafetyRecord } from '../../core/deliverable-safety';
 
+/** Klein edit-image takes at most this many reference images. */
+export const MAX_REFERENCE_IMAGES = 10;
+
 export type ImagePurpose = 'logo' | 'label' | 'social';
 
 export interface ImageRequest {

@@ -7,7 +7,7 @@ import { FormModal } from './crea-mype/FormModal';
 import { BrandForm, brandFormTitle, type BrandFiles, type BrandFormMode, type BrandFormResult } from './crea-mype/BrandForm';
 import { ProductForm, productFormTitle } from './crea-mype/ProductForm';
 import type { FormResult } from './crea-mype/CatalogForm';
-import { removeLabReport, uploadBrandFiles, uploadLabReports, uploadProductPhotos } from './crea-mype/brand-files-client';
+import { removeLabReport, removeLogoReference, uploadBrandFiles, uploadLabReports, uploadLogoReferences, uploadProductPhotos } from './crea-mype/brand-files-client';
 import { LabelCard, labelCommandAfterUpload } from './crea-mype/label-card';
 import { SocialCard, SOCIAL_AGENT_ID } from './crea-mype/social-card';
 import { LAB_UPLOAD_WAIT_MESSAGE } from './crea-mype/lab-upload-copy';
@@ -30,6 +30,8 @@ import { deliverableCommandAction, loadDeliverableStatesAction } from '../app/ac
 import { loadBrandAssetsAction, type BrandAssetsResult } from '../app/actions/brand-assets';
 import { BrandAssetsReadOnly } from './crea-mype/BrandAssetsReadOnly';
 import { listLabReportNamesAction } from '../app/actions/lab-reports';
+import { listLogoReferenceNamesAction } from '../app/actions/logo-references';
+import { LogoCard } from './crea-mype/logo-card';
 import { listProductPhotoNamesAction } from '../app/actions/product-photos';
 import { LABEL_AGENT_ID } from '../src/labeling/lab-report-refs';
 import { deliverableFeedbackAction, loadDeliverableFeedbackAction } from '../app/actions/deliverable-feedback';
@@ -186,6 +188,8 @@ export default function CreaMype({ userEmail, userName, isTenantAdmin = false, i
   const socialView = productId ? deliverableStates.find((view) => view.agentId === SOCIAL_AGENT_ID) : undefined;
   const [productPhotoNames, setProductPhotoNames] = useState<ReadonlyArray<{ id: string; name: string }>>([]);
   const [photoUploading, setPhotoUploading] = useState(false);
+  const [logoReferenceNames, setLogoReferenceNames] = useState<ReadonlyArray<{ id: string; name: string }>>([]);
+  const [logoReferenceUploading, setLogoReferenceUploading] = useState(false);
   // D34: a product conversation shows the brand's approved assets read-only.
   const [brandAssets, setBrandAssets] = useState<Extract<BrandAssetsResult, { ok: true }> | null>(null);
   // KAN-26: the brief exactly as the server last returned it.
@@ -301,6 +305,20 @@ export default function CreaMype({ userEmail, userName, isTenantAdmin = false, i
       console.error('Failed to load product photos', error);
     }
   }, []);
+
+  const refreshLogoReferences = useCallback(async (forConversation: string) => {
+    try {
+      const result = await listLogoReferenceNamesAction({ conversationId: forConversation });
+      if (result.ok && currentConversationRef.current === forConversation) setLogoReferenceNames(result.references);
+    } catch (error) {
+      console.error('Failed to load logo references', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    setLogoReferenceNames([]);
+    if (conversationId && !productId) void refreshLogoReferences(conversationId);
+  }, [conversationId, productId, refreshLogoReferences]);
 
   useEffect(() => {
     setBrandAssets(null);
@@ -516,20 +534,60 @@ export default function CreaMype({ userEmail, userName, isTenantAdmin = false, i
     await refreshLabReports(conversationId);
   };
 
-  const renderLogoCommands = () => (
-    <DeliverableCommands
-      view={logoView}
-      label="logo"
-      busy={commandBusy}
-      error={commandErrorAgent === LOGO_AGENT_ID ? commandError : ''}
-      alterations={alterationCounts[LOGO_AGENT_ID]}
-      onCommand={(request) => { if (logoView) void handleDeliverableCommand(LOGO_AGENT_ID, logoView, request); }}
-      feedback={feedback}
-      feedbackBusy={feedbackBusy}
-      onFeedback={(deliverableId, value) => void handleFeedback(LOGO_AGENT_ID, deliverableId, value)}
-      onAdvance={() => document.getElementById('brand-step-3')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-    />
-  );
+  /** D62: upload the brand's logo references and refresh the thumbnails; they are optional input, so no deliverable command is issued. */
+  const handleLogoReferenceUpload = async (files: File[]) => {
+    if (!conversationId || productId || !context?.brandId || files.length === 0 || logoReferenceUploading) return;
+    const forConversation = conversationId;
+    setLogoReferenceUploading(true);
+    setCommandError('');
+    setCommandErrorAgent(LOGO_AGENT_ID);
+    try {
+      const { uploaded, errors } = await uploadLogoReferences(context.brandId, files);
+      if (errors.length > 0) setCommandError(errors.join(' '));
+      if (uploaded > 0) await refreshLogoReferences(forConversation);
+    } catch (error) {
+      console.error('Logo reference upload failed.', error);
+      setCommandError('No pudimos subir la referencia. Inténtalo de nuevo.');
+    } finally {
+      setLogoReferenceUploading(false);
+    }
+  };
+
+  const handleLogoReferenceRemove = async (fileId: string) => {
+    if (!conversationId || logoReferenceUploading) return;
+    setCommandError('');
+    setCommandErrorAgent(LOGO_AGENT_ID);
+    const error = await removeLogoReference(fileId);
+    if (error) setCommandError(error);
+    await refreshLogoReferences(conversationId);
+  };
+
+  // D62: the reference-image box exists only in a brand chat; a product chat keeps the plain commands.
+  const renderLogoCommands = (advance = true) => {
+    const commands = {
+      view: logoView,
+      label: 'logo',
+      busy: commandBusy,
+      error: commandErrorAgent === LOGO_AGENT_ID ? commandError : '',
+      alterations: alterationCounts[LOGO_AGENT_ID],
+      onCommand: (request: DeliverableCommandRequest) => { if (logoView) void handleDeliverableCommand(LOGO_AGENT_ID, logoView, request); },
+      feedback,
+      feedbackBusy,
+      onFeedback: (deliverableId: string, value: FeedbackValue | null) => void handleFeedback(LOGO_AGENT_ID, deliverableId, value),
+      ...(advance ? { onAdvance: () => document.getElementById('brand-step-3')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) } : {}),
+    };
+    return productId || !context?.brandId ? (
+      <DeliverableCommands {...commands} />
+    ) : (
+      <LogoCard
+        {...commands}
+        references={logoReferenceNames}
+        uploading={logoReferenceUploading}
+        onUpload={(files) => void handleLogoReferenceUpload(files)}
+        onRemove={(fileId) => void handleLogoReferenceRemove(fileId)}
+      />
+    );
+  };
 
   // A titled card without «Avanzar»: the names and tagline (KAN-31 / KAN-32), and the mobile logo (KAN-29: the type is named).
   const renderTextCommands = (agentId: string, view: DeliverableStateView | undefined, title: string, label: string, note?: string) => view && (
@@ -843,7 +901,12 @@ export default function CreaMype({ userEmail, userName, isTenantAdmin = false, i
                 <>
                   {createProductCta}
                   {renderNameCommands()}
-                  {renderTextCommands(LOGO_AGENT_ID, logoView, 'Logo', 'logo')}
+                  {logoView && (
+                    <section className="mt-6" aria-label="Logo">
+                      <h3 className="text-sm font-semibold text-neutral-700">Logo</h3>
+                      {renderLogoCommands(false)}
+                    </section>
+                  )}
                 </>
               )}
             </>
