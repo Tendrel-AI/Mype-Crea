@@ -77,3 +77,20 @@ describe('eval setup provider credentials', () => {
     expect(process.env.OPENROUTER_RESPONDER_MODEL).toBe('google/gemini-2.5-pro');
   });
 });
+
+describe('langsmith createFeedback start_time workaround', () => {
+  it('converts a numeric startTime to an ISO string in both call forms', async () => {
+    process.env.LLM_PROVIDER = 'anthropic';
+    process.env.ANTHROPIC_API_KEY = 'anthropic-test';
+    const { Client } = await import('langsmith');
+    const stub = vi.fn().mockResolvedValue({});
+    Client.prototype.createFeedback = stub as never;
+    await import('../setup');
+    const client = new Client({ apiKey: 'x', autoBatchTracing: false });
+    const ms = Date.UTC(2026, 0, 2, 3, 4, 5);
+    await client.createFeedback({ runId: 'r', key: 'k', startTime: ms } as never);
+    await client.createFeedback('r', 'k', { startTime: ms, score: 1 } as never);
+    expect(stub.mock.calls[0][0]).toMatchObject({ startTime: '2026-01-02T03:04:05.000Z' });
+    expect(stub.mock.calls[1][2]).toMatchObject({ startTime: '2026-01-02T03:04:05.000Z', score: 1 });
+  });
+});

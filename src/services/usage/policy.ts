@@ -87,7 +87,7 @@ export function usageLimitMessage(reason: UsageDenialReason): string {
 // Unknown models use the conservative default so an unpriced model can't look cheap.
 // ---------------------------------------------------------------------------
 
-export const PRICING_VERSION = 'kan-43.2026-11-03';
+export const PRICING_VERSION = 'kan-43.2026-11-14';
 
 interface TokenPrice { readonly inputPerMTok: number; readonly outputPerMTok: number }
 
@@ -97,10 +97,12 @@ const LLM_PRICES: Readonly<Record<string, TokenPrice>> = {
   'claude-sonnet-5-5': { inputPerMTok: 2, outputPerMTok: 10 },
   // shortcut: Haiku 5.5's rate for prompts up to 100k tokens (5x above); ours stay far below, add the tier if that changes.
   'claude-haiku-5-5': { inputPerMTok: 0.1, outputPerMTok: 0.5 },
+  'anthropic/claude-sonnet-5.5': { inputPerMTok: 2, outputPerMTok: 10 },
+  'anthropic/claude-haiku-5.5': { inputPerMTok: 0.1, outputPerMTok: 0.5 },
 };
 const DEFAULT_LLM_PRICE: TokenPrice = { inputPerMTok: 5, outputPerMTok: 25 };
-/** One fal FLUX.2 [dev] 1024x1024 image: USD 0.012/MP, an edit also bills its ~1 MP reference (~0.024). */
-export const IMAGE_PRICE_USD = 0.03;
+/** One fal FLUX.3 Klein 1K image (text-to-image or edit, per output image): USD 0.009 (fal schedule, 2026-11-14). */
+export const IMAGE_PRICE_USD = 0.009;
 /** Output tokens assumed when a request sets no max_tokens. */
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 

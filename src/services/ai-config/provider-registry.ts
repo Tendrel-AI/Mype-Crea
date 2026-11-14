@@ -174,7 +174,7 @@ function createProvider(
 
 function trustedCapabilities(profile: ModelProfile): TrustedModelCapabilities | undefined {
   const known = profile.provider === 'openrouter'
-    ? new Set(['google/gemini-2.5-flash', 'google/gemini-2.5-pro'])
+    ? new Set(['google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'anthropic/claude-haiku-5.5', 'anthropic/claude-sonnet-5.5'])
     : new Set(['claude-haiku-5-5', 'claude-sonnet-5-5']);
   const validId = profile.provider === 'openrouter'
     ? isOpenRouterModelId(profile.model)

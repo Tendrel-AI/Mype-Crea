@@ -13,10 +13,20 @@
  *   override with LOG_LEVEL=info to see the per-stage contract logs.
  */
 import { afterAll, beforeEach, vi } from 'vitest';
+import { Client } from 'langsmith';
 import { beginEvalCase, captureCall, closeEvalLedger } from './ledger';
 import { applyEvalModelProfile, evalModelProfile } from '../../src/services/llm/eval-model-profile';
 
 process.env.LOG_LEVEL ??= 'warn';
+
+// shortcut: langsmith <=0.12.0 sends RunTree.start_time (epoch ms) as feedback start_time and the API 400s; drop when the SDK sends ISO strings.
+const originalCreateFeedback = Client.prototype.createFeedback;
+const isoStart = <T extends { startTime?: unknown }>(o: T): T => (typeof o?.startTime === 'number' ? { ...o, startTime: new Date(o.startTime).toISOString() } : o);
+Client.prototype.createFeedback = function (this: Client, ...args: unknown[]) {
+  // Object form: (params); positional form: (runId, key, options).
+  const fixed = typeof args[0] === 'object' && args[0] !== null ? [isoStart(args[0]), ...args.slice(1)] : [args[0], args[1], isoStart((args[2] ?? {}) as object), ...args.slice(3)];
+  return (originalCreateFeedback as (...a: unknown[]) => Promise<unknown>).apply(this, fixed);
+} as typeof Client.prototype.createFeedback;
 
 const provider = process.env.LLM_PROVIDER ?? 'anthropic';
 if (provider !== 'openrouter' && provider !== 'anthropic') throw new Error('LLM_PROVIDER must be "openrouter" or "anthropic".');

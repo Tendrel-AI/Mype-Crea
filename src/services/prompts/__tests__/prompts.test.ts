@@ -15,7 +15,7 @@ vi.mock('../../../../prompts', async () => {
   const files = [
     extractor('extractor.v2', real.schema, `${real.text}\nv2`),
     extractor('extractor.v9', { ...real.schema, parserVersion: 'extractor.parser.v999' }),
-    extractor('extractor.v10', real.schema, `${real.text}\nv10`),
+    extractor('extractor.v12', real.schema, `${real.text}\nv12`),
     extractor('extractor.v3', real.schema, `${real.text}\nv3`),
     make('responder', 'responder.chat-step1.v6', 'r', { rendererVersion: 'x' }),
     make('name-agent', 'name-agent.v1', 'n'),
@@ -39,7 +39,7 @@ afterEach(() => {
 
 describe('prompt loader', () => {
   it('uses the highest numeric vN of a key (v10 beats v9), and the env var wins over it', () => {
-    expect(activePromptVersion('extractor')).toBe('extractor.v10');
+    expect(activePromptVersion('extractor')).toBe('extractor.v12');
     vi.stubEnv('PROMPT_EXTRACTOR', 'extractor.v2');
     expect(activePromptVersion('extractor')).toBe('extractor.v2');
     vi.stubEnv('PROMPT_NAME_AGENT', 'name-agent.v7');
@@ -63,8 +63,8 @@ describe('prompt loader', () => {
   it('resolves the pinned version, and falls back to the active one with a log when it cannot be read', () => {
     expect(resolvePinnedPrompt('extractor', { extractor: 'extractor.v2' })?.version).toBe('extractor.v2');
     expect(mocks.warn).not.toHaveBeenCalled();
-    expect(resolvePinnedPrompt('extractor', { extractor: 'extractor.v404' })?.version).toBe('extractor.v10');
-    expect(mocks.warn).toHaveBeenCalledWith({ key: 'extractor', pinned: 'extractor.v404', used: 'extractor.v10' }, 'prompt.pin.fallback');
+    expect(resolvePinnedPrompt('extractor', { extractor: 'extractor.v404' })?.version).toBe('extractor.v12');
+    expect(mocks.warn).toHaveBeenCalledWith({ key: 'extractor', pinned: 'extractor.v404', used: 'extractor.v12' }, 'prompt.pin.fallback');
   });
 });
 
@@ -73,7 +73,7 @@ describe('resolveAdapterBehavior', () => {
 
   it('without a pin (evals, legacy callers) uses the active version and the registry fields', () => {
     const behavior = resolveAdapterBehavior('extractor', undefined, fields);
-    expect(behavior.extractor.promptVersion).toBe('extractor.v10');
+    expect(behavior.extractor.promptVersion).toBe('extractor.v12');
     expect(behavior.extractor.fields).toEqual(fields);
     vi.stubEnv('PROMPT_EXTRACTOR', 'extractor.v2');
     expect(resolveAdapterBehavior('extractor', undefined, fields).extractor.promptTemplate).toContain('\nv2');
@@ -89,8 +89,8 @@ describe('resolveAdapterBehavior', () => {
     ['unsupported (structural gate)', 'extractor.v9'],
   ])('falls back to the active version and logs prompt.pin.fallback when the pin is %s', (_label, pinned) => {
     const behavior = resolveAdapterBehavior('extractor', { extractor: pinned }, fields);
-    expect(behavior.extractor.promptVersion).toBe('extractor.v10');
-    expect(mocks.warn).toHaveBeenCalledWith({ key: 'extractor', pinned, used: 'extractor.v10' }, 'prompt.pin.fallback');
+    expect(behavior.extractor.promptVersion).toBe('extractor.v12');
+    expect(mocks.warn).toHaveBeenCalledWith({ key: 'extractor', pinned, used: 'extractor.v12' }, 'prompt.pin.fallback');
   });
 
   it('keeps profile settings of an execution but takes the field list from the registry', () => {
@@ -99,6 +99,6 @@ describe('resolveAdapterBehavior', () => {
       behavior: { extractor: { temperature: 0.3, maxTokens: 99, fields: [{ name: 'stale' }] }, responder: {} } as never,
     };
     const { extractor } = resolveAdapterBehavior('extractor', undefined, fields, execution);
-    expect(extractor).toMatchObject({ temperature: 0.3, maxTokens: 99, fields, promptVersion: 'extractor.v10' });
+    expect(extractor).toMatchObject({ temperature: 0.3, maxTokens: 99, fields, promptVersion: 'extractor.v12' });
   });
 });

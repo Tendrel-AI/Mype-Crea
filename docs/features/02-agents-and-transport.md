@@ -52,7 +52,7 @@ taglines («Lema»), each with a one-line reason, from the approved name plus th
 5. **Handler.** `agents/logo-agent/handler.ts:handler` builds the prompt
    (`buildLogoPrompt`, which appends an Iterar observation as a quoted note) and calls
    `src/services/image/index.ts:getImageGenerator` → `src/services/image/fal-provider.ts:FalImageProvider`
-   (`fal-ai/flux-2`, FLUX.2 [dev] at 1024x1024, or `/edit` with reference images). It returns an A2A result
+   (`blackforestlabs/flux-3/klein/text-to-image`, FLUX.3 Klein at 1024x1024, or `klein/edit-image` with reference images). It returns an A2A result
    (`src/core/agent-types.ts:A2ATaskResult`); it never touches the database.
    `agents/name-agent/handler.ts:handler` makes one forced tool call
    (`propose_business_names`, prompt `NAME_PROMPT_VERSION`) through

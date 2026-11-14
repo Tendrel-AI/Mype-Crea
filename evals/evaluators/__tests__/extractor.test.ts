@@ -88,3 +88,31 @@ describe('scoreExtraction', () => {
     expect(scoreExtraction(d, { fields: {} }).pass).toBe(false);
   });
 });
+
+describe('optional expected fields', () => {
+  const exp = { fields: { business_name: { contains: ['kusi'] }, brand_story: { contains: ['hija'], optional: true } } };
+  const name = { business_name: { value: 'Kusi', confidence: 1 } };
+
+  it('passes when an optional field is absent', () => {
+    expect(scoreExtraction(delta({ 'logo-agent': name }), exp).pass).toBe(true);
+  });
+  it('passes when an optional field is present and matches (not a hallucination)', () => {
+    const d = delta({ 'logo-agent': { ...name, brand_story: { value: 'por mi hija', confidence: 0.9 } } });
+    const s = score(d, exp);
+    expect(scoreExtraction(d, exp).pass).toBe(true);
+    expect(s['extractor.no_hallucination']).toBe(1);
+  });
+  it('fails when an optional field is present with the wrong value', () => {
+    const d = delta({ 'logo-agent': { ...name, brand_story: { value: 'otra cosa', confidence: 0.9 } } });
+    expect(scoreExtraction(d, exp).pass).toBe(false);
+    expect(score(d, exp)['extractor.value_match']).toBe(0.5);
+  });
+});
+
+describe('no_hallucination comment', () => {
+  it('shows values and confidence of unexpected fields', () => {
+    const d = delta({ 'logo-agent': { business_category: { value: 'Hacemos chompas de alpaca', confidence: 0.9 } } });
+    const fb = scoreExtraction(d, { fields: {} }).feedback.find((f) => f.key === 'extractor.no_hallucination');
+    expect(fb?.comment).toBe('unexpected: business_category="Hacemos chompas de alpaca" @0.9');
+  });
+});

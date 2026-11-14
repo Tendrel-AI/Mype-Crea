@@ -19,6 +19,7 @@
     "test": "vitest run",
     "prompt:freeze": "jiti scripts/prompt-freeze.ts",
     "ledger:report": "dotenv -e .env.local -- jiti scripts/prompt-ledger-report.ts",
+    "sim": "dotenv -e .env.local -- jiti scripts/simulate-conversations.ts",
     "test:integration": "dotenv -e .env.local -- vitest run",
     "eval": "dotenv -e .env.local -- vitest run -c vitest.eval.config.ts",
     "eval:extractor": "dotenv -e .env.local -- vitest run -c vitest.eval.config.ts evals/extractor.eval.ts",

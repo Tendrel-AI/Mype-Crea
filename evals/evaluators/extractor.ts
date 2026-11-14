@@ -24,6 +24,11 @@ export interface ExpectedField {
   readonly notContains?: ReadonlyArray<string>;
   /** Omit when either bucket is acceptable. */
   readonly bucket?: ConfidenceBucket;
+  /**
+   * May be absent without penalty (not counted in recall/value_match) and is never a
+   * hallucination; if present it must still satisfy `contains`/`notContains`.
+   */
+  readonly optional?: boolean;
 }
 
 export interface ExpectedIntent {
@@ -71,7 +76,7 @@ export function flattenDeltaFields(delta: FieldDelta): Record<string, FieldValue
 
 export function scoreExtraction(delta: FieldDelta, expected: ExtractorExpectation): ExtractorScore {
   const actual = flattenDeltaFields(delta);
-  const expectedNames = Object.keys(expected.fields);
+  const expectedNames = Object.keys(expected.fields).filter((n) => !expected.fields[n].optional || n in actual);
   const actualNames = Object.keys(actual);
 
   const found = expectedNames.filter((n) => n in actual);
@@ -91,12 +96,15 @@ export function scoreExtraction(delta: FieldDelta, expected: ExtractorExpectatio
   const feedback: Feedback[] = [
     { key: 'extractor.recall', score: recall },
     { key: 'extractor.precision', score: precision },
-    { key: 'extractor.value_match', score: valueMatch, comment: describeMisses(actual, expected, valueOk) },
+    { key: 'extractor.value_match', score: valueMatch, comment: describeMisses(actual, expectedNames, valueOk) },
     { key: 'extractor.confidence_bucket', score: confidenceBucket },
     {
       key: 'extractor.no_hallucination',
       score: hallucinated.length === 0 ? 1 : 0,
-      comment: hallucinated.length > 0 ? `unexpected: ${hallucinated.join(', ')}` : undefined,
+      comment:
+        hallucinated.length > 0
+          ? `unexpected: ${hallucinated.map((n) => `${n}=${JSON.stringify(actual[n].value)} @${actual[n].confidence}`).join(', ')}`
+          : undefined,
     },
     { key: 'extractor.intents', score: intentsOk ? 1 : 0 },
   ];
@@ -128,10 +136,10 @@ function ratio(num: number, den: number): number {
 
 function describeMisses(
   actual: Record<string, FieldValueWithConfidence>,
-  expected: ExtractorExpectation,
+  names: ReadonlyArray<string>,
   ok: ReadonlyArray<string>,
 ): string | undefined {
-  const misses = Object.keys(expected.fields)
+  const misses = names
     .filter((n) => !ok.includes(n))
     .map((n) => `${n}=${n in actual ? JSON.stringify(actual[n].value) : '∅'}`);
   return misses.length > 0 ? misses.join('; ') : undefined;
